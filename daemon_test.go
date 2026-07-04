@@ -10,8 +10,62 @@ import (
 	"testing"
 	"time"
 
+	"breeze/internal/engine"
 	"breeze/internal/wire"
 )
+
+// TestShutdownWaitsForPendingSnapshotWrite is a regression test for a real bug found
+// in production: a mutation made moments before a daemon stop/restart could still
+// be queued in the async snapshot writer, and without waiting for it, the stop
+// path's flock/socket cleanup proceeded regardless — silently losing that last
+// mutation on the next reload. Specifically reported for `deploy claim`'s resource
+// lock (which survived a restart no better than any other last-moment mutation),
+// but the underlying bug and fix apply to any state change.
+func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
+	dir := t.TempDir()
+	p := paths{
+		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
+		state: dir + "/state.json", audit: dir + "/audit.jsonl",
+		daemonLog: dir + "/daemon.log", identDir: dir + "/ident",
+	}
+	if err := p.ensureDir(); err != nil {
+		t.Fatalf("ensureDir: %v", err)
+	}
+
+	d, err := tryBindDaemon(p, false)
+	if err != nil || d == nil {
+		t.Fatalf("bind: d=%v err=%v", d, err)
+	}
+	acceptDone := runAcceptLoopForTest(d, p.sock)
+
+	// Mutate, then IMMEDIATELY signal stop — racing the shutdown against the async
+	// snapshot write this mutation just triggered, exactly like the reported
+	// incident (a `deploy claim` immediately followed by `breeze daemon restart`).
+	if _, err := d.eng.RegisterIdentity("race-test-identity"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	close(d.stop)
+
+	select {
+	case <-acceptDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("accept loop did not shut down")
+	}
+
+	snap, err := engine.LoadSnapshotFile(p.state)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	found := false
+	for _, id := range snap.Identities {
+		if id.Name == "race-test-identity" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the identity registered right before shutdown to have been persisted, got identities: %+v", snap.Identities)
+	}
+}
 
 // TestOpRestartSetsRestartingAndClosesStop is a regression test for the daemon-side
 // half of `breeze daemon restart` (OpRestart): the connection handler must ack the
@@ -75,6 +129,7 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 			if err != nil {
 				select {
 				case <-d.stop:
+					d.saver.waitIdle(5 * time.Second)
 					syscall.Flock(d.lockFD, syscall.LOCK_UN)
 					syscall.Close(d.lockFD)
 					os.Remove(sock)

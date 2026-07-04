@@ -396,8 +396,19 @@ func cmdPing(p paths) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pong (pid %d, version %s, dir %s)\n", out.Pid, out.Version, p.dir)
+	fmt.Printf("pong (pid %d, version %s, dir %s)\n", out.Pid, versionString(out.Version, out.BuildTime), p.dir)
 	return nil
+}
+
+// versionString formats a version string with its build timestamp appended when
+// known — buildTime is "unknown" for a binary built without the normal
+// Makefile/ci scripts' -ldflags, which is itself useful signal (you're not running
+// a binary built through the normal path) rather than something to hide.
+func versionString(version, buildTime string) string {
+	if buildTime == "" || buildTime == "unknown" {
+		return fmt.Sprintf("%s (build time unknown)", version)
+	}
+	return fmt.Sprintf("%s (built %s)", version, buildTime)
 }
 
 // cmdStatus gives a one-shot overview by composing existing ops client-side (no new
@@ -451,7 +462,7 @@ func cmdStatus(p paths, args []string) error {
 		}{p.dir, ping, ps, inv, pipe})
 		return nil
 	}
-	fmt.Printf("breeze daemon: pid %d, version %s, dir %s\n", ping.Pid, ping.Version, p.dir)
+	fmt.Printf("breeze daemon: pid %d, version %s, dir %s\n", ping.Pid, versionString(ping.Version, ping.BuildTime), p.dir)
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
 	return nil

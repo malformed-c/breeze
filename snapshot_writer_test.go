@@ -28,7 +28,9 @@ func TestSnapshotWriterCoalescesRapidSubmitsToLatest(t *testing.T) {
 		w.submit(engine.Snapshot{Seq: seq})
 	}
 
-	waitIdle(t, w) // submit() never blocks on the write itself
+	if !w.waitIdle(5 * time.Second) { // submit() never blocks on the write itself
+		t.Fatalf("snapshotWriter never went idle within 5s")
+	}
 
 	got, err := engine.LoadSnapshotFile(path)
 	if err != nil {
@@ -46,7 +48,9 @@ func TestSnapshotWriterSingleSubmitRoundTrips(t *testing.T) {
 	w := newSnapshotWriter(path)
 	w.submit(engine.Snapshot{Seq: 7})
 
-	waitIdle(t, w)
+	if !w.waitIdle(5 * time.Second) {
+		t.Fatalf("snapshotWriter never went idle within 5s")
+	}
 
 	got, err := engine.LoadSnapshotFile(path)
 	if err != nil {
@@ -55,22 +59,4 @@ func TestSnapshotWriterSingleSubmitRoundTrips(t *testing.T) {
 	if got.Seq != 7 {
 		t.Fatalf("expected Seq=7, got %d", got.Seq)
 	}
-}
-
-// waitIdle blocks until w's drain loop has finished writing everything submitted so
-// far, or fails the test after a generous timeout (it should always finish quickly;
-// a timeout here means the writer is stuck, a real bug).
-func waitIdle(t *testing.T, w *snapshotWriter) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		w.mu.Lock()
-		idle := !w.writing
-		w.mu.Unlock()
-		if idle {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("snapshotWriter never went idle within 5s")
 }

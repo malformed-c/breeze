@@ -75,8 +75,9 @@ type Response struct {
 // --- Per-op payloads ---
 
 type PingResponse struct {
-	Pid     int    `json:"pid"`
-	Version string `json:"version"`
+	Pid       int    `json:"pid"`
+	Version   string `json:"version"`
+	BuildTime string `json:"buildTime,omitempty"`
 }
 
 type WhoAmIResponse struct {

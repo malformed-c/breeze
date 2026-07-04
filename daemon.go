@@ -19,12 +19,20 @@ import (
 
 const version = "0.1.0"
 
+// buildTime is overridden at link time via -ldflags "-X main.buildTime=..." (see
+// Makefile, ci/build.sh, ci/deploy.sh) — a plain `go build` with no ldflags (e.g. an
+// ad-hoc `go run .` or `go build .` outside the normal build scripts) leaves it at
+// this placeholder, which is itself useful signal: it means you're not running a
+// binary built through the normal path.
+var buildTime = "unknown"
+
 type daemonServer struct {
 	eng      *engine.Engine
 	paths    paths
 	listener net.Listener
 	stop     chan struct{}
 	lockFD   int
+	saver    *snapshotWriter
 
 	// restarting is set by an OpRestart request just before it closes stop — the
 	// accept loop's clean-shutdown branch checks it to decide whether to exit
@@ -79,6 +87,15 @@ func runDaemon(p paths, args []string) error {
 		if err != nil {
 			select {
 			case <-d.stop:
+				// Wait for any snapshot write still in flight to actually land on
+				// disk before tearing anything down — a real bug found in practice:
+				// a mutation (e.g. a deploy claim) made moments before shutdown could
+				// still be queued in the async writer, and without this, the
+				// flock/socket cleanup (or a restart's re-exec) would proceed while
+				// it was still pending, silently losing that last mutation on reload.
+				if !d.saver.waitIdle(5 * time.Second) {
+					log.Printf("warning: shutting down with a snapshot save still in flight after 5s — some recent state may not persist")
+				}
 				syscall.Flock(d.lockFD, syscall.LOCK_UN)
 				syscall.Close(d.lockFD)
 				os.Remove(p.sock)
@@ -169,8 +186,8 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		eng.Load(snap)
 	}
 
-	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd}
 	saver := newSnapshotWriter(p.state)
+	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd, saver: saver}
 	eng.SetOnChange(saver.submit)
 	eng.SetAuditFn(func(ev engine.AuditEvent) {
 		appendAuditLine(p.audit, ev)
@@ -297,7 +314,7 @@ func okResponse(payload any) wire.Response {
 func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 	switch req.Op {
 	case wire.OpPing:
-		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version})
+		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime})
 
 	case wire.OpStop:
 		close(d.stop)

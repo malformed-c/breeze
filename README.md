@@ -60,7 +60,13 @@ be sharing a daemon (`inventory`/deploy state visibly inconsistent between them)
 when they were actually talking to two different ones. `breeze ping`/`breeze
 status` always print which directory they resolved to, precisely so this is easy to
 sanity-check without reasoning about it — if it's ever not what you expected, that's
-the bug to chase, not the pipeline/lock state.
+the bug to chase, not the pipeline/lock state. They also print the running binary's
+build timestamp (`version 0.1.0 (built 2026-07-04T12:48:37Z)`) — baked in via
+`-ldflags "-X main.buildTime=..."` in the Makefile/`ci/deploy.sh` — so after a
+`daemon restart` you can confirm at a glance it's actually serving the binary you
+just built, not a stale one; a plain `go build` with no ldflags shows
+`(build time unknown)`, itself a useful signal that you're not running a binary
+built through the normal path.
 
 The daemon auto-starts on first use (any command will spin it up if it's not
 already running) and lives in `<state-dir>/breeze.sock`; `breeze stop` shuts it

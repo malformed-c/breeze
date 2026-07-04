@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sync"
+	"time"
 
 	"breeze/internal/engine"
 )
@@ -65,4 +66,27 @@ func (w *snapshotWriter) drain() {
 			log.Printf("warning: failed to save snapshot: %v", err)
 		}
 	}
+}
+
+// waitIdle blocks until every snapshot submitted so far has actually been written to
+// disk (drain has nothing left pending), or timeout elapses — returns whether it
+// actually went idle in time. This is a real correctness requirement, not just
+// tidiness: without it, a shutdown (plain `breeze stop` or `daemon restart`) could
+// tear down the flock/socket and exit/re-exec while the most recent mutation's
+// snapshot write was still in flight, silently losing it — observed in practice as
+// a `deploy claim`'s resource lock vanishing across a restart taken moments after
+// claiming it, even though file locks and everything else persisted fine (those
+// mutations were older and had long since finished writing).
+func (w *snapshotWriter) waitIdle(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		w.mu.Lock()
+		idle := !w.writing
+		w.mu.Unlock()
+		if idle {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }

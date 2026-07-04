@@ -1,5 +1,7 @@
-BINARY   := breeze
-INSTALL  := $(HOME)/.local/bin/$(BINARY)
+BINARY    := breeze
+INSTALL   := $(HOME)/.local/bin/$(BINARY)
+BUILDTIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS   := -X main.buildTime=$(BUILDTIME)
 
 .PHONY: all build install test vet fmt fmt-check race lint check clean run-daemon stop
 
@@ -7,11 +9,11 @@ all: check
 
 ## build the binary into ./breeze (gitignored)
 build:
-	go build -o $(BINARY) .
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 ## build and install to ~/.local/bin, matching how it's actually deployed (see ci/deploy.sh)
 install:
-	go build -o $(INSTALL) .
+	go build -ldflags "$(LDFLAGS)" -o $(INSTALL) .
 
 ## full test suite, race detector on (what CI runs)
 test:

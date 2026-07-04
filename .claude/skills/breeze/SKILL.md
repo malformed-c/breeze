@@ -28,7 +28,11 @@ breeze ping                   # bare liveness check (auto-starts the daemon if n
 
 Both print the resolved state directory (`dir` in `status --json`, inline in
 `ping`'s text output) — check it whenever something feels off (unexpected pipeline
-list, missing identities) rather than assuming the pipeline/lock logic is wrong. A
+list, missing identities) rather than assuming the pipeline/lock logic is wrong.
+They also print the running binary's build timestamp — useful after a `daemon
+restart` to confirm it's actually serving the binary you just built, not a stale
+one (`(build time unknown)` means it was built without the normal Makefile/ci
+scripts' `-ldflags`). A
 real incident: a subagent invoked `breeze` from somewhere other than the intended
 repo, silently fell back to the machine-wide `~/.breeze`, and caused split-brain
 between two agents who each assumed they shared one daemon. That fallback now warns

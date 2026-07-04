@@ -21,7 +21,7 @@ cd "$wtdir" || exit 1
 
 case "$environment" in
   local)
-    go build -o "$HOME/.local/bin/breeze" .
+    go build -ldflags "-X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "$HOME/.local/bin/breeze" .
     ;;
   *)
     echo "unknown environment: $environment" >&2
