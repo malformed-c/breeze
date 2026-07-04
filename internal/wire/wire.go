@@ -48,6 +48,7 @@ const (
 	OpDeployGrantList Op = "deploy.grant.list"
 
 	OpOperatorSurface Op = "operator.surface" // consolidated human-operator "what needs attention" view
+	OpOperatorWatch   Op = "operator.watch"   // streaming: pushes the surface again on every change
 
 	OpAuthCheck Op = "auth.check" // read-only: would As+Token pass a given role gate right now?
 )

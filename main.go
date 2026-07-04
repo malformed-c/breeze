@@ -75,9 +75,9 @@ commands:
                                          resource/pipeline counts
   operator [--json]                     human-operator view: pending approvals,
                                          running stages, recent failures, locks held
-  operator notify [--interval D]        poll the operator surface and fire a desktop
-                                         notification (notify-send) for anything newly
-                                         needing attention; Tier-1, runs until interrupted
+  operator notify [--interval D]        event-driven desktop notification (notify-send)
+                                         the instant an approval/failure needs attention;
+                                         Tier-1, runs until interrupted; D = reconnect delay
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
 
@@ -419,56 +419,95 @@ func cmdOperator(p paths, args []string) error {
 	return nil
 }
 
-// cmdOperatorNotify polls the operator surface on an interval and fires an OS
-// desktop notification (via notify-send) for anything newly needing a human's
+// cmdOperatorNotify holds one streaming operator.watch connection open and fires an
+// OS desktop notification (via notify-send) for anything newly needing a human's
 // attention — a pending approval or a stage failure this process hasn't already
-// notified about — so a human operator gets pinged without keeping a terminal open
-// watching `breeze operator`. Client-side only and Tier-1, same as `breeze operator`
-// itself: polls, never mutates, no --as/--token needed. Runs until interrupted.
+// notified about. Event-driven, not polling: the daemon pushes a fresh surface the
+// instant something changes (any engine mutation runs through changed(), which wakes
+// every operator.watch subscriber — see Engine.SubscribeOperatorChanges), so this
+// blocks on the socket read and does no work at all between real events. Client-side
+// Tier-1, same as `breeze operator` itself: no --as/--token needed. Runs until
+// interrupted; reconnects (after --interval, default 3s) if the daemon restarts.
 func cmdOperatorNotify(p paths, args []string) error {
 	f := parseFlags(args)
-	interval := 15 * time.Second
+	reconnectDelay := 3 * time.Second
 	if f.interval != "" {
 		d, err := parseOptionalDuration(f.interval)
 		if err != nil {
 			return err
 		}
 		if d > 0 {
-			interval = d
+			reconnectDelay = d
 		}
 	}
 	if _, err := exec.LookPath("notify-send"); err != nil {
-		return fmt.Errorf("notify-send not found on PATH — desktop notifications need it (Linux/libnotify); poll `breeze operator --json` yourself if it's unavailable")
+		return fmt.Errorf("notify-send not found on PATH — desktop notifications need it (Linux/libnotify); use `breeze operator --json` yourself if it's unavailable")
 	}
 
 	seenApprovals := make(map[string]bool)
 	seenFailures := make(map[string]bool)
-	fmt.Printf("watching operator surface every %s for approvals/failures (Ctrl-C to stop)...\n", interval)
+	fmt.Println("watching breeze for approvals/failures (event-driven, Ctrl-C to stop)...")
 	for {
-		resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "breeze operator notify:", err)
-		} else if out, decErr := decodePayload[wire.OperatorSurfaceResponse](resp); decErr == nil {
-			for _, a := range out.PendingApprovals {
-				key := fmt.Sprintf("%s/%s/%s/%s", a.Pipeline, a.Stage, a.Commit, a.Environment)
-				if seenApprovals[key] {
-					continue
-				}
-				seenApprovals[key] = true
-				desktopNotify("breeze: review needed",
-					fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
-			}
-			for _, fl := range out.RecentFailures {
-				key := fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
-				if seenFailures[key] {
-					continue
-				}
-				seenFailures[key] = true
-				desktopNotify("breeze: stage failed",
-					fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, fl.Commit, fl.Error))
-			}
+		if err := watchOperatorOnce(p, seenApprovals, seenFailures); err != nil {
+			fmt.Fprintf(os.Stderr, "breeze operator notify: %v — reconnecting in %s\n", err, reconnectDelay)
 		}
-		time.Sleep(interval)
+		time.Sleep(reconnectDelay)
+	}
+}
+
+// watchOperatorOnce holds one operator.watch connection open, decoding and acting on
+// each pushed OperatorSurfaceResponse in turn until the daemon closes the connection
+// or an error occurs (e.g. the daemon restarted) — the caller reconnects.
+func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool) error {
+	conn, err := dialOrStart(p)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if err := json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpOperatorWatch}); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(conn)
+	for {
+		var resp wire.Response
+		if err := dec.Decode(&resp); err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("%s", resp.Error)
+		}
+		out, err := decodePayload[wire.OperatorSurfaceResponse](resp)
+		if err != nil {
+			return err
+		}
+		notifyNewOperatorEvents(out, seenApprovals, seenFailures)
+	}
+}
+
+// notifyNewOperatorEvents fires a desktop notification for each pending approval or
+// recent failure in out not already present in seenApprovals/seenFailures (mutated
+// in place) — so a still-pending approval re-pushed on an unrelated later change
+// doesn't re-notify, but a genuinely new one (or a retry that fails again, keyed
+// through its own FinishedAt) does.
+func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, seenFailures map[string]bool) {
+	for _, a := range out.PendingApprovals {
+		key := fmt.Sprintf("%s/%s/%s/%s", a.Pipeline, a.Stage, a.Commit, a.Environment)
+		if seenApprovals[key] {
+			continue
+		}
+		seenApprovals[key] = true
+		desktopNotify("breeze: review needed",
+			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
+	}
+	for _, fl := range out.RecentFailures {
+		key := fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
+		if seenFailures[key] {
+			continue
+		}
+		seenFailures[key] = true
+		desktopNotify("breeze: stage failed",
+			fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, fl.Commit, fl.Error))
 	}
 }
 

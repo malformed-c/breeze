@@ -32,6 +32,13 @@ type Engine struct {
 
 	waiters map[string][]chan struct{} // key -> parked waiters, for locks and stage instances
 
+	// operatorSubs holds one buffered wake channel per subscribed `operator.watch`
+	// connection (see SubscribeOperatorChanges) — signaled, non-blockingly, from
+	// changed() itself, the single choke point every mutation already runs through.
+	// Event-driven push instead of the subscriber having to poll on a timer.
+	operatorSubs   map[int]chan struct{}
+	operatorSubSeq int
+
 	onChange func(Snapshot)
 
 	auditFn  func(AuditEvent)
@@ -54,6 +61,7 @@ func New() *Engine {
 		deployHistory:   make(map[string][]DeployRecord),
 		envGrants:       make(map[string]*EnvironmentGrant),
 		waiters:         make(map[string][]chan struct{}),
+		operatorSubs:    make(map[int]chan struct{}),
 		now:             time.Now,
 	}
 }
@@ -65,14 +73,43 @@ func (e *Engine) SetOnChange(fn func(Snapshot)) {
 }
 
 // changed must be called with e.mu held; it snapshots state and fires onChange
-// outside the lock to avoid reentrant deadlocks (mirrors mess's daemon.persist wiring).
+// outside the lock to avoid reentrant deadlocks (mirrors mess's daemon.persist wiring),
+// and wakes every subscribed operator.watch connection so it can push a fresh
+// surface — every mutation runs through here, so this is the one choke point that
+// makes operator.watch event-driven rather than a polling loop.
 func (e *Engine) changed() {
+	for _, ch := range e.operatorSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+
 	if e.onChange == nil {
 		return
 	}
 	snap := e.snapshotLocked()
 	fn := e.onChange
 	go fn(snap)
+}
+
+// SubscribeOperatorChanges registers a new wake channel, signaled (non-blockingly,
+// coalescing rapid-fire changes into "at least one happened") every time changed()
+// fires. The returned cancel func must be called exactly once when the subscriber
+// (e.g. a closed operator.watch connection) is done.
+func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.operatorSubSeq++
+	id := e.operatorSubSeq
+	ch := make(chan struct{}, 1)
+	e.operatorSubs[id] = ch
+	cancel := func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		delete(e.operatorSubs, id)
+	}
+	return ch, cancel
 }
 
 func (e *Engine) snapshotLocked() Snapshot {

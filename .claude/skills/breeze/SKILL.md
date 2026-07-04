@@ -234,13 +234,16 @@ needed), every stage currently running, recent failures, and every lock (file an
 resource) currently held. Check this before assuming nothing's in flight.
 
 ```sh
-breeze operator notify [--interval 15s]
+breeze operator notify [--interval 3s]
 ```
 
-A polling watcher (Tier-1, never mutates) that fires a real OS desktop notification
-(`notify-send`, Linux/libnotify) the moment a pending approval or stage failure
-newly appears — meant for a human to leave running rather than for agents to
-invoke, but worth knowing about if a user asks for desktop pings on breeze events.
+Event-driven (Tier-1, never mutates), not polling: holds one streaming
+`operator.watch` connection open and the daemon pushes a fresh surface the instant
+anything changes, so it fires a real OS desktop notification (`notify-send`,
+Linux/libnotify) with essentially zero delay for a pending approval or stage
+failure — `--interval` is the reconnect delay if the daemon restarts, not a poll
+period. Meant for a human to leave running rather than for agents to invoke, but
+worth knowing about if a user asks for desktop pings on breeze events.
 Each distinct approval/failure notifies once per process lifetime; restarting it
 re-notifies about whatever's still outstanding.
 

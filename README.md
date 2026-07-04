@@ -424,18 +424,23 @@ first — full history is `deploy history`/the audit log's job), and every lock
 (file and resource) currently held.
 
 ```sh
-breeze operator notify [--interval 15s]
+breeze operator notify [--interval 3s]
 ```
 
-A polling watcher (client-side only, Tier-1, same as `breeze operator` itself —
-never mutates, no `--as`/`--token` needed) that fires a real OS desktop
-notification (via `notify-send`; Linux/libnotify) the moment something newly needs
-you: a pending approval or a stage failure it hasn't already notified about for
-this run. Meant to be left running in a terminal (or backgrounded) so you get
-pinged without keeping `breeze operator` open and re-checking it yourself. Each
-distinct pending-approval key and each distinct failure (keyed through its finish
-time, so a retry that fails again notifies again) fires exactly once per process
-lifetime — restarting the watcher re-notifies about whatever's still outstanding.
+An **event-driven** watcher (client-side, Tier-1, same as `breeze operator` itself —
+never mutates, no `--as`/`--token` needed), not a polling loop: it holds one
+streaming `operator.watch` connection open, and the daemon pushes a fresh surface
+the instant anything changes — every engine mutation runs through one choke point
+(`Engine.changed`) that wakes every subscribed watcher — so it fires a real OS
+desktop notification (via `notify-send`; Linux/libnotify) with essentially zero
+delay for a pending approval or stage failure it hasn't already notified about,
+without ever waking up to check on a timer in between. `--interval` here means the
+reconnect delay if the daemon restarts (default 3s), not a poll period. Meant to be
+left running in a terminal (or backgrounded) so you get pinged without keeping
+`breeze operator` open and re-checking it yourself. Each distinct pending-approval
+key and each distinct failure (keyed through its finish time, so a retry that fails
+again notifies again) fires exactly once per process lifetime — restarting the
+watcher re-notifies about whatever's still outstanding.
 
 ## Worked example
 

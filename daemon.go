@@ -182,6 +182,10 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		d.handleLockExec(conn, enc, req)
 		return
 	}
+	if req.Op == wire.OpOperatorWatch {
+		d.handleOperatorWatch(conn, enc, req)
+		return
+	}
 
 	resp := d.dispatch(req)
 	if err := enc.Encode(resp); err != nil {
@@ -565,30 +569,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		return okResponse(wire.DeployHistoryResponse{Entries: out})
 
 	case wire.OpOperatorSurface:
-		surface := d.eng.OperatorSurface()
-		out := wire.OperatorSurfaceResponse{}
-		for _, pa := range surface.PendingApprovals {
-			out.PendingApprovals = append(out.PendingApprovals, wire.PendingApproval{
-				Pipeline: pa.Pipeline, Stage: pa.Stage, Commit: pa.Key.Commit, Environment: pa.Key.Environment,
-				ApprovalsGiven: pa.ApprovalsGiven, ApprovalsRequired: pa.ApprovalsRequired, ApproverRole: string(pa.ApproverRole),
-			})
-		}
-		for _, r := range surface.Running {
-			out.Running = append(out.Running, wire.RunningStage{
-				Pipeline: r.Pipeline, Stage: r.Stage, Commit: r.Key.Commit, Environment: r.Key.Environment,
-				Actor: r.Actor, StartedAt: r.StartedAt,
-			})
-		}
-		for _, f := range surface.RecentFailures {
-			out.RecentFailures = append(out.RecentFailures, wire.RecentFailure{
-				Pipeline: f.Pipeline, Stage: f.Stage, Commit: f.Key.Commit, Environment: f.Key.Environment,
-				Status: string(f.Status), Error: f.Error, FinishedAt: f.FinishedAt,
-			})
-		}
-		for _, l := range surface.Locks {
-			out.Locks = append(out.Locks, lockToWire(l))
-		}
-		return okResponse(out)
+		return okResponse(operatorSurfaceToWire(d.eng.OperatorSurface()))
 
 	case wire.OpLockAcquire:
 		return d.handleLockAcquire(req)
@@ -800,6 +781,72 @@ func lockToWire(l engine.FileLock) wire.LockInfo {
 	return wire.LockInfo{
 		ID: l.ID, Kind: string(l.Kind), Paths: l.Paths, Mode: string(l.Mode), Holder: l.Holder,
 		AcquiredAt: l.AcquiredAt, ExpiresAt: l.ExpiresAt, Attached: l.Attached,
+	}
+}
+
+// operatorSurfaceToWire converts an engine.OperatorSurface into its wire form —
+// shared by the one-shot OpOperatorSurface RPC and the streaming OpOperatorWatch
+// push (handleOperatorWatch), so both always compute the exact same shape.
+func operatorSurfaceToWire(surface engine.OperatorSurface) wire.OperatorSurfaceResponse {
+	out := wire.OperatorSurfaceResponse{}
+	for _, pa := range surface.PendingApprovals {
+		out.PendingApprovals = append(out.PendingApprovals, wire.PendingApproval{
+			Pipeline: pa.Pipeline, Stage: pa.Stage, Commit: pa.Key.Commit, Environment: pa.Key.Environment,
+			ApprovalsGiven: pa.ApprovalsGiven, ApprovalsRequired: pa.ApprovalsRequired, ApproverRole: string(pa.ApproverRole),
+		})
+	}
+	for _, r := range surface.Running {
+		out.Running = append(out.Running, wire.RunningStage{
+			Pipeline: r.Pipeline, Stage: r.Stage, Commit: r.Key.Commit, Environment: r.Key.Environment,
+			Actor: r.Actor, StartedAt: r.StartedAt,
+		})
+	}
+	for _, f := range surface.RecentFailures {
+		out.RecentFailures = append(out.RecentFailures, wire.RecentFailure{
+			Pipeline: f.Pipeline, Stage: f.Stage, Commit: f.Key.Commit, Environment: f.Key.Environment,
+			Status: string(f.Status), Error: f.Error, FinishedAt: f.FinishedAt,
+		})
+	}
+	for _, l := range surface.Locks {
+		out.Locks = append(out.Locks, lockToWire(l))
+	}
+	return out
+}
+
+// handleOperatorWatch implements the streaming operator.watch op: pushes the
+// current operator surface immediately on subscribe, then again every time engine
+// state changes (see Engine.SubscribeOperatorChanges), until the client
+// disconnects. Event-driven, not polling — the daemon already knows the instant
+// something changes (every mutation runs through Engine.changed()), so there's no
+// reason for a watcher to re-check on a timer.
+func (d *daemonServer) handleOperatorWatch(conn net.Conn, enc *json.Encoder, _ wire.Request) {
+	changed, cancel := d.eng.SubscribeOperatorChanges()
+	defer cancel()
+
+	gone := make(chan struct{})
+	go func() {
+		io.Copy(io.Discard, conn)
+		close(gone)
+	}()
+
+	push := func() bool {
+		return enc.Encode(okResponse(operatorSurfaceToWire(d.eng.OperatorSurface()))) == nil
+	}
+	if !push() { // initial snapshot immediately on subscribe
+		return
+	}
+	for {
+		select {
+		case <-gone:
+			return
+		case _, ok := <-changed:
+			if !ok {
+				return
+			}
+			if !push() {
+				return
+			}
+		}
 	}
 }
 
