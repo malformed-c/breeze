@@ -54,9 +54,10 @@ func predecessorKey(p *Pipeline, i int, k StageKey) StageKey {
 }
 
 // checkPrerequisite is Gate 1: stage i's predecessor (per predecessorKey) must have
-// succeeded. Must be called with e.mu held.
+// succeeded — UNLESS stage i is marked Debug, in which case ordering is deliberately
+// not enforced (RBAC still is, separately). Must be called with e.mu held.
 func (e *Engine) checkPrerequisite(p *Pipeline, i int, k StageKey) (bool, string) {
-	if i == 0 {
+	if i == 0 || p.Stages[i].Debug {
 		return true, ""
 	}
 	predKey := predecessorKey(p, i, k)
@@ -70,9 +71,11 @@ func (e *Engine) checkPrerequisite(p *Pipeline, i int, k StageKey) (bool, string
 // checkEnvironmentDeps is Gate 2: applies ONLY at the fan-out entry stage — every
 // environment k.Environment depends on must have fully completed its chain (succeeded
 // at the pipeline's LAST stage) for this commit. Never re-checked stage-by-stage
-// within an environment afterward. Must be called with e.mu held.
+// within an environment afterward. Environments listed in Pipeline.DebugEnvironments
+// are exempt (ad-hoc, unordered access; RBAC still applies separately). Must be
+// called with e.mu held.
 func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, string) {
-	if i != p.FanOutAt || k.Environment == "" {
+	if i != p.FanOutAt || k.Environment == "" || slices.Contains(p.DebugEnvironments, k.Environment) {
 		return true, ""
 	}
 	lastStage := p.Stages[len(p.Stages)-1].Name

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"breeze/internal/hook"
@@ -31,6 +32,30 @@ func deployHistoryKey(pipeline, stage, environment string) string {
 // duration of the run, reusing the exact same lock engine as file locks — not a
 // second exclusivity implementation.
 func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, false)
+}
+
+// RollbackDeployStage re-deploys commit to environment, deliberately bypassing Gate
+// 1, Gate 2, AND the monotonic-commit-ordering rule — a "break glass" recovery
+// operation, not normal forward progress. This is intentional: the target commit
+// presumably already passed the full pipeline once (that's why it's a rollback
+// candidate), and re-checking those gates would be counterproductive — Gate 1's
+// predecessor instances may have been evicted by retention pruning by the time you
+// need to roll back to an old commit, and re-requiring them would make rollback
+// unreliable exactly when you need it most. RBAC (DeployPolicy.RequiredRole, the
+// same role normal deploys require) and the exclusive (target,environment) lock
+// still fully apply — this only removes ordering/staleness constraints, not
+// authorization or exclusivity. On success, lastDeployedSeq is set to the rolled-
+// back-to commit's own sequence number (not left at whatever was highest before),
+// so the "current" pointer genuinely reflects what's now live — a later forward
+// deploy of something newer than the rollback target is still correctly allowed,
+// and history records this explicitly as Outcome: DeployRolledBack, not
+// DeploySucceeded, so the audit trail shows it was a deliberate rollback.
+func (e *Engine) RollbackDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, true)
+}
+
+func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, isRollback bool) (*StageInstance, error) {
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
@@ -61,13 +86,15 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 		}
 	}
 
-	if ok, reason := e.checkPrerequisite(p, i, key); !ok {
-		e.mu.Unlock()
-		return nil, gateErr("%s", reason)
-	}
-	if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
-		e.mu.Unlock()
-		return nil, gateErr("%s", reason)
+	if !isRollback {
+		if ok, reason := e.checkPrerequisite(p, i, key); !ok {
+			e.mu.Unlock()
+			return nil, gateErr("%s", reason)
+		}
+		if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
+			e.mu.Unlock()
+			return nil, gateErr("%s", reason)
+		}
 	}
 	if stage.DeployPolicy.RequiredRole != "" {
 		id, ok := e.identities[actor]
@@ -83,8 +110,13 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 	lastSeqKey := pipelineName + "/" + target + "/" + environment
 	histKey := deployHistoryKey(pipelineName, stageName, environment)
 	now := e.now()
+	// A debug environment is deliberately unordered (permanent pipeline config), same
+	// as an explicit rollback (one-off override): neither respects staleness
+	// rejection, and neither updates lastDeployedSeq via the normal "only ever
+	// increases" rule. RBAC (checked above) still fully applies either way.
+	skipOrdering := isRollback || slices.Contains(p.DebugEnvironments, environment)
 
-	if commitSeq < e.lastDeployedSeq[lastSeqKey] {
+	if !skipOrdering && commitSeq < e.lastDeployedSeq[lastSeqKey] {
 		e.deployHistory[histKey] = append(e.deployHistory[histKey], DeployRecord{
 			Pipeline: pipelineName, Stage: stageName, Target: target, Environment: environment,
 			Commit: commit, Actor: actor, Seq: commitSeq, StartedAt: now, FinishedAt: now,
@@ -115,8 +147,9 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 	e.mu.Lock()
 	// Re-check the ordering rule now that we hold the exclusive lock: a concurrent
 	// deploy for a newer commit may have completed (and bumped lastDeployedSeq) during
-	// the window between our first check and acquiring the lock above.
-	stale := commitSeq < e.lastDeployedSeq[lastSeqKey]
+	// the window between our first check and acquiring the lock above. Skipped
+	// entirely for a rollback or a debug environment (see above).
+	stale := !skipOrdering && commitSeq < e.lastDeployedSeq[lastSeqKey]
 	if stale {
 		e.deployHistory[histKey] = append(e.deployHistory[histKey], DeployRecord{
 			Pipeline: pipelineName, Stage: stageName, Target: target, Environment: environment,
@@ -190,7 +223,14 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 		outcome = DeployFailed
 	} else {
 		inst.Status = StageSucceeded
-		if commitSeq > e.lastDeployedSeq[lastSeqKey] {
+		switch {
+		case isRollback:
+			// Set unconditionally, not just-if-greater: the rollback target is now
+			// genuinely the live state, even though its seq may be LOWER than what
+			// was previously recorded — that's the whole point of rolling back.
+			e.lastDeployedSeq[lastSeqKey] = commitSeq
+			outcome = DeployRolledBack
+		case !skipOrdering && commitSeq > e.lastDeployedSeq[lastSeqKey]:
 			e.lastDeployedSeq[lastSeqKey] = commitSeq
 		}
 	}

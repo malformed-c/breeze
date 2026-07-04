@@ -41,7 +41,10 @@ const (
 	OpStageStatus  Op = "stage.status"
 	OpStageWait    Op = "stage.wait" // streaming
 
-	OpDeployHistory Op = "deploy.history"
+	OpDeployHistory  Op = "deploy.history"
+	OpDeployRollback Op = "deploy.rollback"
+
+	OpOperatorSurface Op = "operator.surface" // consolidated human-operator "what needs attention" view
 )
 
 // Request is the single envelope for every op. Payload is op-specific and decoded
@@ -115,6 +118,7 @@ type RoleListResponse struct {
 
 type LockInfo struct {
 	ID         string    `json:"id"`
+	Kind       string    `json:"kind"` // "file" | "resource" — only meaningful where both kinds can appear together (operator.surface)
 	Paths      []string  `json:"paths"`
 	Mode       string    `json:"mode"`
 	Holder     string    `json:"holder"`
@@ -209,17 +213,19 @@ type StageDef struct {
 	PreGate        []Hook          `json:"preGate,omitempty"`
 	PostAction     []Hook          `json:"postAction,omitempty"`
 	Timeout        string          `json:"timeout"`
+	Debug          bool            `json:"debug,omitempty"` // exempt from Gate 1 (ordering); RBAC still applies
 }
 
 type Pipeline struct {
-	Name            string              `json:"name"`
-	Stages          []StageDef          `json:"stages"`
-	FanOutAt        int                 `json:"fanOutAt"`
-	Environments    []string            `json:"environments,omitempty"`
-	EnvironmentDeps map[string][]string `json:"environmentDeps,omitempty"`
-	BriefsDir       string              `json:"briefsDir,omitempty"`
-	CreatedBy       string              `json:"createdBy,omitempty"`
-	CreatedAt       time.Time           `json:"createdAt,omitzero"`
+	Name              string              `json:"name"`
+	Stages            []StageDef          `json:"stages"`
+	FanOutAt          int                 `json:"fanOutAt"`
+	Environments      []string            `json:"environments,omitempty"`
+	EnvironmentDeps   map[string][]string `json:"environmentDeps,omitempty"`
+	DebugEnvironments []string            `json:"debugEnvironments,omitempty"` // exempt from Gate 2 + monotonic ordering
+	BriefsDir         string              `json:"briefsDir,omitempty"`
+	CreatedBy         string              `json:"createdBy,omitempty"`
+	CreatedAt         time.Time           `json:"createdAt,omitzero"`
 }
 
 type PipelineRegisterRequest struct {
@@ -337,4 +343,42 @@ type DeployHistoryRequest struct {
 }
 type DeployHistoryResponse struct {
 	Entries []DeployHistoryEntry `json:"entries"`
+}
+
+// --- Operator surface ---
+
+type PendingApproval struct {
+	Pipeline          string `json:"pipeline"`
+	Stage             string `json:"stage"`
+	Commit            string `json:"commit"`
+	Environment       string `json:"environment,omitempty"`
+	ApprovalsGiven    int    `json:"approvalsGiven"`
+	ApprovalsRequired int    `json:"approvalsRequired"`
+	ApproverRole      string `json:"approverRole,omitempty"`
+}
+
+type RunningStage struct {
+	Pipeline    string    `json:"pipeline"`
+	Stage       string    `json:"stage"`
+	Commit      string    `json:"commit"`
+	Environment string    `json:"environment,omitempty"`
+	Actor       string    `json:"actor,omitempty"`
+	StartedAt   time.Time `json:"startedAt"`
+}
+
+type RecentFailure struct {
+	Pipeline    string    `json:"pipeline"`
+	Stage       string    `json:"stage"`
+	Commit      string    `json:"commit"`
+	Environment string    `json:"environment,omitempty"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	FinishedAt  time.Time `json:"finishedAt,omitzero"`
+}
+
+type OperatorSurfaceResponse struct {
+	PendingApprovals []PendingApproval `json:"pendingApprovals,omitempty"`
+	Running          []RunningStage    `json:"running,omitempty"`
+	RecentFailures   []RecentFailure   `json:"recentFailures,omitempty"`
+	Locks            []LockInfo        `json:"locks,omitempty"`
 }

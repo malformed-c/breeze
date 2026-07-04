@@ -62,6 +62,11 @@ func validatePipeline(p *Pipeline) error {
 	if !fansOut && len(p.Environments) > 0 {
 		return fmt.Errorf("pipeline %q: environments declared but fanOutAt has no fan-out point", p.Name)
 	}
+	for _, de := range p.DebugEnvironments {
+		if !slices.Contains(p.Environments, de) {
+			return fmt.Errorf("pipeline %q: debugEnvironments references undeclared environment %q", p.Name, de)
+		}
+	}
 
 	for i, s := range p.Stages {
 		switch s.Type {

@@ -390,6 +390,33 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		}
 		return okResponse(wire.StageStartResponse{Instance: stageInstanceToWire(*inst)})
 
+	case wire.OpDeployRollback:
+		var p wire.StageStartRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		pipeline, ok := d.eng.Pipeline(p.Pipeline)
+		if !ok {
+			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
+		}
+		i := pipeline.StageIndex(p.Stage)
+		if i < 0 {
+			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
+		}
+		if pipeline.Stages[i].Type != engine.StageDeploy {
+			return errResponse(fmt.Errorf("stage %q is not a deploy stage", p.Stage))
+		}
+		// Same Tier-2 gate as a normal deploy — rollback is authorization-equivalent
+		// to deploying, not a lesser-privileged operation.
+		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
+			return errResponse(err)
+		}
+		inst, err := d.eng.RollbackDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+		if err != nil {
+			return errResponse(err)
+		}
+		return okResponse(wire.StageStartResponse{Instance: stageInstanceToWire(*inst)})
+
 	case wire.OpStageApprove:
 		var p wire.StageApproveRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
@@ -452,6 +479,32 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			out = append(out, deployRecordToWire(r))
 		}
 		return okResponse(wire.DeployHistoryResponse{Entries: out})
+
+	case wire.OpOperatorSurface:
+		surface := d.eng.OperatorSurface()
+		out := wire.OperatorSurfaceResponse{}
+		for _, pa := range surface.PendingApprovals {
+			out.PendingApprovals = append(out.PendingApprovals, wire.PendingApproval{
+				Pipeline: pa.Pipeline, Stage: pa.Stage, Commit: pa.Key.Commit, Environment: pa.Key.Environment,
+				ApprovalsGiven: pa.ApprovalsGiven, ApprovalsRequired: pa.ApprovalsRequired, ApproverRole: string(pa.ApproverRole),
+			})
+		}
+		for _, r := range surface.Running {
+			out.Running = append(out.Running, wire.RunningStage{
+				Pipeline: r.Pipeline, Stage: r.Stage, Commit: r.Key.Commit, Environment: r.Key.Environment,
+				Actor: r.Actor, StartedAt: r.StartedAt,
+			})
+		}
+		for _, f := range surface.RecentFailures {
+			out.RecentFailures = append(out.RecentFailures, wire.RecentFailure{
+				Pipeline: f.Pipeline, Stage: f.Stage, Commit: f.Key.Commit, Environment: f.Key.Environment,
+				Status: string(f.Status), Error: f.Error, FinishedAt: f.FinishedAt,
+			})
+		}
+		for _, l := range surface.Locks {
+			out.Locks = append(out.Locks, lockToWire(l))
+		}
+		return okResponse(out)
 
 	case wire.OpLockAcquire:
 		return d.handleLockAcquire(req)
@@ -661,7 +714,7 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 
 func lockToWire(l engine.FileLock) wire.LockInfo {
 	return wire.LockInfo{
-		ID: l.ID, Paths: l.Paths, Mode: string(l.Mode), Holder: l.Holder,
+		ID: l.ID, Kind: string(l.Kind), Paths: l.Paths, Mode: string(l.Mode), Holder: l.Holder,
 		AcquiredAt: l.AcquiredAt, ExpiresAt: l.ExpiresAt, Attached: l.Attached,
 	}
 }

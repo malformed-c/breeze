@@ -32,6 +32,8 @@ func main() {
 		err = cmdPing(p)
 	case "status":
 		err = cmdStatus(p, args)
+	case "operator":
+		err = cmdOperator(p, args)
 	case "whoami":
 		err = cmdWhoAmI(p, args)
 	case "ps":
@@ -71,6 +73,8 @@ commands:
   ping                                  check daemon liveness (auto-starts it)
   status [--json]                       one-shot overview: liveness, identity/lock/
                                          resource/pipeline counts
+  operator [--json]                     human-operator view: pending approvals,
+                                         running stages, recent failures, locks held
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
 
@@ -104,7 +108,9 @@ commands:
                                          # designed to be backgrounded: start, then
                                          # background this command and continue other work
 
-  deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]
+  deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
+  deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
+                                         # bypasses ordering/staleness gates; same RBAC as a normal deploy
 
   apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
                                          # HCL-authored pipeline config, client-side
@@ -329,6 +335,57 @@ func cmdStatus(p paths, args []string) error {
 	fmt.Printf("breeze daemon: pid %d, version %s\n", ping.Pid, ping.Version)
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
+	return nil
+}
+
+// cmdOperator is the consolidated "what needs my attention right now" view for a
+// human operator — cross-pipeline, cross-commit (unlike `pipeline status`, which is
+// scoped to one commit): pending approvals, currently-running stages, recent
+// failures, and every lock (file + resource) currently held.
+func cmdOperator(p paths, args []string) error {
+	f := parseFlags(args)
+	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.OperatorSurfaceResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+
+	envOrDash := func(env string) string {
+		if env == "" {
+			return "-"
+		}
+		return env
+	}
+
+	fmt.Printf("Needs review (%d):\n", len(out.PendingApprovals))
+	for _, a := range out.PendingApprovals {
+		fmt.Printf("  %-15s %-10s %-10s %-8s %d/%d approvals (role: %s)\n",
+			a.Pipeline, a.Stage, a.Commit, envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole)
+	}
+
+	fmt.Printf("Running now (%d):\n", len(out.Running))
+	for _, r := range out.Running {
+		fmt.Printf("  %-15s %-10s %-10s %-8s actor=%-10s started=%s\n",
+			r.Pipeline, r.Stage, r.Commit, envOrDash(r.Environment), r.Actor, r.StartedAt.Format("15:04:05"))
+	}
+
+	fmt.Printf("Recent failures (%d):\n", len(out.RecentFailures))
+	for _, fl := range out.RecentFailures {
+		fmt.Printf("  %-15s %-10s %-10s %-8s %-12s %s\n",
+			fl.Pipeline, fl.Stage, fl.Commit, envOrDash(fl.Environment), fl.Status, fl.Error)
+	}
+
+	fmt.Printf("Locks held (%d):\n", len(out.Locks))
+	for _, l := range out.Locks {
+		fmt.Printf("  %-6s %-8s %-8s %-10s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
+	}
 	return nil
 }
 
@@ -826,10 +883,22 @@ func cmdStage(p paths, args []string) error {
 }
 
 func cmdDeploy(p paths, args []string) error {
-	if len(args) == 0 || args[0] != "history" {
-		return fmt.Errorf("usage: breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]")
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze deploy history|rollback ...")
 	}
-	f := parseFlags(args[1:])
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "history":
+		return cmdDeployHistory(p, rest)
+	case "rollback":
+		return cmdDeployRollback(p, rest)
+	default:
+		return fmt.Errorf("unknown deploy subcommand %q", sub)
+	}
+}
+
+func cmdDeployHistory(p paths, args []string) error {
+	f := parseFlags(args)
 	if len(f.rest) < 2 {
 		return fmt.Errorf("usage: breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]")
 	}
@@ -852,6 +921,41 @@ func cmdDeploy(p paths, args []string) error {
 	}
 	for _, e := range out.Entries {
 		fmt.Printf("%-10s %-8s seq=%-4d %-10s %s\n", e.Commit, e.Environment, e.Seq, e.Outcome, e.Actor)
+	}
+	return nil
+}
+
+// cmdDeployRollback re-deploys an older commit, deliberately bypassing the ordering
+// gates and monotonic-staleness rule a normal `stage start` would enforce — see
+// engine.RollbackDeployStage. Same RBAC (--as/--token) requirement as a normal
+// deploy: rollback is authorization-equivalent to deploying, not lesser-privileged.
+func cmdDeployRollback(p paths, args []string) error {
+	f := parseFlags(args)
+	if len(f.rest) < 3 {
+		return fmt.Errorf("usage: breeze deploy rollback <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
+	}
+	pipeline, stage, commit := f.rest[0], f.rest[1], f.rest[2]
+	as := resolveIdentity(p, f)
+	token, err := f.resolveToken()
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
+	resp, err := call(p, wire.Request{Op: wire.OpDeployRollback, As: as, Token: token, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.StageStartResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	fmt.Printf("%s: %s (rollback)\n", out.Instance.Stage, out.Instance.Status)
+	if out.Instance.Error != "" {
+		fmt.Println(out.Instance.Error)
 	}
 	return nil
 }

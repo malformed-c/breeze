@@ -72,6 +72,7 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		PreGate:    preGate,
 		PostAction: postAction,
 		Timeout:    d,
+		Debug:      w.Debug,
 	}
 	if w.CommandPolicy != nil {
 		s.CommandPolicy = &engine.CommandPolicy{RequiredRole: engine.Role(w.CommandPolicy.RequiredRole), MaxConcurrent: w.CommandPolicy.MaxConcurrent}
@@ -89,6 +90,7 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 	w := wire.StageDef{
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
+		Debug: s.Debug,
 	}
 	if s.CommandPolicy != nil {
 		w.CommandPolicy = &wire.CommandPolicy{RequiredRole: string(s.CommandPolicy.RequiredRole), MaxConcurrent: s.CommandPolicy.MaxConcurrent}
@@ -113,7 +115,8 @@ func pipelineFromWire(w wire.Pipeline) (engine.Pipeline, error) {
 	}
 	return engine.Pipeline{
 		Name: w.Name, Stages: stages, FanOutAt: w.FanOutAt,
-		Environments: w.Environments, EnvironmentDeps: w.EnvironmentDeps, BriefsDir: w.BriefsDir,
+		Environments: w.Environments, EnvironmentDeps: w.EnvironmentDeps,
+		DebugEnvironments: w.DebugEnvironments, BriefsDir: w.BriefsDir,
 	}, nil
 }
 
@@ -124,7 +127,8 @@ func pipelineToWire(p engine.Pipeline) wire.Pipeline {
 	}
 	return wire.Pipeline{
 		Name: p.Name, Stages: stages, FanOutAt: p.FanOutAt,
-		Environments: p.Environments, EnvironmentDeps: p.EnvironmentDeps, BriefsDir: p.BriefsDir,
+		Environments: p.Environments, EnvironmentDeps: p.EnvironmentDeps,
+		DebugEnvironments: p.DebugEnvironments, BriefsDir: p.BriefsDir,
 		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 	}
 }

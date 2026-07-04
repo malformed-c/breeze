@@ -94,14 +94,17 @@ func TestParseFileRoundTrip(t *testing.T) {
 	if build.Type != "command" || build.CommandPolicy == nil || build.CommandPolicy.RequiredRole != "builder" || build.CommandPolicy.MaxConcurrent != 4 {
 		t.Fatalf("unexpected build stage: %+v", build)
 	}
-	if build.Command.Path != "./scripts/build.sh" || len(build.Command.Args) != 1 || build.Command.Args[0] != "{commit}" {
-		t.Fatalf("unexpected build command: %+v", build.Command)
+	wantBuildPath := filepath.Join(filepath.Dir(path), "scripts", "build.sh")
+	if build.Command.Path != wantBuildPath || len(build.Command.Args) != 1 || build.Command.Args[0] != "{commit}" {
+		t.Fatalf("unexpected build command: %+v (want path %s)", build.Command, wantBuildPath)
 	}
-	if len(build.PreGate) != 1 || build.PreGate[0].Command.Path != "./scripts/ci-ready.sh" || build.PreGate[0].Timeout != "30s" {
-		t.Fatalf("unexpected pre_gate: %+v", build.PreGate)
+	wantGatePath := filepath.Join(filepath.Dir(path), "scripts", "ci-ready.sh")
+	if len(build.PreGate) != 1 || build.PreGate[0].Command.Path != wantGatePath || build.PreGate[0].Timeout != "30s" {
+		t.Fatalf("unexpected pre_gate: %+v (want path %s)", build.PreGate, wantGatePath)
 	}
-	if len(build.PostAction) != 1 || build.PostAction[0].Command.Path != "./scripts/notify-build-done.sh" {
-		t.Fatalf("unexpected post_action: %+v", build.PostAction)
+	wantPostPath := filepath.Join(filepath.Dir(path), "scripts", "notify-build-done.sh")
+	if len(build.PostAction) != 1 || build.PostAction[0].Command.Path != wantPostPath {
+		t.Fatalf("unexpected post_action: %+v (want path %s)", build.PostAction, wantPostPath)
 	}
 
 	review := p.Stages[1]
@@ -112,6 +115,79 @@ func TestParseFileRoundTrip(t *testing.T) {
 	deploy := p.Stages[2]
 	if deploy.Type != "deploy" || deploy.DeployPolicy == nil {
 		t.Fatalf("unexpected deploy stage: %+v", deploy)
+	}
+}
+
+func TestParseFileResolvesRelativePathsAgainstFileDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "pipeline.hcl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `
+pipeline "rel" {
+  briefs_dir = "briefs"
+
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["./scripts/build.sh", "{commit}"]
+    pre_gate {
+      command = ["../shared/check.sh"]
+      timeout = "10s"
+    }
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	p := pipelines[0]
+
+	wantBriefs := filepath.Join(dir, "sub", "briefs")
+	if p.BriefsDir != wantBriefs {
+		t.Fatalf("expected briefs_dir resolved to %s, got %s", wantBriefs, p.BriefsDir)
+	}
+	wantBuild := filepath.Join(dir, "sub", "scripts", "build.sh")
+	if p.Stages[0].Command.Path != wantBuild {
+		t.Fatalf("expected build command resolved to %s, got %s", wantBuild, p.Stages[0].Command.Path)
+	}
+	// args (the {commit} placeholder) must NOT be touched — only the executable path.
+	if p.Stages[0].Command.Args[0] != "{commit}" {
+		t.Fatalf("expected command args untouched, got %v", p.Stages[0].Command.Args)
+	}
+	wantGate := filepath.Join(dir, "shared", "check.sh") // ../shared relative to sub/
+	if p.Stages[0].PreGate[0].Command.Path != wantGate {
+		t.Fatalf("expected pre_gate command resolved to %s, got %s", wantGate, p.Stages[0].PreGate[0].Command.Path)
+	}
+}
+
+func TestParseFileLeavesAbsolutePathsUntouched(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "abs" {
+  briefs_dir = "/tmp/already-absolute-briefs"
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/usr/bin/true"]
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	p := pipelines[0]
+	if p.BriefsDir != "/tmp/already-absolute-briefs" {
+		t.Fatalf("expected absolute briefs_dir untouched, got %s", p.BriefsDir)
+	}
+	if p.Stages[0].Command.Path != "/usr/bin/true" {
+		t.Fatalf("expected absolute command path untouched, got %s", p.Stages[0].Command.Path)
 	}
 }
 

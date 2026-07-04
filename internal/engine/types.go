@@ -99,6 +99,12 @@ type StageDef struct {
 	PreGate        []Hook
 	PostAction     []Hook
 	Timeout        time.Duration
+	// Debug, when true, exempts this stage from Gate 1 (the intra-pipeline
+	// predecessor-succeeded check) — it can be triggered for any commit at any
+	// time, regardless of whether earlier stages have run. RBAC (CommandPolicy/
+	// ApprovalPolicy/DeployPolicy.RequiredRole) still applies unconditionally —
+	// this only removes the ordering constraint, not authorization.
+	Debug bool
 }
 
 type Pipeline struct {
@@ -107,9 +113,15 @@ type Pipeline struct {
 	FanOutAt        int
 	Environments    []string
 	EnvironmentDeps map[string][]string
-	BriefsDir       string
-	CreatedBy       string
-	CreatedAt       time.Time
+	// DebugEnvironments lists environments (a subset of Environments) exempt from
+	// Gate 2 (the environment-dependency check) and, for deploy stages, the
+	// monotonic-commit-ordering rule — ad-hoc, unordered build/deploy access for
+	// debugging, e.g. jumping between arbitrary commits on a scratch environment.
+	// RBAC still applies unconditionally.
+	DebugEnvironments []string
+	BriefsDir         string
+	CreatedBy         string
+	CreatedAt         time.Time
 }
 
 func (p *Pipeline) StageIndex(name string) int {
@@ -184,6 +196,7 @@ type DeployOutcome string
 
 const (
 	DeploySucceeded     DeployOutcome = "succeeded"
+	DeployRolledBack    DeployOutcome = "rolled_back" // succeeded via RollbackDeployStage, not a forward deploy
 	DeployFailed        DeployOutcome = "failed"
 	DeployRejectedStale DeployOutcome = "rejected_stale"
 	DeployRejectedLock  DeployOutcome = "rejected_lock"

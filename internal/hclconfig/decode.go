@@ -15,6 +15,7 @@ package hclconfig
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsimple"
@@ -28,11 +29,12 @@ type ConfigHCL struct {
 }
 
 type PipelineHCL struct {
-	Name         string        `hcl:"name,label"`
-	Environments []string      `hcl:"environments,optional"`
-	EnvDeps      *EnvDepsBlock `hcl:"environment_deps,block"`
-	BriefsDir    string        `hcl:"briefs_dir,optional"`
-	Stages       []StageHCL    `hcl:"stage,block"`
+	Name              string        `hcl:"name,label"`
+	Environments      []string      `hcl:"environments,optional"`
+	EnvDeps           *EnvDepsBlock `hcl:"environment_deps,block"`
+	DebugEnvironments []string      `hcl:"debug_environments,optional"`
+	BriefsDir         string        `hcl:"briefs_dir,optional"`
+	Stages            []StageHCL    `hcl:"stage,block"`
 }
 
 // EnvDepsBlock captures the environment_deps block's attributes dynamically — its
@@ -46,6 +48,7 @@ type StageHCL struct {
 	Name              string    `hcl:"name,label"`
 	Type              string    `hcl:"type"`
 	FansOut           bool      `hcl:"fans_out,optional"`
+	Debug             bool      `hcl:"debug,optional"`
 	RequiredRole      string    `hcl:"required_role,optional"`
 	ConcurrencyLimit  int       `hcl:"concurrency_limit,optional"`
 	RequiredApprovals int       `hcl:"required_approvals,optional"`
@@ -73,20 +76,60 @@ type RoleHCL struct {
 
 // ParseFile parses path (HCL or JSON syntax, dispatched by file extension per
 // hclsimple's convention) into wire.Pipeline values ready for pipeline.register.
+//
+// Any relative command path or briefs_dir is resolved against the DIRECTORY
+// CONTAINING path itself (not the process's cwd, and not the daemon's cwd) —
+// matching how tools like Terraform resolve relative module paths relative to the
+// config file, not the invocation directory. This makes `breeze apply -f
+// pipeline.hcl` give identical results no matter where it's run from, and avoids a
+// real footgun: the daemon is a long-lived background process, so a relative path
+// that reached it unresolved would silently resolve against wherever the daemon
+// happened to be started from — not the repo, not the caller, not anything stable.
 func ParseFile(path string) ([]wire.Pipeline, error) {
 	var cfg ConfigHCL
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return nil, err
 	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	baseDir := filepath.Dir(absPath)
+
 	pipelines := make([]wire.Pipeline, 0, len(cfg.Pipelines))
 	for _, ph := range cfg.Pipelines {
 		p, err := translatePipeline(ph)
 		if err != nil {
 			return nil, fmt.Errorf("pipeline %q: %w", ph.Name, err)
 		}
+		resolveRelativePaths(&p, baseDir)
 		pipelines = append(pipelines, p)
 	}
 	return pipelines, nil
+}
+
+// resolveRelativePaths rewrites every relative command path and BriefsDir in p to
+// an absolute path anchored at baseDir. Empty strings and already-absolute paths
+// are left untouched. Only the executable path is resolved, never Args — those are
+// ordinary parameters (a commit sha, an environment name, ...), not filesystem paths.
+func resolveRelativePaths(p *wire.Pipeline, baseDir string) {
+	p.BriefsDir = resolveRelative(baseDir, p.BriefsDir)
+	for i := range p.Stages {
+		p.Stages[i].Command.Path = resolveRelative(baseDir, p.Stages[i].Command.Path)
+		for j := range p.Stages[i].PreGate {
+			p.Stages[i].PreGate[j].Command.Path = resolveRelative(baseDir, p.Stages[i].PreGate[j].Command.Path)
+		}
+		for j := range p.Stages[i].PostAction {
+			p.Stages[i].PostAction[j].Command.Path = resolveRelative(baseDir, p.Stages[i].PostAction[j].Command.Path)
+		}
+	}
+}
+
+func resolveRelative(baseDir, p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Clean(filepath.Join(baseDir, p))
 }
 
 func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
@@ -115,7 +158,8 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 
 	return wire.Pipeline{
 		Name: ph.Name, Stages: stages, FanOutAt: fanOutAt,
-		Environments: ph.Environments, EnvironmentDeps: envDeps, BriefsDir: ph.BriefsDir,
+		Environments: ph.Environments, EnvironmentDeps: envDeps,
+		DebugEnvironments: ph.DebugEnvironments, BriefsDir: ph.BriefsDir,
 	}, nil
 }
 
@@ -148,7 +192,7 @@ func translateEnvDeps(block *EnvDepsBlock) (map[string][]string, error) {
 }
 
 func translateStage(sh StageHCL) (wire.StageDef, error) {
-	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command)}
+	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command), Debug: sh.Debug}
 	switch sh.Type {
 	case "command":
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
