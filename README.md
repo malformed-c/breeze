@@ -42,23 +42,13 @@ breeze picks its state directory in this order:
    `--git-dir`, specifically so every `git worktree` of the same repo shares **one**
    breeze instance (same locks, same pipelines, same identities) rather than each
    worktree getting its own isolated, uncoordinated copy.
-3. Otherwise (not inside any repo): `~/.breeze` — a machine-wide fallback for
-   coordination that isn't tied to a specific project.
+3. Otherwise: an error, naming your current directory — `cd` into the repo you meant
+   or set `$BREEZE_DIR` explicitly.
 
 So `cd`-ing into a different repo and running any `breeze` command transparently
 gets you that repo's own admin, roles, pipelines, and locks — no manual `BREEZE_DIR`
-juggling, and no accidental cross-project bleed.
-
-**The `~/.breeze` fallback only triggers if `git rev-parse --git-common-dir` fails
-from your current directory** — including, easy to miss, a subagent or script
-invoking `breeze` from somewhere other than the repo you meant. This is loud, not
-silent: it prints a `WARNING` to stderr naming your cwd and where it fell back to,
-because a real incident showed how bad the silent version is — one misplaced
-command landed on the machine-wide fallback while everything else correctly used a
-project's own directory, and two agents spent a while confused why they seemed to
-be sharing a daemon (`inventory`/deploy state visibly inconsistent between them)
-when they were actually talking to two different ones. `breeze ping`/`breeze
-status` always print which directory they resolved to, precisely so this is easy to
+juggling, and no accidental cross-project bleed. `breeze ping`/`breeze status`
+always print which directory they resolved to, precisely so this is easy to
 sanity-check without reasoning about it — if it's ever not what you expected, that's
 the bug to chase, not the pipeline/lock state. They also print the running binary's
 build timestamp (`version 0.1.0 (built 2026-07-04T12:48:37Z)`) — baked in via

@@ -16,10 +16,11 @@ section).
 
 breeze picks its state directory in this order: `$BREEZE_DIR` env var (explicit
 override) > `<git-common-dir>/breeze` if you're inside a git repo (shared correctly
-across every `git worktree` of that repo) > `~/.breeze` machine-wide fallback if
-you're not in any repo. **This means the same `breeze` command talks to a
-completely different daemon/state depending on your current directory** — always
-run it from (or explicitly target) the repo whose pipeline/locks you actually mean.
+across every `git worktree` of that repo) > otherwise, an error naming your cwd.
+**This means the same `breeze` command talks to a completely different
+daemon/state depending on your current directory** — always run it from (or
+explicitly target via `$BREEZE_DIR`) the repo whose pipeline/locks you actually
+mean.
 
 ```sh
 breeze status                 # daemon liveness + identity/lock/resource/pipeline counts for THIS repo
@@ -34,13 +35,8 @@ restart` to confirm it's actually serving the binary you just built, not a stale
 one (`(build time unknown)` means it was built without the normal Makefile/ci
 scripts' `-ldflags`).
 
-A real incident: a subagent invoked `breeze` from somewhere other than the
-intended repo, silently fell back to the machine-wide `~/.breeze`, and caused
-split-brain between two agents who each assumed they shared one daemon. That
-fallback now warns
-loudly on stderr (naming your cwd) whenever it triggers, precisely so this doesn't
-happen silently again — if you ever see that `WARNING`, `cd` into the repo you
-meant (or set `$BREEZE_DIR` explicitly) before continuing.
+If you see the "not recognized as inside a git repo" error, `cd` into the repo you
+meant, or set `$BREEZE_DIR` explicitly.
 
 ## 2. Identity — check before doing anything authorization-bearing
 
@@ -300,9 +296,8 @@ never-race/never-go-backwards protection.
 ## Gotchas
 
 - **State is per-directory** (§1) — running `breeze status` from the wrong repo
-  silently talks to the wrong (or a freshly-empty) daemon. When in doubt, `cd` into
-  the actual repo first, or set `BREEZE_DIR` explicitly. A `WARNING` on stderr about
-  falling back to `~/.breeze` means exactly this happened — don't ignore it.
+  silently talks to a different (real, but wrong) daemon. When in doubt, `cd` into
+  the actual repo first, or set `BREEZE_DIR` explicitly.
 - **The admin token is shown once, ever.** Losing it means either finding where it
   was saved (`<repo>/.git/breeze/admin.token` by convention) or having an existing
   admin `--force`-rotate your identity. Finding that file is a recovery path for
