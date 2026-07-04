@@ -26,6 +26,16 @@ breeze status                 # daemon liveness + identity/lock/resource/pipelin
 breeze ping                   # bare liveness check (auto-starts the daemon if needed)
 ```
 
+Both print the resolved state directory (`dir` in `status --json`, inline in
+`ping`'s text output) — check it whenever something feels off (unexpected pipeline
+list, missing identities) rather than assuming the pipeline/lock logic is wrong. A
+real incident: a subagent invoked `breeze` from somewhere other than the intended
+repo, silently fell back to the machine-wide `~/.breeze`, and caused split-brain
+between two agents who each assumed they shared one daemon. That fallback now warns
+loudly on stderr (naming your cwd) whenever it triggers, precisely so this doesn't
+happen silently again — if you ever see that `WARNING`, `cd` into the repo you
+meant (or set `$BREEZE_DIR` explicitly) before continuing.
+
 ## 2. Identity — check before doing anything authorization-bearing
 
 ```sh
@@ -285,7 +295,8 @@ never-race/never-go-backwards protection.
 
 - **State is per-directory** (§1) — running `breeze status` from the wrong repo
   silently talks to the wrong (or a freshly-empty) daemon. When in doubt, `cd` into
-  the actual repo first, or set `BREEZE_DIR` explicitly.
+  the actual repo first, or set `BREEZE_DIR` explicitly. A `WARNING` on stderr about
+  falling back to `~/.breeze` means exactly this happened — don't ignore it.
 - **The admin token is shown once, ever.** Losing it means either finding where it
   was saved (`<repo>/.git/breeze/admin.token` by convention) or having an existing
   admin `--force`-rotate your identity. Finding that file is a recovery path for
@@ -298,3 +309,9 @@ never-race/never-go-backwards protection.
   RPC yet) — it errors rather than silently no-op'ing if you pass it.
 - The daemon auto-starts on first use; `breeze stop` shuts it down for the current
   repo/directory only.
+- An explicit `breeze daemon` invocation always displaces whatever's already
+  running for that exact directory (signals it to stop, waits for it to vacate,
+  takes over) — restarting to pick up a new binary is just running it again, no
+  separate `breeze stop` needed first. Auto-start (breeze's normal transparent
+  first-use behavior) never displaces anything — only a deliberate `breeze daemon`
+  invocation does.
