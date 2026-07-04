@@ -11,10 +11,11 @@ import (
 type Op string
 
 const (
-	OpPing   Op = "ping"
-	OpStop   Op = "stop"
-	OpWhoAmI Op = "whoami"
-	OpPs     Op = "ps"
+	OpPing    Op = "ping"
+	OpStop    Op = "stop"
+	OpRestart Op = "restart" // asks the daemon to re-exec itself in place (same PID), picking up any updated binary on disk
+	OpWhoAmI  Op = "whoami"
+	OpPs      Op = "ps"
 
 	OpIdentityRegister Op = "identity.register"
 	OpIdentityRevoke   Op = "identity.revoke"

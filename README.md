@@ -64,14 +64,33 @@ the bug to chase, not the pipeline/lock state.
 
 The daemon auto-starts on first use (any command will spin it up if it's not
 already running) and lives in `<state-dir>/breeze.sock`; `breeze stop` shuts it
-down, `breeze ping`/`breeze status` check it. **An explicit `breeze daemon`
-(distinct from the transparent auto-start above) always displaces whatever's
-already running for that exact directory** — the newest explicit start wins,
-signaling the old one to stop and waiting for it to actually vacate before taking
-over — so restarting to pick up a new binary is just running it again, no separate
-manual `breeze stop` required first. Auto-start never does this: if a client's
-routine first use finds a daemon already up, it just uses it, full stop — only a
-deliberate `breeze daemon` invocation ever takes over an existing one.
+down, `breeze ping`/`breeze status` check it.
+
+```sh
+breeze daemon             # foreground, this exact directory's state
+breeze daemon --help      # prints this usage and exits — never silently daemonizes
+breeze daemon -d          # start detached (backgrounded) instead of foreground
+breeze daemon restart     # ask an already-running daemon to restart itself in place
+```
+
+**Bare `breeze daemon` blocks your shell in the foreground** — `-d`/`--background`
+starts it detached instead, for a first start you don't want to tie up a terminal
+with. `breeze daemon --help` (or any argument it doesn't recognize) prints usage and
+exits cleanly rather than silently starting a daemon anyway — a real incident: with
+no argument validation at all, `--help` used to fall straight through to the normal
+startup path, and an agent that ran it to check usage ended up with a live daemon it
+had to separately go find and kill.
+
+**`breeze daemon restart` asks the already-running daemon to restart itself in
+place** (same PID, re-executing whatever binary is currently on disk) rather than
+this CLI killing it and spawning a brand-new detached process to replace it —
+there's no window where a second process exists, nothing external to track, and no
+extra flags needed to background the replacement (it already is one, being the same
+process). If nothing is running yet, there's nothing to ask, so it falls back to a
+fresh detached start, identical to `-d`. Either way this is a **deliberate, explicit**
+action — the transparent auto-start every routine command triggers on first use
+never displaces or restarts an existing daemon; only running `breeze daemon`
+yourself (bare, `-d`, or `restart`) ever does.
 
 ## Two resource kinds
 
@@ -548,6 +567,13 @@ authority it already legitimately holds. Concretely:
   "rename ... no such file or directory" warnings, and capable of silently
   persisting a stale snapshot if an older write's rename finished after a newer
   one's). The writer always converges on the most recently submitted snapshot.
+- `breeze daemon restart` uses `syscall.Exec` (`sysproc_unix.go`) to replace the
+  daemon's own process image in place, same PID — not fork-and-kill-the-old-one.
+  The OpRestart handler only flags the restart and closes the stop channel; the
+  actual re-exec happens back in `runDaemon`'s own accept loop, after its normal
+  clean-shutdown path (flock released, listener closed, socket removed) — never
+  from the connection-handling goroutine that received the request, which would
+  race the exec against the main loop's own shutdown/exit.
 - Every claim above is backed by a test — see `internal/engine/*_test.go`,
   `internal/hook/hook_test.go`, `internal/hclconfig/decode_test.go`, and the
   top-level `*_test.go` files (daemon startup guarantees, identity-rotation auth,

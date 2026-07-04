@@ -1,13 +1,62 @@
 package main
 
 import (
+	"encoding/json"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"breeze/internal/wire"
 )
+
+// TestOpRestartSetsRestartingAndClosesStop is a regression test for the daemon-side
+// half of `breeze daemon restart` (OpRestart): the connection handler must ack the
+// client, flag the restart, and close stop — WITHOUT ever calling execSelfAsDaemon
+// itself (that only happens in runDaemon's own accept loop, after a clean shutdown,
+// specifically so it can't race a concurrent goroutine's exec against the main
+// loop's own exit path). Deliberately does not exercise runDaemon/execSelfAsDaemon
+// here: a real syscall.Exec would replace this test binary's own process.
+func TestOpRestartSetsRestartingAndClosesStop(t *testing.T) {
+	d := newTestDaemon()
+
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		d.handleConn(serverConn)
+		close(done)
+	}()
+
+	if err := json.NewEncoder(clientConn).Encode(wire.Request{Op: wire.OpRestart}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var resp wire.Response
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.OK {
+		t.Fatalf("expected an OK ack before the daemon tears anything down, got: %+v", resp)
+	}
+	clientConn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handleConn did not return after OpRestart")
+	}
+
+	if !d.restarting.Load() {
+		t.Fatalf("expected d.restarting to be set by an OpRestart request")
+	}
+	select {
+	case <-d.stop:
+	default:
+		t.Fatalf("expected d.stop to be closed by an OpRestart request")
+	}
+}
 
 // runAcceptLoopForTest mirrors runDaemon's accept loop (including the goroutine that
 // watches d.stop to close the listener, and the stop-triggered flock/socket

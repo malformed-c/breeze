@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,7 +26,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "daemon":
-		err = runDaemon(p, args)
+		err = cmdDaemon(p, args)
 	case "stop":
 		err = cmdStop(p)
 	case "ping":
@@ -68,7 +69,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: breeze <command> [args]
 
 commands:
-  daemon                                run the daemon in the foreground
+  daemon                                run the daemon in the foreground for THIS
+                                         directory; explicit start displaces whatever's
+                                         already running here (auto-start never does)
+  daemon restart                        ask the running daemon to restart itself in
+                                         place (same pid); falls back to a fresh
+                                         detached start if nothing's running yet
+  daemon --background | -d              start detached (first start you don't want
+                                         to block on) instead of the foreground default
   stop                                  shut the daemon down
   ping                                  check daemon liveness (auto-starts it)
   status [--json]                       one-shot overview: liveness, identity/lock/
@@ -286,6 +294,89 @@ func printJSON(v any) {
 }
 
 // --- commands ---
+
+// cmdDaemon dispatches `breeze daemon`'s subcommands/flags before ever touching
+// runDaemon's foreground startup logic:
+//   - "restart": ask an already-running daemon to re-exec itself in place (same
+//     PID, picking up whatever binary is now on disk) rather than this CLI killing
+//     it and spawning a brand-new detached process of its own — added specifically
+//     because bare `breeze daemon` blocking with no built-in way to background it
+//     made "just restart it" error-prone in practice (reported live: an agent
+//     trying to check usage via `breeze daemon --help` ended up stuck in a
+//     foreground daemon it had to separately kill). Falls back to a fresh detached
+//     start if nothing is running yet — there's nothing to ask in that case.
+//   - "--background"/"-d": start a fresh detached daemon directly, for a first
+//     start you don't want to block your shell on.
+//   - anything else (including no args) goes straight to runDaemon, which now
+//     rejects any argument it doesn't recognize (including "--help") instead of
+//     silently falling through to actually starting a daemon.
+func cmdDaemon(p paths, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "restart":
+			return restartDaemon(p)
+		case "--background", "-d":
+			return startDaemonDetached(p)
+		}
+	}
+	return runDaemon(p, args)
+}
+
+// startDaemonDetached spawns a new, explicit (not "--auto-start") daemon process —
+// detached so it survives this CLI process exiting — and waits briefly for it to
+// actually come up before returning, so the caller gets real confirmation instead
+// of "probably started, hope so." Being explicit means it displaces whatever's
+// already running for this directory if anything is (see tryBindDaemon) — only
+// relevant here as restartDaemon's fallback when nothing was running to ask.
+func startDaemonDetached(p paths) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, "daemon")
+	cmd.SysProcAttr = daemonSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if !waitForDaemonUp(p, 5*time.Second) {
+		return fmt.Errorf("spawned a new daemon but it did not come up within 5s (check %s)", p.daemonLog)
+	}
+	fmt.Printf("breeze daemon started (dir %s)\n", p.dir)
+	return nil
+}
+
+// restartDaemon asks an already-running daemon to restart itself in place (OpRestart
+// — same PID, re-executing whatever binary is currently on disk) rather than this
+// CLI process killing it and spawning a separate new one to track. If nothing is
+// currently live for this directory, there's nothing to ask — starts a fresh
+// detached daemon instead, same as --background.
+func restartDaemon(p paths) error {
+	conn, err := net.DialTimeout("unix", p.sock, 200*time.Millisecond)
+	if err != nil {
+		return startDaemonDetached(p) // nothing running; closest equivalent is a fresh detached start
+	}
+	defer conn.Close()
+	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart}); err != nil {
+		return fmt.Errorf("asking the existing daemon to restart: %w", err)
+	}
+	if !waitForDaemonUp(p, 5*time.Second) {
+		return fmt.Errorf("asked the daemon to restart but it did not come back up within 5s (check %s)", p.daemonLog)
+	}
+	fmt.Printf("breeze daemon restarted in place (dir %s)\n", p.dir)
+	return nil
+}
+
+func waitForDaemonUp(p paths, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if conn, err := net.DialTimeout("unix", p.sock, 200*time.Millisecond); err == nil {
+			conn.Close()
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
 
 func cmdStop(p paths) error {
 	_, err := call(p, wire.Request{Op: wire.OpStop})

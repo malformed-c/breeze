@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,6 +25,11 @@ type daemonServer struct {
 	listener net.Listener
 	stop     chan struct{}
 	lockFD   int
+
+	// restarting is set by an OpRestart request just before it closes stop — the
+	// accept loop's clean-shutdown branch checks it to decide whether to exit
+	// normally or re-exec in place (see execSelfAsDaemon).
+	restarting atomic.Bool
 }
 
 // runDaemon is the entry point for `breeze daemon`. Mirrors mess/daemon.go's startup
@@ -34,8 +40,22 @@ type daemonServer struct {
 // nothing listening (see client.go's startDaemon) — distinct from a human/script
 // explicitly running `breeze daemon` themselves, which is the only case that
 // displaces an already-live daemon (see tryBindDaemon).
+//
+// Any OTHER argument — including "--help"/"-h", or a plain typo — is rejected
+// outright, never silently falling through to actually starting a daemon. This is a
+// real incident, not a hypothetical: `breeze daemon --help` used to do exactly that
+// (nothing recognized "--help" as special, so it just proceeded to bind), and an
+// agent trying to check usage ended up displacing/duplicating a live daemon instead.
 func runDaemon(p paths, args []string) error {
-	autoStart := len(args) > 0 && args[0] == "--auto-start"
+	autoStart := false
+	if len(args) > 0 {
+		switch args[0] {
+		case "--auto-start":
+			autoStart = true
+		default:
+			return fmt.Errorf("usage: breeze daemon [--auto-start] — run the foreground daemon for the current directory's state (see `breeze daemon restart` to replace a running one without blocking your shell); %q is not a recognized flag, refusing to start a daemon for it", args[0])
+		}
+	}
 	d, err := tryBindDaemon(p, autoStart)
 	if err != nil {
 		return err
@@ -62,6 +82,13 @@ func runDaemon(p paths, args []string) error {
 				syscall.Flock(d.lockFD, syscall.LOCK_UN)
 				syscall.Close(d.lockFD)
 				os.Remove(p.sock)
+				if d.restarting.Load() {
+					// Re-exec in place (same PID) so a restart picks up whatever
+					// binary is currently on disk — never returns on success.
+					err := execSelfAsDaemon()
+					log.Printf("restart: failed to re-exec, exiting instead: %v", err)
+					os.Exit(1)
+				}
 				return nil
 			default:
 				return err
@@ -234,6 +261,18 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 	}
 	if req.Op == wire.OpOperatorWatch {
 		d.handleOperatorWatch(conn, enc, req)
+		return
+	}
+	if req.Op == wire.OpRestart {
+		// Ack first — the client (waiting on this exact response) must not block
+		// on a connection that's about to be torn down along with everything else.
+		// Only after that do we flag the restart and trigger the same clean-stop
+		// path OpStop uses; runDaemon's accept loop re-execs once it's fully wound
+		// down, never from this connection-handling goroutine directly (avoids a
+		// race between this goroutine's own exec and the main loop's shutdown).
+		enc.Encode(okResponse(struct{}{}))
+		d.restarting.Store(true)
+		close(d.stop)
 		return
 	}
 

@@ -309,9 +309,12 @@ never-race/never-go-backwards protection.
   RPC yet) — it errors rather than silently no-op'ing if you pass it.
 - The daemon auto-starts on first use; `breeze stop` shuts it down for the current
   repo/directory only.
-- An explicit `breeze daemon` invocation always displaces whatever's already
-  running for that exact directory (signals it to stop, waits for it to vacate,
-  takes over) — restarting to pick up a new binary is just running it again, no
-  separate `breeze stop` needed first. Auto-start (breeze's normal transparent
-  first-use behavior) never displaces anything — only a deliberate `breeze daemon`
-  invocation does.
+- `breeze daemon` blocks in the foreground; use `-d`/`--background` to start
+  detached instead, or `breeze daemon restart` to ask an already-running daemon to
+  restart itself IN PLACE (same PID, picks up whatever binary is now on disk) — not
+  a separate spawned process to track. `breeze daemon --help` (or any unrecognized
+  argument) prints usage and exits, never silently starting a daemon anyway — this
+  used to be a real footgun (an agent running `--help` to check usage ended up with
+  a live daemon it had to separately find and kill). Auto-start (breeze's normal
+  transparent first-use behavior) never displaces or restarts anything — only a
+  deliberate `breeze daemon` invocation (bare, `-d`, or `restart`) does.
