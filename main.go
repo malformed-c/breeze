@@ -25,7 +25,7 @@ func main() {
 	var err error
 	switch cmd {
 	case "daemon":
-		err = runDaemon(p)
+		err = runDaemon(p, args)
 	case "stop":
 		err = cmdStop(p)
 	case "ping":
@@ -305,7 +305,7 @@ func cmdPing(p paths) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pong (pid %d, version %s)\n", out.Pid, out.Version)
+	fmt.Printf("pong (pid %d, version %s, dir %s)\n", out.Pid, out.Version, p.dir)
 	return nil
 }
 
@@ -352,14 +352,15 @@ func cmdStatus(p paths, args []string) error {
 
 	if f.jsonOut {
 		printJSON(struct {
+			Dir       string                    `json:"dir"`
 			Ping      wire.PingResponse         `json:"ping"`
 			Ps        wire.PsResponse           `json:"ps"`
 			Inventory wire.InventoryResponse    `json:"inventory"`
 			Pipelines wire.PipelineListResponse `json:"pipelines"`
-		}{ping, ps, inv, pipe})
+		}{p.dir, ping, ps, inv, pipe})
 		return nil
 	}
-	fmt.Printf("breeze daemon: pid %d, version %s\n", ping.Pid, ping.Version)
+	fmt.Printf("breeze daemon: pid %d, version %s, dir %s\n", ping.Pid, ping.Version, p.dir)
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
 	return nil

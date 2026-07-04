@@ -32,12 +32,17 @@ func dialOrStart(p paths) (net.Conn, error) {
 	return nil, fmt.Errorf("daemon did not start (see %s)", p.daemonLog)
 }
 
+// startDaemon transparently spawns a daemon because THIS client found nothing
+// listening — "--auto-start" tells the spawned process to defer quietly if it turns
+// out something's live by the time it checks (a concurrent auto-start won the race),
+// rather than displacing an already-running daemon the way an explicit `breeze
+// daemon` invocation does (see tryBindDaemon).
 func startDaemon() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "daemon")
+	cmd := exec.Command(exe, "daemon", "--auto-start")
 	cmd.SysProcAttr = daemonSysProcAttr()
 	return cmd.Start()
 }

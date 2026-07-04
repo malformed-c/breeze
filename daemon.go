@@ -29,14 +29,20 @@ type daemonServer struct {
 // runDaemon is the entry point for `breeze daemon`. Mirrors mess/daemon.go's startup
 // sequence, with one addition: an flock on a separate lock file (not just the
 // dial-probe-then-bind dance mess uses) since breeze's whole purpose is exclusivity
-// guarantees and a split-brain daemon pair is unacceptable here.
-func runDaemon(p paths) error {
-	d, err := tryBindDaemon(p)
+// guarantees and a split-brain daemon pair is unacceptable here. args carries
+// "--auto-start" when this process was transparently spawned by a client that found
+// nothing listening (see client.go's startDaemon) — distinct from a human/script
+// explicitly running `breeze daemon` themselves, which is the only case that
+// displaces an already-live daemon (see tryBindDaemon).
+func runDaemon(p paths, args []string) error {
+	autoStart := len(args) > 0 && args[0] == "--auto-start"
+	d, err := tryBindDaemon(p, autoStart)
 	if err != nil {
 		return err
 	}
 	if d == nil {
-		// Another daemon is already live; friendly no-op exit (dial-probe caught it).
+		// Auto-start lost a race to another concurrent auto-start (or a real daemon
+		// was already there) — quiet, friendly no-op, not an error.
 		return nil
 	}
 
@@ -65,22 +71,43 @@ func runDaemon(p paths) error {
 	}
 }
 
-// tryBindDaemon performs the startup guard sequence — dial-probe, flock, stale-socket
-// removal, bind — and returns a ready-but-not-yet-serving *daemonServer, or (nil, nil)
-// if another daemon is already live (dial-probe succeeded), or a non-nil error if the
-// flock/listen steps fail (e.g. another instance holds the flock). Factored out of
-// runDaemon so tests can exercise "exactly one of N concurrent attempts wins" without
-// running a full accept loop.
-func tryBindDaemon(p paths) (*daemonServer, error) {
+// tryBindDaemon performs the startup guard sequence — dial-probe, (maybe)
+// displace-and-wait, flock, stale-socket removal, bind — and returns a
+// ready-but-not-yet-serving *daemonServer, (nil, nil) if an auto-start lost a race
+// to an already-live daemon, or a non-nil error if a displaced daemon won't step
+// aside in time or the flock/listen steps fail. Factored out of runDaemon so tests
+// can exercise "exactly one of N concurrent attempts wins" without running a full
+// accept loop.
+func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	if err := p.ensureDir(); err != nil {
 		return nil, err
 	}
 
-	// (1) dial-probe: is a daemon already alive? Fast, friendly no-op if so.
+	// (1) dial-probe: is a daemon already alive for this exact directory?
 	if conn, err := net.DialTimeout("unix", p.sock, 200*time.Millisecond); err == nil {
-		conn.Close()
-		log.Printf("breeze daemon already running at %s", p.sock)
-		return nil, nil
+		if autoStart {
+			// This process only exists because a client found nothing listening a
+			// moment ago; if something's live now, another concurrent auto-start (or
+			// a real daemon) simply won the race first — quiet, friendly deferral,
+			// exactly like before. Never displace anything on this path: a client's
+			// ordinary first use of breeze must never kill a daemon someone's
+			// deliberately relying on.
+			conn.Close()
+			log.Printf("breeze daemon already running at %s", p.sock)
+			return nil, nil
+		}
+		// An explicit `breeze daemon` invocation, though, means someone deliberately
+		// wants THEIR start to be the one that's live — e.g. restarting to pick up a
+		// new binary without a separate manual `breeze stop` first. The newest
+		// explicit start always wins for a given BREEZE_DIR: tell whatever's there to
+		// stop and wait for it to actually vacate. The flock below remains the real
+		// correctness guarantee regardless — if the old daemon doesn't fully vacate
+		// in time, this returns an error rather than ever racing it for the socket.
+		log.Printf("an existing breeze daemon is live at %s — signaling it to stop so this (newer) start can take over", p.sock)
+		requestStop(conn)
+		if !waitForSocketGone(p.sock, 2*time.Second) {
+			return nil, fmt.Errorf("an existing daemon at %s did not stop within 2s — leaving it in place", p.sock)
+		}
 	}
 
 	// (2) flock: the actual atomic mutual-exclusion primitive.
@@ -116,17 +143,40 @@ func tryBindDaemon(p paths) (*daemonServer, error) {
 	}
 
 	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd}
-	eng.SetOnChange(func(snap engine.Snapshot) {
-		if err := engine.SaveSnapshot(p.state, snap); err != nil {
-			log.Printf("warning: failed to save snapshot: %v", err)
-		}
-	})
+	saver := newSnapshotWriter(p.state)
+	eng.SetOnChange(saver.submit)
 	eng.SetAuditFn(func(ev engine.AuditEvent) {
 		appendAuditLine(p.audit, ev)
 	})
 	eng.SetNotifyFn(notifyViaMess)
 	eng.SetBriefFn(writeBriefFile)
 	return d, nil
+}
+
+// requestStop sends a best-effort OpStop over an already-dialed connection to an
+// existing daemon and closes it — errors are deliberately ignored (the peer may
+// already be mid-shutdown from a concurrent racer reaching the same conclusion);
+// waitForSocketGone is the actual confirmation, not this call succeeding.
+func requestStop(conn net.Conn) {
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
+}
+
+// waitForSocketGone polls sock until nothing answers a dial anymore (the old
+// daemon's accept loop noticed d.stop, closed its listener, and removed the socket
+// file) or timeout elapses, returning whether it actually went away in time.
+func waitForSocketGone(sock string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond)
+		if err != nil {
+			return true
+		}
+		conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // appendAuditLine appends one JSON line to the audit log — write-only from the

@@ -49,9 +49,29 @@ So `cd`-ing into a different repo and running any `breeze` command transparently
 gets you that repo's own admin, roles, pipelines, and locks — no manual `BREEZE_DIR`
 juggling, and no accidental cross-project bleed.
 
+**The `~/.breeze` fallback only triggers if `git rev-parse --git-common-dir` fails
+from your current directory** — including, easy to miss, a subagent or script
+invoking `breeze` from somewhere other than the repo you meant. This is loud, not
+silent: it prints a `WARNING` to stderr naming your cwd and where it fell back to,
+because a real incident showed how bad the silent version is — one misplaced
+command landed on the machine-wide fallback while everything else correctly used a
+project's own directory, and two agents spent a while confused why they seemed to
+be sharing a daemon (`inventory`/deploy state visibly inconsistent between them)
+when they were actually talking to two different ones. `breeze ping`/`breeze
+status` always print which directory they resolved to, precisely so this is easy to
+sanity-check without reasoning about it — if it's ever not what you expected, that's
+the bug to chase, not the pipeline/lock state.
+
 The daemon auto-starts on first use (any command will spin it up if it's not
 already running) and lives in `<state-dir>/breeze.sock`; `breeze stop` shuts it
-down, `breeze ping`/`breeze status` check it.
+down, `breeze ping`/`breeze status` check it. **An explicit `breeze daemon`
+(distinct from the transparent auto-start above) always displaces whatever's
+already running for that exact directory** — the newest explicit start wins,
+signaling the old one to stop and waiting for it to actually vacate before taking
+over — so restarting to pick up a new binary is just running it again, no separate
+manual `breeze stop` required first. Auto-start never does this: if a client's
+routine first use finds a daemon already up, it just uses it, full stop — only a
+deliberate `breeze daemon` invocation ever takes over an existing one.
 
 ## Two resource kinds
 
@@ -522,6 +542,12 @@ authority it already legitimately holds. Concretely:
   **order of first appearance to breeze**, not git ancestry. This only makes sense
   if stages are triggered close to commit creation time; see
   `internal/engine/deploy.go`.
+- Snapshot saves go through a single coalescing background writer
+  (`snapshot_writer.go`), not a bare goroutine per mutation — the latter let
+  concurrent writes race on the shared `state.json.tmp` path (visible as repeated
+  "rename ... no such file or directory" warnings, and capable of silently
+  persisting a stale snapshot if an older write's rename finished after a newer
+  one's). The writer always converges on the most recently submitted snapshot.
 - Every claim above is backed by a test — see `internal/engine/*_test.go`,
   `internal/hook/hook_test.go`, `internal/hclconfig/decode_test.go`, and the
   top-level `*_test.go` files (daemon startup guarantees, identity-rotation auth,

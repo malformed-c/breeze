@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,18 @@ type paths struct {
 // <git-common-dir>/breeze — one breeze daemon (admin, roles, pipelines, locks) per
 // repo, isolated from every other project on the machine, mirroring git itself. Only
 // outside any repo does it fall back to the machine-wide ~/.breeze.
+//
+// The ~/.breeze fallback is a real, documented feature (coordination not tied to any
+// one project) — but silently landing on it because the caller's cwd just happened
+// not to be recognized as inside the intended repo (a subagent started elsewhere, a
+// script that forgot to cd first, ...) is a genuine footgun: every command from that
+// same wrong cwd then transparently talks to a completely different daemon/state
+// than commands run from the correct directory, with no error — just quietly wrong
+// coordination (this happened for real: an agent's misplaced `identity register`
+// landed on ~/.breeze instead of a project's own <repo>/.git/breeze, causing
+// split-brain between agents that assumed they shared one daemon). So this warns
+// loudly on stderr every time the fallback actually triggers, naming the cwd that
+// caused it, rather than staying silent.
 func resolvePaths() paths {
 	dir := os.Getenv("BREEZE_DIR")
 	if dir == "" {
@@ -33,6 +46,7 @@ func resolvePaths() paths {
 				home = os.TempDir()
 			}
 			dir = filepath.Join(home, ".breeze")
+			warnFallbackToHome(dir)
 		}
 	}
 	return paths{
@@ -74,4 +88,18 @@ func detectGitCommonDir() (string, bool) {
 
 func (p paths) ensureDir() error {
 	return os.MkdirAll(p.dir, 0o700)
+}
+
+// warnFallbackToHome prints a loud, impossible-to-miss stderr warning any time
+// resolvePaths falls back to the machine-wide dir — naming the current working
+// directory so whoever (or whatever script/subagent) ran this command from
+// somewhere unexpected notices immediately, rather than silently coordinating with
+// the wrong daemon for however long it takes someone to notice something's off.
+func warnFallbackToHome(dir string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "(unknown — could not determine cwd)"
+	}
+	fmt.Fprintf(os.Stderr, "breeze: WARNING: %q is not recognized as inside a git repo — falling back to the machine-wide state dir %s instead of a per-repo one.\n", cwd, dir)
+	fmt.Fprintf(os.Stderr, "breeze: if you expected repo-scoped state here, cd into the intended repo (or set $BREEZE_DIR explicitly) before running breeze — otherwise you may be silently coordinating with a different set of agents/state than you think.\n")
 }
