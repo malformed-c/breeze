@@ -31,4 +31,10 @@ pipeline "breeze" {
     timeout = "30s"
     command = ["/home/engi/git/breeze/ci/smoketest.sh", "{environment}"]
   }
+  stage "push" {
+    type          = "command"
+    required_role = "deployer"
+    timeout       = "30s"
+    command       = ["/home/engi/git/breeze/ci/push.sh", "{commit}"]
+  }
 }
