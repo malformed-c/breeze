@@ -75,6 +75,9 @@ commands:
                                          resource/pipeline counts
   operator [--json]                     human-operator view: pending approvals,
                                          running stages, recent failures, locks held
+  operator notify [--interval D]        poll the operator surface and fire a desktop
+                                         notification (notify-send) for anything newly
+                                         needing attention; Tier-1, runs until interrupted
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
 
@@ -129,11 +132,11 @@ commands:
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to string
-	shared, wait, force, jsonOut, dryRun, prune                     bool
-	targets                                                         []string // repeated --target NAME
-	rest                                                            []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                         []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval string
+	shared, wait, force, jsonOut, dryRun, prune                               bool
+	targets                                                                   []string // repeated --target NAME
+	rest                                                                      []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                                   []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 }
 
 func parseFlags(args []string) flagSet {
@@ -176,6 +179,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.to = args[i]
+			}
+		case "--interval":
+			i++
+			if i < len(args) {
+				f.interval = args[i]
 			}
 		case "--target":
 			i++
@@ -362,6 +370,9 @@ func cmdStatus(p paths, args []string) error {
 // scoped to one commit): pending approvals, currently-running stages, recent
 // failures, and every lock (file + resource) currently held.
 func cmdOperator(p paths, args []string) error {
+	if len(args) > 0 && args[0] == "notify" {
+		return cmdOperatorNotify(p, args[1:])
+	}
 	f := parseFlags(args)
 	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
 	if err != nil {
@@ -406,6 +417,65 @@ func cmdOperator(p paths, args []string) error {
 		fmt.Printf("  %-6s %-8s %-8s %-10s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
 	}
 	return nil
+}
+
+// cmdOperatorNotify polls the operator surface on an interval and fires an OS
+// desktop notification (via notify-send) for anything newly needing a human's
+// attention — a pending approval or a stage failure this process hasn't already
+// notified about — so a human operator gets pinged without keeping a terminal open
+// watching `breeze operator`. Client-side only and Tier-1, same as `breeze operator`
+// itself: polls, never mutates, no --as/--token needed. Runs until interrupted.
+func cmdOperatorNotify(p paths, args []string) error {
+	f := parseFlags(args)
+	interval := 15 * time.Second
+	if f.interval != "" {
+		d, err := parseOptionalDuration(f.interval)
+		if err != nil {
+			return err
+		}
+		if d > 0 {
+			interval = d
+		}
+	}
+	if _, err := exec.LookPath("notify-send"); err != nil {
+		return fmt.Errorf("notify-send not found on PATH — desktop notifications need it (Linux/libnotify); poll `breeze operator --json` yourself if it's unavailable")
+	}
+
+	seenApprovals := make(map[string]bool)
+	seenFailures := make(map[string]bool)
+	fmt.Printf("watching operator surface every %s for approvals/failures (Ctrl-C to stop)...\n", interval)
+	for {
+		resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "breeze operator notify:", err)
+		} else if out, decErr := decodePayload[wire.OperatorSurfaceResponse](resp); decErr == nil {
+			for _, a := range out.PendingApprovals {
+				key := fmt.Sprintf("%s/%s/%s/%s", a.Pipeline, a.Stage, a.Commit, a.Environment)
+				if seenApprovals[key] {
+					continue
+				}
+				seenApprovals[key] = true
+				desktopNotify("breeze: review needed",
+					fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
+			}
+			for _, fl := range out.RecentFailures {
+				key := fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
+				if seenFailures[key] {
+					continue
+				}
+				seenFailures[key] = true
+				desktopNotify("breeze: stage failed",
+					fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, fl.Commit, fl.Error))
+			}
+		}
+		time.Sleep(interval)
+	}
+}
+
+// desktopNotify fires a best-effort OS desktop notification — a failure here (no
+// notify-send, no display server, ...) must never crash the watch loop.
+func desktopNotify(title, body string) {
+	_ = exec.Command("notify-send", title, body).Run()
 }
 
 func cmdWhoAmI(p paths, args []string) error {

@@ -423,6 +423,20 @@ needed), every stage currently running, the most recent failures (capped, newest
 first — full history is `deploy history`/the audit log's job), and every lock
 (file and resource) currently held.
 
+```sh
+breeze operator notify [--interval 15s]
+```
+
+A polling watcher (client-side only, Tier-1, same as `breeze operator` itself —
+never mutates, no `--as`/`--token` needed) that fires a real OS desktop
+notification (via `notify-send`; Linux/libnotify) the moment something newly needs
+you: a pending approval or a stage failure it hasn't already notified about for
+this run. Meant to be left running in a terminal (or backgrounded) so you get
+pinged without keeping `breeze operator` open and re-checking it yourself. Each
+distinct pending-approval key and each distinct failure (keyed through its finish
+time, so a retry that fails again notifies again) fires exactly once per process
+lifetime — restarting the watcher re-notifies about whatever's still outstanding.
+
 ## Worked example
 
 `ci/` in this repo is a real, working, self-hosted pipeline for breeze's own

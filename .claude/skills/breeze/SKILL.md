@@ -233,6 +233,17 @@ stage still short of its threshold (who's approved so far, what role is still
 needed), every stage currently running, recent failures, and every lock (file and
 resource) currently held. Check this before assuming nothing's in flight.
 
+```sh
+breeze operator notify [--interval 15s]
+```
+
+A polling watcher (Tier-1, never mutates) that fires a real OS desktop notification
+(`notify-send`, Linux/libnotify) the moment a pending approval or stage failure
+newly appears — meant for a human to leave running rather than for agents to
+invoke, but worth knowing about if a user asks for desktop pings on breeze events.
+Each distinct approval/failure notifies once per process lifetime; restarting it
+re-notifies about whatever's still outstanding.
+
 ## 5. Defining a pipeline (HCL via `breeze apply`)
 
 HCL parsing is entirely client-side — the daemon never sees HCL, only the same
