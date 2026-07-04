@@ -411,18 +411,42 @@ first — full history is `deploy history`/the audit log's job), and every lock
 
 ## Worked example
 
-`ci/` in this repo is a real, working pipeline for breeze's own build/test/deploy —
-`ci/pipeline.hcl` plus the four scripts it calls. Each script builds/tests/deploys
-the given commit in an **isolated `git worktree`**, so a pipeline run never touches
-whatever you're currently editing in the main checkout:
+`ci/` in this repo is a real, working, self-hosted pipeline for breeze's own
+build/test/deploy — breeze dogfoods itself. `ci/pipeline.hcl` plus the five scripts
+it calls. `build`/`test`/`deploy` each operate on the given commit in an **isolated
+`git worktree`**, so a pipeline run never touches whatever you're currently editing
+in the main checkout:
 
 ```sh
 breeze stage start   breeze build     <sha> --as ci-test
 breeze stage start   breeze test      <sha> --as ci-test
 breeze stage approve breeze review    <sha> --as admin --token-file .git/breeze/admin.token
 breeze stage start   breeze deploy    <sha> --env local --as admin --token-file .git/breeze/admin.token
+breeze stage start   breeze push      <sha> --env local --as admin --token-file .git/breeze/admin.token
 breeze stage start   breeze smoketest <sha> --env local --as admin
 ```
+
+Six stages: `build` → `test` → `review` → `deploy` → `push` → `smoketest`. `deploy`
+and `push` are both **deploy-type** stages, deliberately, not `deploy` followed by a
+plain `command` stage that happens to run `git push`:
+
+- `deploy` (target `deploy`) builds the commit in a worktree and installs it to this
+  machine's own `~/.local/bin/breeze` for the `local` environment.
+- `push` (target `push`, same pipeline, same environment, its **own** distinct
+  target) pushes that same commit to `origin/master`.
+
+Giving push its own deploy target — rather than folding the `git push` into
+`deploy.sh`'s script, or making it a separate plain `command` stage after
+`smoketest` — means it gets the exact same machinery a real deploy gets for free:
+its own exclusive `(target, environment)` lock (so a push can never race a
+concurrent one), and its own monotonic-commit-ordering check (rejects pushing a
+commit older than one already pushed for this target — the same protection that
+stops you from deploying a stale build). `push` is placed right after `deploy` (Gate
+1: its predecessor is `deploy`, which itself required `review`, which required
+`test`) — so publishing is transitively gated by build/test/review having already
+succeeded — and deliberately *before* `smoketest`, not after: `smoketest` is a
+shallow liveness check of the local install (`breeze ping`), not a correctness gate
+worth blocking (or being blocked by) publishing on.
 
 See `examples/` for repo-agnostic starting-point pipelines you can copy elsewhere.
 
