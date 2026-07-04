@@ -90,12 +90,21 @@ breeze lock exec <path...> [--shared] --as <name> -- <command...>   # crash-safe
                                                                      # instantly if the process dies
 breeze lock release <lock-id> --as <name> [--force]
 breeze lock list [--json]
+breeze lock check <path...> [--as <name>] [--json]   # read-only, no acquire/release involved
 breeze inventory [--json]     # separate view of internal RESOURCE locks (e.g. a deploy's
                                # (target,environment) exclusivity) — not file paths
 ```
 
 Prefer `lock exec` over acquire+manually-remembering-to-release when running an
 actual command — a killed/crashed agent still releases the lock immediately.
+
+`lock check` is for gating an action rather than holding a lock across it — it never
+acquires or releases anything, it just reports whether a path is held by someone
+other than `--as` (own locks aren't a conflict). This repo dogfoods it: a `PreToolUse`
+hook (`.claude/hooks/breeze-lock-check.sh` + `.claude/settings.json`) runs it before
+every Edit/Write/MultiEdit and blocks the edit if another identity already holds a
+lock on that file — worth the same pattern in any project where multiple agents edit
+a shared working tree.
 
 A relative path is resolved against **your own cwd**, not the daemon's, and — if
 you're inside a git worktree — reduced to a path relative to that worktree's

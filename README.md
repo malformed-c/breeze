@@ -100,10 +100,20 @@ breeze lock exec /path/to/file --as alice -- ./build.sh           # attached: he
                                                                   # the process dies — the crash-safe mode
 breeze lock release <lock-id> --as alice
 breeze lock list [--json]
+breeze lock check /path/to/file [--as alice] [--json]   # read-only: is this locked by someone else?
 ```
 
 Locks carry no RBAC — `--as` here is plain attribution (who holds it, so only the
 holder or `--force` can release), not a permission check.
+
+`lock check` never acquires or releases anything — it just reports whether a path is
+currently held by an identity other than `--as` (own locks are never a conflict). No
+lifecycle to manage makes it a natural fit for gating an external action rather than
+holding a lock across it — e.g. `.claude/hooks/breeze-lock-check.sh` wires this repo's
+own `.claude/settings.json` to run it as a `PreToolUse` hook on `Edit|Write|MultiEdit`,
+blocking Claude Code from editing a file another agent already holds a lock on. The
+hook fails open (allows the edit) if breeze itself is unavailable or the check errors
+for any reason other than an actual conflict.
 
 `breeze inventory` shows a separate class of *resource* locks breeze creates
 internally (e.g. a deploy stage's exclusivity on a `(target, environment)` pair) —

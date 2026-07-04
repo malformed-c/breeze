@@ -14,4 +14,12 @@ stdout '"holder":\s*"alice"'
 ! exec breeze lock acquire target/file.txt --as bob --ttl 5m
 stderr 'conflict|lock'
 
+# `lock check` is read-only: it never acquires anything, it just reports whether
+# someone ELSE holds a conflicting lock — built for gating an external action (e.g. a
+# PreToolUse hook) on "is this safe to touch" without also managing a release.
+! exec breeze lock check target/file.txt --as bob
+stdout 'locked:.*held by alice'
+exec breeze lock check target/file.txt --as alice
+stdout 'clear'
+
 exec breeze stop

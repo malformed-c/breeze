@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -105,6 +106,7 @@ commands:
   lock release <lock-id> --as NAME [--force]
   lock renew <lock-id> [--ttl D] --as NAME
   lock list [--json]
+  lock check <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
 
   inventory [--json]                    list non-file resources (e.g. deploy-env
                                          exclusivity) and their current holder
@@ -686,7 +688,7 @@ func cmdRole(p paths, args []string) error {
 
 func cmdLock(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze lock acquire|exec|release|renew|list ...")
+		return fmt.Errorf("usage: breeze lock acquire|exec|release|renew|list|check ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
@@ -748,6 +750,8 @@ func cmdLock(p paths, args []string) error {
 			fmt.Printf("%-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
 		}
 		return nil
+	case "check":
+		return cmdLockCheck(p, as, f)
 	case "exec":
 		return cmdLockExec(p, as, f)
 	default:
@@ -1330,6 +1334,63 @@ func cmdInventory(p paths, args []string) error {
 		fmt.Printf("%-6s %-8s %-20s %s\n", r.ID, r.Mode, r.Holder, r.Key)
 	}
 	return nil
+}
+
+// cmdLockCheck implements `breeze lock check <path...>` — a read-only query with no
+// acquire/release lifecycle to manage: it never takes a lock itself, it only reports
+// whether any of the given paths are currently held by someone else. Built for
+// gating an external action (e.g. a Claude Code PreToolUse hook on Edit/Write) on
+// "is this safe to touch right now" without the hook also having to remember to
+// release anything afterward.
+func cmdLockCheck(p paths, as string, f flagSet) error {
+	if len(f.rest) < 1 {
+		return fmt.Errorf("usage: breeze lock check <path...> [--as NAME] [--json]")
+	}
+	lockPaths, err := canonicalLockPaths(f.rest)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, wire.Request{Op: wire.OpLockList})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.LockListResponse](resp)
+	if err != nil {
+		return err
+	}
+
+	var conflicts []wire.LockInfo
+	for _, want := range lockPaths {
+		for _, l := range out.Locks {
+			if l.Holder == as {
+				continue // the caller's own lock is never a conflict
+			}
+			if slices.Contains(l.Paths, want) {
+				conflicts = append(conflicts, l)
+				break
+			}
+		}
+	}
+
+	if f.jsonOut {
+		printJSON(struct {
+			Locked    bool            `json:"locked"`
+			Conflicts []wire.LockInfo `json:"conflicts"`
+		}{Locked: len(conflicts) > 0, Conflicts: conflicts})
+		if len(conflicts) > 0 {
+			return fmt.Errorf("locked")
+		}
+		return nil
+	}
+
+	if len(conflicts) == 0 {
+		fmt.Println("clear")
+		return nil
+	}
+	for _, l := range conflicts {
+		fmt.Printf("locked: %v held by %s (id=%s, mode=%s)\n", l.Paths, l.Holder, l.ID, l.Mode)
+	}
+	return fmt.Errorf("%d of %d path(s) locked by another holder", len(conflicts), len(lockPaths))
 }
 
 func cmdLockExec(p paths, as string, f flagSet) error {
