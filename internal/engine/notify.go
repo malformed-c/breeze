@@ -15,11 +15,17 @@ func (e *Engine) SetNotifyFn(fn func(identities []string, message string)) {
 
 // notifyResolution computes who should be pinged about pipelineName/stageName's
 // instance resolving and fires the notify callback (which itself runs the actual
-// `mess send` asynchronously) — never blocks the caller. Targets: the identity that
-// triggered this instance (so they learn the outcome even if not parked in
-// stage.wait), plus — if this stage just succeeded and the next stage in the
-// pipeline is an approval stage — every identity holding that approval's required
-// role (so reviewers are pinged the moment there's something to review). Must be
+// `mess send` asynchronously) — never blocks the caller. Targets: if this stage just
+// succeeded and the next stage in the pipeline is an approval stage, every identity
+// holding that approval's required role (so reviewers are pinged the moment there's
+// something to review). Deliberately does NOT notify inst.Actor (the identity that
+// triggered this instance) — stage.start/stage.approve are synchronous RPCs that
+// already return the resolved instance directly to that same caller, so a mess ping
+// to them about their own call's own result would just be noise: they're always
+// either still blocked on it (running in the foreground) or, if they backgrounded
+// the call at the shell level, get the same answer whenever they check it — and if
+// they specifically want to be woken up instead of checking back, `stage wait` is
+// the dedicated mechanism for that (see SKILL.md's recommended pattern). Must be
 // called WITHOUT e.mu held.
 func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageInstance) {
 	e.mu.Lock()
@@ -37,7 +43,6 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 			targets = append(targets, name)
 		}
 	}
-	add(inst.Actor)
 
 	if inst.Status == StageSucceeded {
 		if p, ok := e.pipelines[pipelineName]; ok {

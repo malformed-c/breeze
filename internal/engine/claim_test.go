@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestClaimDeployLockThenDeployReusesIt covers the "reserve ahead of time" flow: an
 // actor claims a deploy stage's (target,environment) exclusivity before the real
@@ -108,5 +111,67 @@ func TestClaimDeployLockRejectsUndeclaredEnvironment(t *testing.T) {
 	}
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "nonexistent-env", "ci", minute); err == nil {
 		t.Fatalf("expected claim against an undeclared environment to be rejected")
+	}
+}
+
+// TestClaimDeployLockIsIdempotentForSameActor is a regression test for a real
+// confusing-error report: calling `deploy claim` again while your OWN earlier claim
+// is still active used to fail with the same generic "already locked by another
+// deploy" message a genuine conflict would produce — indistinguishable from someone
+// else holding it. Re-claiming your own still-active claim must instead just
+// re-report it.
+func TestClaimDeployLockIsIdempotentForSameActor(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	if _, err := e.RegisterIdentity("ci"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	first, _, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", minute)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	second, _, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", minute)
+	if err != nil {
+		t.Fatalf("expected re-claiming your own still-active claim to succeed, not error: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected the same lock to be re-reported, got a new one: first=%s second=%s", first.ID, second.ID)
+	}
+}
+
+// TestClaimConflictErrorNamesTheHolder is a regression test for an unhelpful error
+// message reported in practice: "deploy/engix99 is already locked by another
+// deploy" doesn't say WHO holds it or how to proceed. The error must name the
+// current holder so the caller can check `breeze inventory`, wait, or contact them.
+func TestClaimConflictErrorNamesTheHolder(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := e.RegisterIdentity(name); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+		if err := e.AssignRole(name, "reviewer"); err != nil {
+			t.Fatalf("assign: %v", err)
+		}
+	}
+	approvedCommit(t, e, "abc123") // so Gate 1 passes and the lock conflict is what's actually hit
+	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "alice", minute); err != nil {
+		t.Fatalf("alice claim: %v", err)
+	}
+
+	_, _, err := e.ClaimDeployLock("release", "deploy", "staging", "bob", minute)
+	if err == nil {
+		t.Fatalf("expected bob's claim to be rejected while alice's claim is held")
+	}
+	if !strings.Contains(err.Error(), `"alice"`) {
+		t.Fatalf("expected the conflict error to name the current holder (alice), got: %v", err)
+	}
+
+	// The same holder-naming applies to a real deploy attempt hitting the same lock.
+	if _, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "bob", ""); err == nil {
+		t.Fatalf("expected bob's deploy to be rejected while alice's claim is held")
+	} else if !strings.Contains(err.Error(), `"alice"`) {
+		t.Fatalf("expected the deploy conflict error to name the current holder (alice), got: %v", err)
 	}
 }

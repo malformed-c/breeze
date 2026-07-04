@@ -96,14 +96,40 @@ func (e *Engine) ClaimDeployLock(pipelineName, stageName, environment, actor str
 	if ttl <= 0 {
 		ttl = timeout
 	}
-	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{deployLockKey(target, environment)}, LockExclusive, ttl)
+	lockKey := deployLockKey(target, environment)
+
+	// Idempotent: calling claim again while your own earlier claim is still active
+	// re-reports it rather than erroring — a repeat `deploy claim` shouldn't look
+	// like a conflict against yourself.
+	if existing := e.lockHeldBy(actor, lockKey); existing != nil {
+		return existing, target, nil
+	}
+
+	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl)
 	if err != nil {
 		return nil, "", err
 	}
 	if !gotLock {
-		return nil, "", fmt.Errorf("%s/%s is already locked by another deploy", target, environment)
+		return nil, "", lockConflictErr(target, environment, e.lockOnKey(lockKey))
 	}
 	return lock, target, nil
+}
+
+// lockConflictErr formats a helpful rejection when a deploy/claim can't get the
+// (target,environment) lock — naming the actual current holder and its expiry when
+// known (best-effort: held may be nil if the lock was released in the window
+// between the failed acquire and this lookup), rather than a bare "someone else has
+// it" with no way to act on the information.
+func lockConflictErr(target, environment string, held *FileLock) error {
+	if held == nil {
+		return fmt.Errorf("%s/%s is already locked by another deploy", target, environment)
+	}
+	expiry := "never"
+	if !held.ExpiresAt.IsZero() {
+		expiry = held.ExpiresAt.Format(time.RFC3339)
+	}
+	return fmt.Errorf("%s/%s is already locked by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
+		target, environment, held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
 }
 
 func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, isRollback bool) (*StageInstance, error) {
@@ -187,6 +213,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		}
 	}
 	if !gotLock {
+		lockErrMsg := lockConflictErr(target, environment, e.lockOnKey(lockKey)).Error()
 		e.mu.Lock()
 		e.deployHistory[histKey] = append(e.deployHistory[histKey], DeployRecord{
 			Pipeline: pipelineName, Stage: stageName, Target: target, Environment: environment,
@@ -195,7 +222,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		})
 		e.changed()
 		e.mu.Unlock()
-		return nil, gateErr("another deploy is already running for %s/%s", target, environment)
+		return nil, gateErr("%s", lockErrMsg)
 	}
 
 	e.mu.Lock()

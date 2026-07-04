@@ -86,6 +86,21 @@ func (e *Engine) lockHeldBy(holder, key string) *FileLock {
 	return nil
 }
 
+// lockOnKey returns the resource lock currently held on key, if any, regardless of
+// holder — used purely to produce a helpful "who's got it" error message on a
+// failed acquire (best-effort: the lock may have been released between the failed
+// acquire and this lookup, in which case callers fall back to a generic message).
+func (e *Engine) lockOnKey(key string) *FileLock {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, l := range e.locks {
+		if l.Kind == LockKindResource && slices.Contains(l.Paths, key) {
+			return l
+		}
+	}
+	return nil
+}
+
 func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, error) {
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")

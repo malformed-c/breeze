@@ -6,7 +6,14 @@ import (
 	"time"
 )
 
-func TestNotifyResolutionTargetsActorAndReviewers(t *testing.T) {
+// TestNotifyResolutionTargetsReviewersNotActor confirms notifyResolution pings
+// reviewers of a newly-eligible approval stage, but deliberately does NOT notify
+// the identity that triggered the just-resolved stage — stage.start/stage.approve
+// are synchronous RPCs that already hand that same caller the resolved instance
+// directly, so pinging them about their own call's own result would be redundant
+// noise (whether they're still blocked on it or backgrounded the call and check
+// back later; `stage wait` exists for anyone who actually wants to be woken).
+func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
 	if _, err := e.RegisterIdentity("alice"); err != nil {
@@ -55,8 +62,8 @@ func TestNotifyResolutionTargetsActorAndReviewers(t *testing.T) {
 			foundBob = true
 		}
 	}
-	if !foundCI {
-		t.Fatalf("expected the triggering actor 'ci' to be notified, got %v", gotIdentities)
+	if foundCI {
+		t.Fatalf("expected the triggering actor 'ci' NOT to be notified (redundant with its own synchronous response), got %v", gotIdentities)
 	}
 	if !foundAlice || !foundBob {
 		t.Fatalf("expected both reviewers to be notified since the next stage (review) just became eligible, got %v", gotIdentities)

@@ -136,9 +136,11 @@ you try (a rejected attempt is harmless, just noisy).
 ```sh
 breeze stage start release build abc123 --as ci
 breeze stage wait  release build abc123 --timeout 30m &     # background this
-# ...continue other work; breeze also proactively `mess send`s the triggering
-# actor (and, if this unblocks a downstream approval stage, every reviewer) when
-# it resolves — best-effort, only if `mess` is installed and running.
+# ...continue other work; if this unblocks a downstream approval stage, breeze
+# also proactively `mess send`s every reviewer — best-effort, only if `mess` is
+# installed and running. It does NOT also ping you about your own build's result:
+# stage start/approve are synchronous, so you already got that directly as the
+# response — `stage wait` is the mechanism for being woken instead of checking back.
 ```
 
 Prefer backgrounding `stage wait` (via your shell `&` or Claude Code's background

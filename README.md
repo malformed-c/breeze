@@ -345,7 +345,12 @@ and reuses it rather than rejecting itself as a conflicting concurrent deploy; t
 lock releases once that real deploy finishes, same as an unclaimed one would. If you
 never get around to the real deploy, it just expires at `--ttl` (default: the
 stage's own configured `timeout`) — nothing to explicitly release, though `breeze
-lock release <id> --as WHO` works too if you want to free it early.
+lock release <id> --as WHO` works too if you want to free it early. Calling `deploy
+claim` again while your own earlier claim is still active just re-reports it (not an
+error — a repeat claim isn't a conflict against yourself). A genuine conflict names
+the actual current holder and its expiry (`"deploy/engix99" is already locked by
+"alice" (since ..., expires ...) — check breeze inventory, wait for it via stage
+wait, or ask alice directly`), not just "someone else has it."
 
 ### Granting temporary deploy access
 
@@ -380,10 +385,14 @@ breeze stage wait  release build abc123 --timeout 30m &   # background it, keep 
 `stage wait` blocks until the stage resolves (or times out) — designed to be
 backgrounded via your shell or Claude Code's own background-Bash execution. On
 resolution, breeze also proactively shells out to `mess send <identity> "..."`
-(best-effort, only if `mess` is installed) for the triggering actor and, if the
-stage that just succeeded unblocks an approval stage, every identity holding that
-approval's required role — so reviewers get pinged the moment there's something to
-review, without needing to poll.
+(best-effort, only if `mess` is installed) for every identity holding the required
+role of a newly-eligible approval stage — so reviewers get pinged the moment
+there's something to review, without needing to poll. It deliberately does **not**
+notify the identity that triggered the stage that just resolved: `stage start`/
+`stage approve` are synchronous RPCs that already hand that same caller the
+resolved instance directly as their response, so pinging them about their own
+call's own result would just be noise — if you want to be woken up rather than
+checking back yourself, that's exactly what backgrounding `stage wait` is for.
 
 ### Briefs
 
