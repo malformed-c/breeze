@@ -165,3 +165,37 @@ func TestSweepExpiredLocks(t *testing.T) {
 		t.Fatalf("expected lock to be swept after TTL elapses")
 	}
 }
+
+func TestLockLifecycleIsAudited(t *testing.T) {
+	e := New()
+	fakeNow := time.Now()
+	e.now = func() time.Time { return fakeNow }
+
+	var kinds []string
+	e.SetAuditFn(func(ev AuditEvent) { kinds = append(kinds, ev.Kind) })
+
+	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Minute, false)
+	if err != nil || !ok {
+		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
+	}
+	if err := e.ReleaseLock(lock.ID, "alice", false); err != nil {
+		t.Fatalf("release failed: %v", err)
+	}
+
+	_, ok, err = e.TryAcquireLock("bob", []string{"/repo/file"}, LockExclusive, time.Minute, false)
+	if err != nil || !ok {
+		t.Fatalf("second acquire failed: ok=%v err=%v", ok, err)
+	}
+	fakeNow = fakeNow.Add(2 * time.Minute)
+	e.SweepExpiredLocks()
+
+	want := []string{"lock.acquired", "lock.released", "lock.acquired", "lock.expired"}
+	if len(kinds) != len(want) {
+		t.Fatalf("expected audit kinds %v, got %v", want, kinds)
+	}
+	for i, k := range want {
+		if kinds[i] != k {
+			t.Fatalf("expected audit kinds %v, got %v", want, kinds)
+		}
+	}
+}

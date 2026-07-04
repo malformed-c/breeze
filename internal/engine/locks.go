@@ -130,6 +130,7 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 		lock.ExpiresAt = lock.AcquiredAt.Add(ttl)
 	}
 	e.locks[lock.ID] = lock
+	e.audit("lock.acquired", holder, fmt.Sprintf("id=%s kind=%s paths=%v mode=%s ttl=%s", lock.ID, kind, paths, mode, ttl))
 	e.changed()
 	return lock, true, nil
 }
@@ -180,6 +181,7 @@ func (e *Engine) ReleaseLock(id, holder string, force bool) error {
 		return fmt.Errorf("lock %s is held by %s, not %s (use --force)", id, lock.Holder, holder)
 	}
 	delete(e.locks, id)
+	e.audit("lock.released", holder, fmt.Sprintf("id=%s kind=%s paths=%v holder=%s force=%t", lock.ID, lock.Kind, lock.Paths, lock.Holder, force))
 	e.notifyPathsLocked(lock.Paths)
 	e.changed()
 	return nil
@@ -251,6 +253,7 @@ func (e *Engine) SweepExpiredLocks() {
 		return
 	}
 	for _, l := range expired {
+		e.audit("lock.expired", l.Holder, fmt.Sprintf("id=%s kind=%s paths=%v", l.ID, l.Kind, l.Paths))
 		e.notifyPathsLocked(l.Paths)
 	}
 	e.changed()
