@@ -573,7 +573,13 @@ authority it already legitimately holds. Concretely:
 - Every claim above is backed by a test — see `internal/engine/*_test.go`,
   `internal/hook/hook_test.go`, `internal/hclconfig/decode_test.go`, and the
   top-level `*_test.go` files (daemon startup guarantees, identity-rotation auth,
-  per-repo path resolution across `git worktree`).
+  per-repo path resolution across `git worktree`). Most of those are in-process
+  (constructing `Engine`/`daemonServer` directly, no socket) for speed. `testdata/e2e/*.txt`
+  (run via `TestE2E` in `e2e_test.go`) are true black-box tests instead — real `breeze`
+  subprocesses talking to a real daemon over the real Unix socket, using
+  [`testscript`](https://pkg.go.dev/github.com/rogpeppe/go-internal/testscript), the same
+  script-driven approach `cmd/go` itself uses to test the `go` command end-to-end.
+  Skipped under `go test -short`; included in the normal `go test ./...`/`make check`/CI run.
 - Full design rationale (why RBAC works this way, why deploy reuses the lock
   engine, retention/pruning, etc.) lives in code comments near each mechanism —
   there's deliberately no separate design doc to fall out of sync with the code.

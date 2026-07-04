@@ -1,0 +1,50 @@
+# Apply a minimal pipeline via HCL, then drive it end-to-end through a real daemon:
+# build (command) -> review (approval), checking Gate 1 (stage ordering) and RBAC
+# along the way.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register alice
+cp stdout alice.token
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+
+# --dry-run must never mutate: no pipeline registered yet, and it reports "new".
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token --dry-run
+stdout '\+ pipeline release \(new\)'
+exec breeze pipeline list --json
+stdout '"pipelines":\s*null|"pipelines":\s*\[\]'
+
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+exec breeze pipeline show release --json
+stdout '"name":\s*"release"'
+
+# review can't be approved before build succeeds (Gate 1).
+! exec breeze stage approve release review abc123 --as alice --token-file alice.token
+stderr 'prerequisite'
+
+exec breeze stage start release build abc123 --as ci
+stdout 'build: succeeded'
+
+exec breeze stage approve release review abc123 --as alice --token-file alice.token
+stdout 'review: succeeded'
+
+exec breeze pipeline status release abc123 --json
+stdout '"stage":\s*"build"[\s\S]*"status":\s*"succeeded"'
+stdout '"stage":\s*"review"[\s\S]*"status":\s*"succeeded"'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true", "{commit}"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+}

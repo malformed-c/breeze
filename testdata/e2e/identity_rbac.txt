@@ -1,0 +1,29 @@
+# Bootstrap admin, register a second identity, and exercise the Tier-1/Tier-2 RBAC
+# split end-to-end against a real daemon (auto-started by the first command).
+env BREEZE_DIR=$WORK/state
+
+# A fresh name needs no auth — this IS the bootstrap path, and the first-ever
+# identity auto-gets the admin role.
+exec breeze identity register admin
+cp stdout admin.token
+
+exec breeze identity register alice
+cp stdout alice.token
+
+# Tier-1: whoami/ps need no token at all.
+exec breeze whoami --as admin
+stdout admin
+
+exec breeze ps --json
+stdout '"name":\s*"alice"'
+
+# Tier-2: role assign requires the admin's own token.
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze role list --json
+stdout '"name":\s*"alice"[\s\S]*"reviewer"'
+
+# A non-admin can't assign roles.
+! exec breeze role assign reviewer alice --as alice --token-file alice.token
+stderr 'requires admin'
+
+exec breeze stop

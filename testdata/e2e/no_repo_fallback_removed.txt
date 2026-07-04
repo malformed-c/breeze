@@ -1,0 +1,7 @@
+# With no $BREEZE_DIR and not inside a git repo, breeze must error out rather than
+# silently falling back to a shared machine-wide directory (a real incident: this
+# used to default to ~/.breeze, causing split-brain between agents in different
+# repos that each assumed they had their own daemon).
+! exec breeze ping
+stderr 'not recognized as inside a git repo'
+stderr '\$BREEZE_DIR is not set'

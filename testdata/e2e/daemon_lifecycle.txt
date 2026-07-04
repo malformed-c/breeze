@@ -1,0 +1,27 @@
+# breeze daemon's own lifecycle surface: --help must never silently daemonize,
+# ping/status must show the resolved dir, and daemon restart must actually work.
+env BREEZE_DIR=$WORK/state
+
+# A regression test in itself: this used to silently fall through to starting a
+# real blocking foreground daemon instead of printing usage.
+! exec breeze daemon --help
+stderr 'not a recognized flag'
+! exists $WORK/state/breeze.sock
+
+# Auto-start on first routine use.
+exec breeze ping
+stdout 'pong'
+stdout 'dir \S+/state'
+
+exec breeze status --json
+stdout '"dir":\s*"\S+/state"'
+
+# Explicit restart: nothing to displace on the very first explicit invocation of
+# this kind is fine — restartDaemon falls back to a fresh detached start.
+exec breeze daemon restart
+stdout 'restart'
+
+exec breeze ping
+stdout 'pong'
+
+exec breeze stop

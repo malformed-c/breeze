@@ -1,0 +1,17 @@
+# File locks are ad hoc, Tier-1 (attribution only, no auth) — exercise
+# acquire/list/release and the exclusive-conflict rule end-to-end.
+env BREEZE_DIR=$WORK/state
+mkdir target
+
+exec breeze lock acquire target/file.txt --as alice --ttl 5m --json
+cp stdout lock.json
+grep '"id"' lock.json
+
+exec breeze lock list --json
+stdout '"holder":\s*"alice"'
+
+# A second exclusive acquire on the same path must fail while the first is held.
+! exec breeze lock acquire target/file.txt --as bob --ttl 5m
+stderr 'conflict|lock'
+
+exec breeze stop
