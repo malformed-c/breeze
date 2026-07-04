@@ -1,10 +1,11 @@
 #!/bin/sh
-# breeze "deploy" stage command: builds the given commit in an isolated git worktree,
-# installs it for the target environment, and pushes the commit to origin's master
-# branch — one atomic step, not build+install here and a separate "push" stage you
-# could forget to trigger afterward. Only "local" (this machine's own
+# breeze "deploy" stage command: builds the given commit in an isolated git worktree
+# and installs it for the target environment. Only "local" (this machine's own
 # ~/.local/bin/breeze, matching how it was originally bootstrapped) exists today;
-# add a case here if/when another real environment shows up.
+# add a case here if/when another real environment shows up. Pushing to origin is a
+# separate deploy-type stage ("push", target "push") — its own target, so it gets
+# its own exclusivity lock and monotonic-commit-ordering, not just inline shell code
+# here.
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 commit="$1"
@@ -20,12 +21,10 @@ cd "$wtdir" || exit 1
 
 case "$environment" in
   local)
-    go build -o "$HOME/.local/bin/breeze" . || exit 1
+    go build -o "$HOME/.local/bin/breeze" .
     ;;
   *)
     echo "unknown environment: $environment" >&2
     exit 1
     ;;
 esac
-
-git -C "$REPO" push origin "$commit:refs/heads/master"
