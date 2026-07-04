@@ -111,6 +111,14 @@ commands:
   deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
   deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
                                          # bypasses ordering/staleness gates; same RBAC as a normal deploy
+  deploy claim    <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]
+                                         # reserve (target,environment) exclusivity ahead of
+                                         # the real deploy; same RBAC as a normal deploy
+  deploy grant    <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]
+                                         # environment_owner (or admin) temporarily delegates
+                                         # deploy authority, optionally scoped to specific targets
+  deploy grants   [<pipeline>] [--env NAME] [--json]
+                                         # list currently-known grants (Tier-1 read)
 
   apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
                                          # HCL-authored pipeline config, client-side
@@ -121,10 +129,11 @@ commands:
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file string
-	shared, wait, force, jsonOut, dryRun, prune                 bool
-	rest                                                        []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                     []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to string
+	shared, wait, force, jsonOut, dryRun, prune                     bool
+	targets                                                         []string // repeated --target NAME
+	rest                                                            []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                         []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 }
 
 func parseFlags(args []string) flagSet {
@@ -162,6 +171,16 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.env = args[i]
+			}
+		case "--to":
+			i++
+			if i < len(args) {
+				f.to = args[i]
+			}
+		case "--target":
+			i++
+			if i < len(args) {
+				f.targets = append(f.targets, args[i])
 			}
 		case "--brief":
 			i++
@@ -649,6 +668,53 @@ func cmdApply(p paths, args []string) error {
 	}
 
 	if f.dryRun {
+		if f.as != "" {
+			token, err := f.resolveToken()
+			if err != nil {
+				return err
+			}
+			authPayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: "admin"})
+			resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: f.as, Token: token, Payload: authPayload})
+			if err != nil {
+				return err
+			}
+			auth, err := decodePayload[wire.AuthCheckResponse](resp)
+			if err != nil {
+				return err
+			}
+			if auth.Authorized {
+				fmt.Printf("✓ %s is authorized to apply this plan (holds admin)\n", f.as)
+			} else {
+				fmt.Printf("✗ %s is NOT authorized to apply this plan: %s\n", f.as, auth.Reason)
+			}
+
+			// Being able to apply the pipeline (admin) is a separate question from
+			// being able to operate its role-gated stages once it's live — report
+			// stage ownership too, so a missing builder/reviewer/deployer role shows
+			// up in the preview instead of only failing at `stage start` time later.
+			for _, pl := range pipelines {
+				for _, s := range pl.Stages {
+					role := stageRequiredRole(s)
+					if role == "" {
+						continue
+					}
+					stagePayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: role})
+					sresp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: f.as, Token: token, Payload: stagePayload})
+					if err != nil {
+						return err
+					}
+					stageAuth, err := decodePayload[wire.AuthCheckResponse](sresp)
+					if err != nil {
+						return err
+					}
+					if stageAuth.Authorized {
+						fmt.Printf("  ✓ %s could operate %s/%s (requires role %q)\n", f.as, pl.Name, s.Name, role)
+					} else {
+						fmt.Printf("  ✗ %s could NOT operate %s/%s: %s\n", f.as, pl.Name, s.Name, stageAuth.Reason)
+					}
+				}
+			}
+		}
 		return nil
 	}
 	if len(toApply) == 0 {
@@ -666,6 +732,23 @@ func cmdApply(p paths, args []string) error {
 		}
 	}
 	return nil
+}
+
+// stageRequiredRole returns the RequiredRole a stage's own policy declares (across
+// whichever of CommandPolicy/ApprovalPolicy/DeployPolicy applies to its Type), or ""
+// if the stage is unrestricted — used by `apply --dry-run` to preview per-stage
+// ownership alongside the plan.
+func stageRequiredRole(s wire.StageDef) string {
+	switch {
+	case s.CommandPolicy != nil:
+		return s.CommandPolicy.RequiredRole
+	case s.ApprovalPolicy != nil:
+		return s.ApprovalPolicy.RequiredRole
+	case s.DeployPolicy != nil:
+		return s.DeployPolicy.RequiredRole
+	default:
+		return ""
+	}
 }
 
 // pipelinesEqual compares the parts of a Pipeline that `breeze apply` can actually
@@ -892,6 +975,12 @@ func cmdDeploy(p paths, args []string) error {
 		return cmdDeployHistory(p, rest)
 	case "rollback":
 		return cmdDeployRollback(p, rest)
+	case "claim":
+		return cmdDeployClaim(p, rest)
+	case "grant":
+		return cmdDeployGrant(p, rest)
+	case "grants":
+		return cmdDeployGrantList(p, rest)
 	default:
 		return fmt.Errorf("unknown deploy subcommand %q", sub)
 	}
@@ -956,6 +1045,125 @@ func cmdDeployRollback(p paths, args []string) error {
 	fmt.Printf("%s: %s (rollback)\n", out.Instance.Stage, out.Instance.Status)
 	if out.Instance.Error != "" {
 		fmt.Println(out.Instance.Error)
+	}
+	return nil
+}
+
+// cmdDeployClaim reserves a deploy stage's (target,environment) exclusivity ahead of
+// actually running the deploy — see engine.ClaimDeployLock. The real `stage start`
+// on that deploy later reuses this exact lock instead of failing a self-conflict.
+// Same RBAC as a normal deploy: claiming is authorization-equivalent to deploying.
+func cmdDeployClaim(p paths, args []string) error {
+	f := parseFlags(args)
+	if len(f.rest) < 2 {
+		return fmt.Errorf("usage: breeze deploy claim <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]")
+	}
+	if f.env == "" {
+		return fmt.Errorf("--env is required")
+	}
+	pipeline, stage := f.rest[0], f.rest[1]
+	as := resolveIdentity(p, f)
+	token, err := f.resolveToken()
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(wire.DeployClaimRequest{Pipeline: pipeline, Stage: stage, Environment: f.env, TTL: f.ttl})
+	resp, err := call(p, wire.Request{Op: wire.OpDeployClaim, As: as, Token: token, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.DeployClaimResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	fmt.Printf("claimed %s/%s/%s as %s (lock %s", pipeline, out.Target, f.env, as, out.LockID)
+	if !out.ExpiresAt.IsZero() {
+		fmt.Printf(", expires %s", out.ExpiresAt.Format(time.RFC3339))
+	}
+	fmt.Println(")")
+	return nil
+}
+
+// cmdDeployGrant lets a pipeline's declared environment_owner (or an admin)
+// delegate deploy authority over an environment — optionally scoped to specific
+// --target values — to another identity for a bounded --ttl, without a permanent
+// role.assign. See engine.GrantEnvironmentAccess.
+func cmdDeployGrant(p paths, args []string) error {
+	f := parseFlags(args)
+	if len(f.rest) < 1 {
+		return fmt.Errorf("usage: breeze deploy grant <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]")
+	}
+	if f.env == "" {
+		return fmt.Errorf("--env is required")
+	}
+	if f.to == "" {
+		return fmt.Errorf("--to (the identity being granted access) is required")
+	}
+	if f.ttl == "" {
+		return fmt.Errorf("--ttl is required — grants are always time-bounded, never permanent")
+	}
+	pipeline := f.rest[0]
+	as := resolveIdentity(p, f)
+	token, err := f.resolveToken()
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(wire.DeployGrantRequest{Pipeline: pipeline, Environment: f.env, Targets: f.targets, Grantee: f.to, TTL: f.ttl})
+	resp, err := call(p, wire.Request{Op: wire.OpDeployGrant, As: as, Token: token, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.DeployGrantResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	scope := "all targets"
+	if len(out.Targets) > 0 {
+		scope = strings.Join(out.Targets, ",")
+	}
+	fmt.Printf("granted %s access to %s/%s (%s) until %s\n", out.Grantee, pipeline, f.env, scope, out.ExpiresAt.Format(time.RFC3339))
+	return nil
+}
+
+// cmdDeployGrantList lists currently-known environment grants, optionally filtered
+// by pipeline/--env. Tier-1 read, same as `role list`/`lock list`/`inventory`.
+func cmdDeployGrantList(p paths, args []string) error {
+	f := parseFlags(args)
+	pipeline := ""
+	if len(f.rest) > 0 {
+		pipeline = f.rest[0]
+	}
+	payload, _ := json.Marshal(wire.DeployGrantListRequest{Pipeline: pipeline, Environment: f.env})
+	resp, err := call(p, wire.Request{Op: wire.OpDeployGrantList, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.DeployGrantListResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	if len(out.Grants) == 0 {
+		fmt.Println("(no grants)")
+		return nil
+	}
+	for _, g := range out.Grants {
+		scope := "all targets"
+		if len(g.Targets) > 0 {
+			scope = strings.Join(g.Targets, ",")
+		}
+		fmt.Printf("%-15s %-10s %-10s (%s) granted-by=%-10s expires=%s\n", g.Pipeline, g.Environment, g.Grantee, scope, g.GrantedBy, g.ExpiresAt.Format(time.RFC3339))
 	}
 	return nil
 }

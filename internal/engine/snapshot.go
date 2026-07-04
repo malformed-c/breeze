@@ -10,14 +10,15 @@ import (
 // for now we persist all currently-known ones; waiters/listeners are transient and
 // deliberately excluded, mirroring mess's persist.go.
 type Snapshot struct {
-	Seq             int                       `json:"seq"`
-	Identities      []Identity                `json:"identities,omitempty"`
-	Pipelines       []Pipeline                `json:"pipelines,omitempty"`
-	Locks           []FileLock                `json:"locks,omitempty"`
-	CommitSeq       map[string]int            `json:"commitSeq,omitempty"`
-	LastDeployedSeq map[string]int            `json:"lastDeployedSeq,omitempty"`
-	StageInstances  []StageInstance           `json:"stageInstances,omitempty"`
-	DeployHistory   map[string][]DeployRecord `json:"deployHistory,omitempty"`
+	Seq               int                       `json:"seq"`
+	Identities        []Identity                `json:"identities,omitempty"`
+	Pipelines         []Pipeline                `json:"pipelines,omitempty"`
+	Locks             []FileLock                `json:"locks,omitempty"`
+	CommitSeq         map[string]int            `json:"commitSeq,omitempty"`
+	LastDeployedSeq   map[string]int            `json:"lastDeployedSeq,omitempty"`
+	StageInstances    []StageInstance           `json:"stageInstances,omitempty"`
+	DeployHistory     map[string][]DeployRecord `json:"deployHistory,omitempty"`
+	EnvironmentGrants []EnvironmentGrant        `json:"environmentGrants,omitempty"`
 }
 
 func LoadSnapshotFile(path string) (Snapshot, error) {

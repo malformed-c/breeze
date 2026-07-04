@@ -103,6 +103,28 @@ func TestRegisterPipelineRejectsMissingFanOutEnvironments(t *testing.T) {
 	}
 }
 
+func TestRegisterPipelineRejectsEnvironmentOwnersReferencingUndeclaredEnvironment(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.EnvironmentOwners = map[string]string{"nonexistent-env": "alice"}
+	if err := e.RegisterPipeline(p, "admin"); err == nil {
+		t.Fatalf("expected environmentOwners referencing an undeclared environment to be rejected")
+	}
+}
+
+func TestRegisterPipelineAcceptsEnvironmentOwners(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.EnvironmentOwners = map[string]string{"staging": "alice", "prod": "bob"}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("expected valid environmentOwners to register: %v", err)
+	}
+	got, ok := e.Pipeline("release")
+	if !ok || got.EnvironmentOwners["staging"] != "alice" || got.EnvironmentOwners["prod"] != "bob" {
+		t.Fatalf("unexpected stored environmentOwners: %+v", got.EnvironmentOwners)
+	}
+}
+
 func TestRegisterPipelineUpsertByName(t *testing.T) {
 	e := New()
 	if err := e.RegisterPipeline(examplePipeline(), "admin"); err != nil {

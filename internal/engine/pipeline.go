@@ -67,6 +67,11 @@ func validatePipeline(p *Pipeline) error {
 			return fmt.Errorf("pipeline %q: debugEnvironments references undeclared environment %q", p.Name, de)
 		}
 	}
+	for env := range p.EnvironmentOwners {
+		if !slices.Contains(p.Environments, env) {
+			return fmt.Errorf("pipeline %q: environmentOwners references undeclared environment %q", p.Name, env)
+		}
+	}
 
 	for i, s := range p.Stages {
 		switch s.Type {

@@ -160,6 +160,7 @@ func (d *daemonServer) sweepLoop() {
 		case <-ticker.C:
 			d.eng.SweepExpiredLocks()
 			d.eng.PruneStageInstances()
+			d.eng.SweepExpiredGrants()
 		}
 	}
 }
@@ -218,6 +219,22 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			return okResponse(wire.WhoAmIResponse{Name: req.As})
 		}
 		return okResponse(wire.WhoAmIResponse{Name: id.Name, Roles: rolesToStrings(id.Roles)})
+
+	case wire.OpAuthCheck:
+		// Deliberately data, not an RPC error: "not authorized" is an expected,
+		// informative answer here, not a failure of the check itself.
+		var p wire.AuthCheckRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		id, err := d.requireTier2(req)
+		if err != nil {
+			return okResponse(wire.AuthCheckResponse{Authorized: false, Reason: err.Error()})
+		}
+		if p.RequiredRole != "" && !id.HasRole(engine.Role(p.RequiredRole)) {
+			return okResponse(wire.AuthCheckResponse{Authorized: false, Reason: fmt.Sprintf("identity %q does not hold role %q", id.Name, p.RequiredRole)})
+		}
+		return okResponse(wire.AuthCheckResponse{Authorized: true})
 
 	case wire.OpPs:
 		ids := d.eng.Identities()
@@ -416,6 +433,73 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			return errResponse(err)
 		}
 		return okResponse(wire.StageStartResponse{Instance: stageInstanceToWire(*inst)})
+
+	case wire.OpDeployClaim:
+		var p wire.DeployClaimRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		pipeline, ok := d.eng.Pipeline(p.Pipeline)
+		if !ok {
+			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
+		}
+		i := pipeline.StageIndex(p.Stage)
+		if i < 0 {
+			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
+		}
+		if pipeline.Stages[i].Type != engine.StageDeploy {
+			return errResponse(fmt.Errorf("stage %q is not a deploy stage", p.Stage))
+		}
+		// Same Tier-2 gate as a normal deploy — claiming ahead of time is
+		// authorization-equivalent to deploying, not a lesser-privileged operation.
+		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
+			return errResponse(err)
+		}
+		ttl, err := parseOptionalDuration(p.TTL)
+		if err != nil {
+			return errResponse(err)
+		}
+		lock, target, err := d.eng.ClaimDeployLock(p.Pipeline, p.Stage, p.Environment, req.As, ttl)
+		if err != nil {
+			return errResponse(err)
+		}
+		return okResponse(wire.DeployClaimResponse{LockID: lock.ID, Target: target, ExpiresAt: lock.ExpiresAt})
+
+	case wire.OpDeployGrant:
+		var p wire.DeployGrantRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		// Always Tier-2: granting is itself authorization-bearing (like role.assign),
+		// regardless of any particular stage's own policy — the owner-or-admin check
+		// happens inside GrantEnvironmentAccess using the now-verified req.As.
+		if _, err := d.requireTier2(req); err != nil {
+			return errResponse(err)
+		}
+		ttl, err := parseOptionalDuration(p.TTL)
+		if err != nil {
+			return errResponse(err)
+		}
+		grant, err := d.eng.GrantEnvironmentAccess(p.Pipeline, p.Environment, p.Targets, p.Grantee, req.As, ttl)
+		if err != nil {
+			return errResponse(err)
+		}
+		return okResponse(wire.DeployGrantResponse{Grantee: grant.Grantee, Targets: grant.Targets, ExpiresAt: grant.ExpiresAt})
+
+	case wire.OpDeployGrantList:
+		var p wire.DeployGrantListRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		grants := d.eng.EnvironmentGrants(p.Pipeline, p.Environment)
+		infos := make([]wire.EnvironmentGrantInfo, 0, len(grants))
+		for _, g := range grants {
+			infos = append(infos, wire.EnvironmentGrantInfo{
+				Pipeline: g.Pipeline, Environment: g.Environment, Targets: g.Targets,
+				Grantee: g.Grantee, GrantedBy: g.GrantedBy, ExpiresAt: g.ExpiresAt,
+			})
+		}
+		return okResponse(wire.DeployGrantListResponse{Grants: infos})
 
 	case wire.OpStageApprove:
 		var p wire.StageApproveRequest

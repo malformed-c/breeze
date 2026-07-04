@@ -391,6 +391,14 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		}
 	}
 
+	if stage.ApprovalPolicy.BlockPredecessorActor && i > 0 {
+		predKey := predecessorKey(p, i, key)
+		if pred := e.getInstance(pipelineName, p.Stages[i-1].Name, predKey); pred != nil && pred.Actor == actor {
+			e.mu.Unlock()
+			return nil, gateErr("actor %q triggered the preceding %q stage and cannot also approve this one", actor, p.Stages[i-1].Name)
+		}
+	}
+
 	ik := instanceKey(pipelineName, stageName, key)
 	postAction := stage.PostAction
 	_, alreadyMaterialized := e.instances[ik]

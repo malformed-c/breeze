@@ -69,6 +69,23 @@ func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockM
 	return e.tryAcquire(LockKindResource, holder, sorted, mode, ttl, false)
 }
 
+// lockHeldBy returns an existing resource lock on key already held by holder, if
+// any. Locks are not reentrant — tryAcquire's conflict check doesn't special-case
+// the same holder re-acquiring a key it already holds, so a deploy stage that wants
+// to reuse a lock the same actor pre-claimed (see ClaimDeployLock) must check for
+// this explicitly rather than calling TryAcquireResourceLock again, which would
+// otherwise see its own prior claim as a conflict and reject the deploy.
+func (e *Engine) lockHeldBy(holder, key string) *FileLock {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, l := range e.locks {
+		if l.Kind == LockKindResource && l.Holder == holder && slices.Contains(l.Paths, key) {
+			return l
+		}
+	}
+	return nil
+}
+
 func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, error) {
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")

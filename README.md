@@ -99,6 +99,17 @@ allowed to start (e.g. `prod` waits for all of `staging`'s stages to finish — 
 just `staging`'s own deploy step). Two environments with no dependency relation
 between them proceed fully concurrently.
 
+An environment can also declare an `environment_owners` entry — a plain identity
+name ("who's responsible for `engix99`"), surfaced via `pipeline show`/`--json`.
+Declaring it is purely documentation — it isn't itself checked by any gate — but it
+*does* unlock one real capability: the declared owner (or an admin) can temporarily
+delegate deploy authority over that environment to someone else who doesn't hold the
+role a deploy there requires, via `breeze deploy grant` — see "Granting temporary
+deploy access" below. Contrast an owner with a deploy's resource-lock `Holder`
+(`breeze inventory`), which answers a different question: not who's *responsible*
+for an environment long-term, but who's *actively deploying to it right now* — see
+"Claiming a deploy ahead of time" below.
+
 #### Debug stages and environments — unordered, but not unauthorized
 
 A stage with `debug = true` skips Gate 1 (the intra-pipeline predecessor check) — it
@@ -131,6 +142,17 @@ pipeline "release" {
 }
 ```
 
+#### No self-approval
+
+An approval stage's `block_predecessor_actor = true` rejects an approval attempt from
+whichever identity triggered the stage **immediately before it** (per Gate 1's own
+predecessor rule) — e.g. the actor who ran `build` can't also approve `review`, even
+if it happens to hold the reviewer role too. This is a conflict-of-interest gate, not
+an RBAC gate: RBAC asks "is this identity *allowed* to approve," this asks "is this
+identity the *same one* whose own work is under review." Opt-in and off by default —
+existing pipelines that don't set it are unaffected. It only ever compares against
+the *immediate* predecessor stage's actor, not every earlier actor in the chain.
+
 #### RBAC — two tiers
 
 - **Tier 1** (locks, `whoami`, `ps`, any `*.list`/`*.show`/`*.status` read):
@@ -158,6 +180,18 @@ breeze role assign deployer admin  --as admin --token-file .git/breeze/admin.tok
 breeze role list [--json]
 ```
 
+**A token is a bearer credential, full stop.** The entire Tier-2 check is
+`sha256(token) == stored_hash` — there's no secondary binding to *which process*
+presents it. Tier 2 defends against *accidental* inheritance (the subagent-session-id
+leak above); it cannot and does not defend against *deliberate* use of a token by
+whoever holds it, any more than an SSH key or an API key can. If you write the admin
+token to `.git/breeze/admin.token` for your own later recovery, treat that as
+"anything that can read this repo's files can now act as admin" — a convenience for
+a human/orchestrator restoring their own access across sessions, not a standing
+invitation for every agent working in the repo to go find it and self-escalate. Don't
+have agents search for it on their own initiative; hand a token to an agent only when
+you mean to delegate that specific authority to it.
+
 ## Defining a pipeline (HCL)
 
 HCL parsing is entirely client-side (`breeze apply`) — the daemon only ever sees
@@ -169,6 +203,10 @@ pipeline "release" {
   environments = ["staging", "prod"]
   environment_deps {
     prod = ["staging"]
+  }
+  environment_owners {                             # optional; lets the named identity `deploy grant`
+    staging = "alice"                              # temporary deploy access to others for that env
+    prod    = "bob"
   }
   briefs_dir = "/home/you/myrepo/docs/changelog"   # optional; see "Briefs" below
 
@@ -184,9 +222,10 @@ pipeline "release" {
     }
   }
   stage "review" {
-    type               = "approval"
-    required_approvals = 2
-    approver_role      = "reviewer"
+    type                    = "approval"
+    required_approvals      = 2
+    approver_role           = "reviewer"
+    block_predecessor_actor = true   # optional; see "No self-approval" below
   }
   stage "deploy" {
     type          = "deploy"
@@ -212,6 +251,25 @@ breeze apply -f pipeline.hcl --as admin --token-file .git/breeze/admin.token    
 `apply` is an idempotent, diff-aware upsert by pipeline name — re-applying an
 unchanged file is a no-op; `--prune` (removing pipelines absent from the file) is
 intentionally not implemented yet, so it errors rather than silently doing nothing.
+
+`--dry-run` only prints the plan (which pipelines are new/changed/unchanged) and
+never calls a mutating RPC — it works with no `--as` at all. Pass `--as`/`--token`
+alongside it and it additionally reports two separate things, both via a read-only
+`auth.check` (no mutation, no side effect): whether that identity actually holds
+`admin` and could apply this plan for real, and — a distinct question — whether it
+holds the `required_role` of each of the plan's own role-gated stages, i.e. whether
+it could actually *operate* this pipeline once it's live (trigger `build`, approve
+`review`, run `deploy`, ...). Applying a pipeline and operating its stages are
+different privileges; admin commonly holds neither of the latter:
+
+```sh
+breeze apply -f pipeline.hcl --as alice --token-file alice.token --dry-run
+# + pipeline release (new)
+# ✗ alice is NOT authorized to apply this plan: identity "alice" does not hold role "admin"
+#   ✓ alice could operate release/build (requires role "builder")
+#   ✗ alice could NOT operate release/review: identity "alice" does not hold role "reviewer"
+#   ✗ alice could NOT operate release/deploy: identity "alice" does not hold role "deployer"
+```
 
 Command/hook templates use `{name}` placeholders — `commit`, `environment`,
 `pipeline`, `stage`, `target`, `actor` — substituted as literal argv/env values via
@@ -262,6 +320,50 @@ so a rollback and a concurrent deploy still can't race each other. On success, t
 seen), so a later forward-deploy of something genuinely newer is still allowed, and
 `deploy history` records the outcome as `rolled_back`, distinct from a normal
 `succeeded` forward deploy, so the audit trail shows it was a deliberate reversion.
+
+### Claiming a deploy ahead of time
+
+```sh
+breeze deploy claim release deploy --env staging --ttl 15m --as admin --token T
+```
+
+A deploy stage's `(target, environment)` exclusivity is normally only held for the
+duration of the deploy command itself — before you actually trigger it, `breeze
+inventory` shows nothing, even if you're about to deploy any second. `deploy claim`
+reserves that same lock early, so other agents checking `breeze inventory`/`operator`
+see a `Holder` (and can `stage wait`/back off accordingly) before the real deploy
+command even starts — e.g. to signal "I'm about to deploy to staging" while you're
+still finishing prep work. Same RBAC as a normal deploy (`DeployPolicy.RequiredRole`)
+— claiming is authorization-equivalent to deploying, not a lesser-privileged peek.
+When you do run the real `stage start ... deploy`, it recognizes your own held claim
+and reuses it rather than rejecting itself as a conflicting concurrent deploy; the
+lock releases once that real deploy finishes, same as an unclaimed one would. If you
+never get around to the real deploy, it just expires at `--ttl` (default: the
+stage's own configured `timeout`) — nothing to explicitly release, though `breeze
+lock release <id> --as WHO` works too if you want to free it early.
+
+### Granting temporary deploy access
+
+```sh
+breeze deploy grant release --env staging --to bob --ttl 2h [--target release] --as alice --token T
+breeze deploy grants [release] [--env staging] [--json]   # Tier-1 read, no auth needed
+```
+
+An environment's declared `environment_owners` identity (or an admin — never any
+other Tier-2 caller) can temporarily delegate deploy authority over it to someone
+who doesn't hold the role a deploy there normally requires — e.g. covering for the
+usual deployer while they're out, without a permanent `role assign`. `--ttl` is
+mandatory: a grant is always time-bounded, never a backdoor around RBAC forever.
+Omit `--target` to cover every deploy target in that environment, or repeat it to
+scope the grant to specific targets only (`--target release` doesn't also cover a
+`worker` target deployed to the same environment) — a grant is exactly as narrow as
+you make it. `deploy grants` lists what's currently delegated, to whom, by whom, and
+until when — check it the same way you'd check `breeze inventory` before assuming
+"lacks the role" is the whole story on why someone can or can't deploy somewhere.
+The grant is consumed the same way a role would be: it satisfies both `deploy claim`
+and the real `stage start ... deploy`/`deploy rollback`, and simply stops working
+once `--ttl` elapses — nothing to explicitly revoke, though a shorter follow-up
+`deploy grant` for the same (pipeline, environment, grantee) replaces it outright.
 
 ### Waiting instead of polling
 

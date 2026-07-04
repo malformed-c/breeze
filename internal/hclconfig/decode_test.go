@@ -12,6 +12,10 @@ pipeline "release" {
   environment_deps {
     prod = ["staging"]
   }
+  environment_owners {
+    staging = "alice"
+    prod    = "bob"
+  }
   briefs_dir = "/home/engi/git/myrepo/docs/changelog"
 
   stage "build" {
@@ -30,9 +34,10 @@ pipeline "release" {
     }
   }
   stage "review" {
-    type               = "approval"
-    required_approvals = 2
-    approver_role      = "reviewer"
+    type                    = "approval"
+    required_approvals      = 2
+    approver_role           = "reviewer"
+    block_predecessor_actor = true
   }
   stage "deploy" {
     type     = "deploy"
@@ -81,6 +86,9 @@ func TestParseFileRoundTrip(t *testing.T) {
 	if !ok || len(deps) != 1 || deps[0] != "staging" {
 		t.Fatalf("expected prod -> [staging] in environment_deps, got %v", p.EnvironmentDeps)
 	}
+	if p.EnvironmentOwners["staging"] != "alice" || p.EnvironmentOwners["prod"] != "bob" {
+		t.Fatalf("unexpected environment_owners: %v", p.EnvironmentOwners)
+	}
 
 	// fans_out on "deploy" (index 2) must translate to FanOutAt == 2.
 	if p.FanOutAt != 2 {
@@ -108,7 +116,7 @@ func TestParseFileRoundTrip(t *testing.T) {
 	}
 
 	review := p.Stages[1]
-	if review.Type != "approval" || review.ApprovalPolicy == nil || review.ApprovalPolicy.RequiredApprovals != 2 || review.ApprovalPolicy.RequiredRole != "reviewer" {
+	if review.Type != "approval" || review.ApprovalPolicy == nil || review.ApprovalPolicy.RequiredApprovals != 2 || review.ApprovalPolicy.RequiredRole != "reviewer" || !review.ApprovalPolicy.BlockPredecessorActor {
 		t.Fatalf("unexpected review stage: %+v", review)
 	}
 

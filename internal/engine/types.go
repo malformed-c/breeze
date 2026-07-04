@@ -83,6 +83,11 @@ type CommandPolicy struct {
 type ApprovalPolicy struct {
 	RequiredApprovals int
 	RequiredRole      Role
+	// BlockPredecessorActor, when true, rejects an approval attempt from the
+	// identity that triggered this stage's Gate-1 predecessor (e.g. the actor who
+	// ran "build" can't also approve "review") — a conflict-of-interest / no-self-
+	// approval gate. Opt-in: false preserves prior behavior for existing pipelines.
+	BlockPredecessorActor bool
 }
 type DeployPolicy struct {
 	RequiredRole Role
@@ -119,9 +124,33 @@ type Pipeline struct {
 	// debugging, e.g. jumping between arbitrary commits on a scratch environment.
 	// RBAC still applies unconditionally.
 	DebugEnvironments []string
+	// EnvironmentOwners optionally names, per environment, the identity responsible
+	// for it (a subset of Environments as keys). Purely informational/documentation
+	// — surfaced via pipeline.show, never enforced by any gate or RBAC check. Answers
+	// "who's responsible for this environment long-term," distinct from a deploy
+	// resource lock's Holder, which answers "who's actively using it right now."
+	EnvironmentOwners map[string]string
 	BriefsDir         string
 	CreatedBy         string
 	CreatedAt         time.Time
+}
+
+// EnvironmentGrant is a time-bounded delegation of deploy authority: the identity
+// recorded as a pipeline's EnvironmentOwners[Environment] (or an admin) can grant
+// another identity the ability to claim/deploy against that environment as if it
+// held the relevant DeployPolicy.RequiredRole, without a permanent role.assign —
+// e.g. covering someone while the usual deployer is out, scoped to just this
+// environment and just for the granted duration. Targets, when non-empty, further
+// restricts the grant to specific deploy targets within the environment rather than
+// every target there (e.g. grant access to "api" but not "worker", both deployed to
+// the same "prod" environment) — nil/empty means every target in the environment.
+type EnvironmentGrant struct {
+	Pipeline    string
+	Environment string
+	Targets     []string // empty = every target in Environment
+	Grantee     string
+	GrantedBy   string
+	ExpiresAt   time.Time
 }
 
 func (p *Pipeline) StageIndex(name string) int {

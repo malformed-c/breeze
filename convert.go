@@ -78,7 +78,11 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		s.CommandPolicy = &engine.CommandPolicy{RequiredRole: engine.Role(w.CommandPolicy.RequiredRole), MaxConcurrent: w.CommandPolicy.MaxConcurrent}
 	}
 	if w.ApprovalPolicy != nil {
-		s.ApprovalPolicy = &engine.ApprovalPolicy{RequiredApprovals: w.ApprovalPolicy.RequiredApprovals, RequiredRole: engine.Role(w.ApprovalPolicy.RequiredRole)}
+		s.ApprovalPolicy = &engine.ApprovalPolicy{
+			RequiredApprovals:     w.ApprovalPolicy.RequiredApprovals,
+			RequiredRole:          engine.Role(w.ApprovalPolicy.RequiredRole),
+			BlockPredecessorActor: w.ApprovalPolicy.BlockPredecessorActor,
+		}
 	}
 	if w.DeployPolicy != nil {
 		s.DeployPolicy = &engine.DeployPolicy{RequiredRole: engine.Role(w.DeployPolicy.RequiredRole), Target: w.DeployPolicy.Target}
@@ -96,7 +100,11 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 		w.CommandPolicy = &wire.CommandPolicy{RequiredRole: string(s.CommandPolicy.RequiredRole), MaxConcurrent: s.CommandPolicy.MaxConcurrent}
 	}
 	if s.ApprovalPolicy != nil {
-		w.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: s.ApprovalPolicy.RequiredApprovals, RequiredRole: string(s.ApprovalPolicy.RequiredRole)}
+		w.ApprovalPolicy = &wire.ApprovalPolicy{
+			RequiredApprovals:     s.ApprovalPolicy.RequiredApprovals,
+			RequiredRole:          string(s.ApprovalPolicy.RequiredRole),
+			BlockPredecessorActor: s.ApprovalPolicy.BlockPredecessorActor,
+		}
 	}
 	if s.DeployPolicy != nil {
 		w.DeployPolicy = &wire.DeployPolicy{RequiredRole: string(s.DeployPolicy.RequiredRole), Target: s.DeployPolicy.Target}
@@ -116,7 +124,8 @@ func pipelineFromWire(w wire.Pipeline) (engine.Pipeline, error) {
 	return engine.Pipeline{
 		Name: w.Name, Stages: stages, FanOutAt: w.FanOutAt,
 		Environments: w.Environments, EnvironmentDeps: w.EnvironmentDeps,
-		DebugEnvironments: w.DebugEnvironments, BriefsDir: w.BriefsDir,
+		DebugEnvironments: w.DebugEnvironments, EnvironmentOwners: w.EnvironmentOwners,
+		BriefsDir: w.BriefsDir,
 	}, nil
 }
 
@@ -128,7 +137,8 @@ func pipelineToWire(p engine.Pipeline) wire.Pipeline {
 	return wire.Pipeline{
 		Name: p.Name, Stages: stages, FanOutAt: p.FanOutAt,
 		Environments: p.Environments, EnvironmentDeps: p.EnvironmentDeps,
-		DebugEnvironments: p.DebugEnvironments, BriefsDir: p.BriefsDir,
+		DebugEnvironments: p.DebugEnvironments, EnvironmentOwners: p.EnvironmentOwners,
+		BriefsDir: p.BriefsDir,
 		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 	}
 }

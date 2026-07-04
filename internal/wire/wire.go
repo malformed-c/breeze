@@ -41,10 +41,15 @@ const (
 	OpStageStatus  Op = "stage.status"
 	OpStageWait    Op = "stage.wait" // streaming
 
-	OpDeployHistory  Op = "deploy.history"
-	OpDeployRollback Op = "deploy.rollback"
+	OpDeployHistory   Op = "deploy.history"
+	OpDeployRollback  Op = "deploy.rollback"
+	OpDeployClaim     Op = "deploy.claim"
+	OpDeployGrant     Op = "deploy.grant"
+	OpDeployGrantList Op = "deploy.grant.list"
 
 	OpOperatorSurface Op = "operator.surface" // consolidated human-operator "what needs attention" view
+
+	OpAuthCheck Op = "auth.check" // read-only: would As+Token pass a given role gate right now?
 )
 
 // Request is the single envelope for every op. Payload is op-specific and decoded
@@ -75,6 +80,19 @@ type PingResponse struct {
 type WhoAmIResponse struct {
 	Name  string   `json:"name,omitempty"`
 	Roles []string `json:"roles,omitempty"`
+}
+
+// AuthCheckRequest asks, without mutating anything, whether the As+Token already
+// present on the envelope would satisfy Tier-2 auth plus (if given) hold RequiredRole.
+// Used by `breeze apply --dry-run` to report whether the caller could actually apply
+// the plan it just printed, distinct from whether the plan itself is a no-op.
+type AuthCheckRequest struct {
+	RequiredRole string `json:"requiredRole,omitempty"`
+}
+
+type AuthCheckResponse struct {
+	Authorized bool   `json:"authorized"`
+	Reason     string `json:"reason,omitempty"` // set when Authorized is false
 }
 
 type PsResponse struct {
@@ -195,8 +213,9 @@ type CommandPolicy struct {
 	MaxConcurrent int    `json:"maxConcurrent,omitempty"`
 }
 type ApprovalPolicy struct {
-	RequiredApprovals int    `json:"requiredApprovals"`
-	RequiredRole      string `json:"requiredRole,omitempty"`
+	RequiredApprovals     int    `json:"requiredApprovals"`
+	RequiredRole          string `json:"requiredRole,omitempty"`
+	BlockPredecessorActor bool   `json:"blockPredecessorActor,omitempty"`
 }
 type DeployPolicy struct {
 	RequiredRole string `json:"requiredRole,omitempty"`
@@ -223,6 +242,7 @@ type Pipeline struct {
 	Environments      []string            `json:"environments,omitempty"`
 	EnvironmentDeps   map[string][]string `json:"environmentDeps,omitempty"`
 	DebugEnvironments []string            `json:"debugEnvironments,omitempty"` // exempt from Gate 2 + monotonic ordering
+	EnvironmentOwners map[string]string   `json:"environmentOwners,omitempty"` // informational only, never enforced
 	BriefsDir         string              `json:"briefsDir,omitempty"`
 	CreatedBy         string              `json:"createdBy,omitempty"`
 	CreatedAt         time.Time           `json:"createdAt,omitzero"`
@@ -343,6 +363,58 @@ type DeployHistoryRequest struct {
 }
 type DeployHistoryResponse struct {
 	Entries []DeployHistoryEntry `json:"entries"`
+}
+
+// DeployClaimRequest reserves a deploy stage's (target,environment) exclusivity
+// ahead of actually running the deploy — see ClaimDeployLock. TTL defaults to the
+// stage's own configured Timeout if omitted.
+type DeployClaimRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Environment string `json:"environment"`
+	TTL         string `json:"ttl,omitempty"`
+}
+type DeployClaimResponse struct {
+	LockID    string    `json:"lockId"`
+	Target    string    `json:"target"`
+	ExpiresAt time.Time `json:"expiresAt,omitzero"`
+}
+
+// DeployGrantRequest lets the environment's declared owner (or an admin) delegate
+// deploy authority over (Pipeline, Environment) to Grantee for TTL, optionally
+// restricted to specific Targets (empty = every target in the environment) — see
+// engine.GrantEnvironmentAccess.
+type DeployGrantRequest struct {
+	Pipeline    string   `json:"pipeline"`
+	Environment string   `json:"environment"`
+	Targets     []string `json:"targets,omitempty"`
+	Grantee     string   `json:"grantee"`
+	TTL         string   `json:"ttl"`
+}
+type DeployGrantResponse struct {
+	Grantee   string    `json:"grantee"`
+	Targets   []string  `json:"targets,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// EnvironmentGrantInfo mirrors engine.EnvironmentGrant for the wire.
+type EnvironmentGrantInfo struct {
+	Pipeline    string    `json:"pipeline"`
+	Environment string    `json:"environment"`
+	Targets     []string  `json:"targets,omitempty"`
+	Grantee     string    `json:"grantee"`
+	GrantedBy   string    `json:"grantedBy"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+// DeployGrantListRequest filters by Pipeline/Environment when set; both empty
+// means "every known grant."
+type DeployGrantListRequest struct {
+	Pipeline    string `json:"pipeline,omitempty"`
+	Environment string `json:"environment,omitempty"`
+}
+type DeployGrantListResponse struct {
+	Grants []EnvironmentGrantInfo `json:"grants,omitempty"`
 }
 
 // --- Operator surface ---

@@ -28,6 +28,8 @@ type Engine struct {
 
 	deployHistory map[string][]DeployRecord // pipeline+"/"+stage+"/"+env -> records
 
+	envGrants map[string]*EnvironmentGrant // pipeline+"/"+environment+"/"+grantee -> grant
+
 	waiters map[string][]chan struct{} // key -> parked waiters, for locks and stage instances
 
 	onChange func(Snapshot)
@@ -50,6 +52,7 @@ func New() *Engine {
 		lastDeployedSeq: make(map[string]int),
 		instances:       make(map[string]*StageInstance),
 		deployHistory:   make(map[string][]DeployRecord),
+		envGrants:       make(map[string]*EnvironmentGrant),
 		waiters:         make(map[string][]chan struct{}),
 		now:             time.Now,
 	}
@@ -95,6 +98,9 @@ func (e *Engine) snapshotLocked() Snapshot {
 	for k, v := range e.deployHistory {
 		snap.DeployHistory[k] = append([]DeployRecord(nil), v...)
 	}
+	for _, g := range e.envGrants {
+		snap.EnvironmentGrants = append(snap.EnvironmentGrants, *g)
+	}
 	return snap
 }
 
@@ -137,6 +143,11 @@ func (e *Engine) Load(snap Snapshot) {
 	e.deployHistory = make(map[string][]DeployRecord, len(snap.DeployHistory))
 	for k, v := range snap.DeployHistory {
 		e.deployHistory[k] = append([]DeployRecord(nil), v...)
+	}
+	e.envGrants = make(map[string]*EnvironmentGrant, len(snap.EnvironmentGrants))
+	for i := range snap.EnvironmentGrants {
+		g := snap.EnvironmentGrants[i]
+		e.envGrants[envGrantKey(g.Pipeline, g.Environment, g.Grantee)] = &g
 	}
 	e.lockSeq = snap.Seq
 

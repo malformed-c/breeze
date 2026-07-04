@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"breeze/internal/hook"
 )
@@ -55,6 +56,56 @@ func (e *Engine) RollbackDeployStage(pipelineName, stageName, commit, environmen
 	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, true)
 }
 
+// ClaimDeployLock lets actor reserve a deploy stage's (target,environment)
+// exclusivity ahead of actually running the deploy — so `breeze inventory`/
+// `operator` shows a Holder before the real deploy command even starts (e.g. to
+// signal intent to other agents before you're ready to trigger it for real).
+// Requires the same RBAC (DeployPolicy.RequiredRole) a real deploy would, since a
+// claim is just an early acquire of the same exclusivity. runDeployStage (via
+// lockHeldBy) recognizes and reuses a claim held by the same actor instead of
+// treating it as a self-conflict when the real deploy is triggered afterward.
+func (e *Engine) ClaimDeployLock(pipelineName, stageName, environment, actor string, ttl time.Duration) (*FileLock, string, error) {
+	e.mu.Lock()
+	p, ok := e.pipelines[pipelineName]
+	if !ok {
+		e.mu.Unlock()
+		return nil, "", fmt.Errorf("pipeline %q not found", pipelineName)
+	}
+	i := p.StageIndex(stageName)
+	if i < 0 {
+		e.mu.Unlock()
+		return nil, "", fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
+	}
+	stage := p.Stages[i]
+	if stage.Type != StageDeploy {
+		e.mu.Unlock()
+		return nil, "", fmt.Errorf("stage %q is not a deploy stage", stageName)
+	}
+	if !slices.Contains(p.Environments, environment) {
+		e.mu.Unlock()
+		return nil, "", fmt.Errorf("environment %q is not declared on pipeline %q", environment, pipelineName)
+	}
+	target := deployTarget(stage)
+	if !e.actorAuthorizedForDeployLocked(pipelineName, environment, target, actor, stage.DeployPolicy.RequiredRole) {
+		e.mu.Unlock()
+		return nil, "", gateErr("actor %q lacks required role %q (and no active grant for %s/%s/%s)", actor, stage.DeployPolicy.RequiredRole, pipelineName, environment, target)
+	}
+	timeout := stage.Timeout
+	e.mu.Unlock()
+
+	if ttl <= 0 {
+		ttl = timeout
+	}
+	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{deployLockKey(target, environment)}, LockExclusive, ttl)
+	if err != nil {
+		return nil, "", err
+	}
+	if !gotLock {
+		return nil, "", fmt.Errorf("%s/%s is already locked by another deploy", target, environment)
+	}
+	return lock, target, nil
+}
+
 func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, isRollback bool) (*StageInstance, error) {
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
@@ -96,15 +147,12 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 			return nil, gateErr("%s", reason)
 		}
 	}
-	if stage.DeployPolicy.RequiredRole != "" {
-		id, ok := e.identities[actor]
-		if !ok || !id.HasRole(stage.DeployPolicy.RequiredRole) {
-			e.mu.Unlock()
-			return nil, gateErr("actor %q lacks required role %q", actor, stage.DeployPolicy.RequiredRole)
-		}
+	target := deployTarget(stage)
+	if !e.actorAuthorizedForDeployLocked(pipelineName, environment, target, actor, stage.DeployPolicy.RequiredRole) {
+		e.mu.Unlock()
+		return nil, gateErr("actor %q lacks required role %q (and no active grant for %s/%s/%s)", actor, stage.DeployPolicy.RequiredRole, pipelineName, environment, target)
 	}
 
-	target := deployTarget(stage)
 	e.touchCommitSeq(pipelineName, commit)
 	commitSeq := e.commitSeq[pipelineName+"/"+commit]
 	lastSeqKey := pipelineName + "/" + target + "/" + environment
@@ -128,9 +176,15 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	}
 
 	e.mu.Unlock()
-	lock, gotLock, lockErr := e.TryAcquireResourceLock(actor, []string{deployLockKey(target, environment)}, LockExclusive, stage.Timeout)
-	if lockErr != nil {
-		return nil, lockErr
+	lockKey := deployLockKey(target, environment)
+	lock := e.lockHeldBy(actor, lockKey)
+	gotLock := lock != nil
+	if !gotLock {
+		var lockErr error
+		lock, gotLock, lockErr = e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, stage.Timeout)
+		if lockErr != nil {
+			return nil, lockErr
+		}
 	}
 	if !gotLock {
 		e.mu.Lock()

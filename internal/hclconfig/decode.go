@@ -19,6 +19,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsimple"
+	"github.com/zclconf/go-cty/cty"
 
 	"breeze/internal/wire"
 )
@@ -29,12 +30,13 @@ type ConfigHCL struct {
 }
 
 type PipelineHCL struct {
-	Name              string        `hcl:"name,label"`
-	Environments      []string      `hcl:"environments,optional"`
-	EnvDeps           *EnvDepsBlock `hcl:"environment_deps,block"`
-	DebugEnvironments []string      `hcl:"debug_environments,optional"`
-	BriefsDir         string        `hcl:"briefs_dir,optional"`
-	Stages            []StageHCL    `hcl:"stage,block"`
+	Name              string          `hcl:"name,label"`
+	Environments      []string        `hcl:"environments,optional"`
+	EnvDeps           *EnvDepsBlock   `hcl:"environment_deps,block"`
+	DebugEnvironments []string        `hcl:"debug_environments,optional"`
+	EnvOwners         *EnvOwnersBlock `hcl:"environment_owners,block"`
+	BriefsDir         string          `hcl:"briefs_dir,optional"`
+	Stages            []StageHCL      `hcl:"stage,block"`
 }
 
 // EnvDepsBlock captures the environment_deps block's attributes dynamically — its
@@ -44,20 +46,29 @@ type EnvDepsBlock struct {
 	Remain hcl.Body `hcl:",remain"`
 }
 
+// EnvOwnersBlock captures environment_owners the same dynamic-attribute way as
+// EnvDepsBlock, but each attribute is a single identity name string (env = "alice"),
+// not a list — purely informational (see engine.Pipeline.EnvironmentOwners), never
+// enforced by any gate.
+type EnvOwnersBlock struct {
+	Remain hcl.Body `hcl:",remain"`
+}
+
 type StageHCL struct {
-	Name              string    `hcl:"name,label"`
-	Type              string    `hcl:"type"`
-	FansOut           bool      `hcl:"fans_out,optional"`
-	Debug             bool      `hcl:"debug,optional"`
-	RequiredRole      string    `hcl:"required_role,optional"`
-	ConcurrencyLimit  int       `hcl:"concurrency_limit,optional"`
-	RequiredApprovals int       `hcl:"required_approvals,optional"`
-	ApproverRole      string    `hcl:"approver_role,optional"`
-	Target            string    `hcl:"target,optional"`
-	Command           []string  `hcl:"command,optional"`
-	Timeout           string    `hcl:"timeout,optional"`
-	PreGate           []HookHCL `hcl:"pre_gate,block"`
-	PostAction        []HookHCL `hcl:"post_action,block"`
+	Name                  string    `hcl:"name,label"`
+	Type                  string    `hcl:"type"`
+	FansOut               bool      `hcl:"fans_out,optional"`
+	Debug                 bool      `hcl:"debug,optional"`
+	RequiredRole          string    `hcl:"required_role,optional"`
+	ConcurrencyLimit      int       `hcl:"concurrency_limit,optional"`
+	RequiredApprovals     int       `hcl:"required_approvals,optional"`
+	ApproverRole          string    `hcl:"approver_role,optional"`
+	BlockPredecessorActor bool      `hcl:"block_predecessor_actor,optional"`
+	Target                string    `hcl:"target,optional"`
+	Command               []string  `hcl:"command,optional"`
+	Timeout               string    `hcl:"timeout,optional"`
+	PreGate               []HookHCL `hcl:"pre_gate,block"`
+	PostAction            []HookHCL `hcl:"post_action,block"`
 }
 
 type HookHCL struct {
@@ -155,11 +166,16 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 	if err != nil {
 		return wire.Pipeline{}, err
 	}
+	envOwners, err := translateEnvOwners(ph.EnvOwners)
+	if err != nil {
+		return wire.Pipeline{}, err
+	}
 
 	return wire.Pipeline{
 		Name: ph.Name, Stages: stages, FanOutAt: fanOutAt,
 		Environments: ph.Environments, EnvironmentDeps: envDeps,
-		DebugEnvironments: ph.DebugEnvironments, BriefsDir: ph.BriefsDir,
+		DebugEnvironments: ph.DebugEnvironments, EnvironmentOwners: envOwners,
+		BriefsDir: ph.BriefsDir,
 	}, nil
 }
 
@@ -191,13 +207,35 @@ func translateEnvDeps(block *EnvDepsBlock) (map[string][]string, error) {
 	return out, nil
 }
 
+func translateEnvOwners(block *EnvOwnersBlock) (map[string]string, error) {
+	if block == nil {
+		return nil, nil
+	}
+	attrs, diags := block.Remain.JustAttributes()
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	out := make(map[string]string, len(attrs))
+	for name, attr := range attrs {
+		val, diags := attr.Expr.Value(nil)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		if val.Type() != cty.String {
+			return nil, fmt.Errorf("environment_owners.%s must be a single identity name string", name)
+		}
+		out[name] = val.AsString()
+	}
+	return out, nil
+}
+
 func translateStage(sh StageHCL) (wire.StageDef, error) {
 	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command), Debug: sh.Debug}
 	switch sh.Type {
 	case "command":
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
 	case "approval":
-		sd.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: sh.RequiredApprovals, RequiredRole: sh.ApproverRole}
+		sd.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: sh.RequiredApprovals, RequiredRole: sh.ApproverRole, BlockPredecessorActor: sh.BlockPredecessorActor}
 	case "deploy":
 		sd.DeployPolicy = &wire.DeployPolicy{RequiredRole: sh.RequiredRole, Target: sh.Target}
 	default:
