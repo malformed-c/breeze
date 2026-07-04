@@ -696,8 +696,12 @@ func cmdLock(p paths, args []string) error {
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME")
 		}
+		lockPaths, err := canonicalLockPaths(f.rest)
+		if err != nil {
+			return err
+		}
 		payload, _ := json.Marshal(wire.LockAcquireRequest{
-			Paths: f.rest, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout,
+			Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout,
 		})
 		resp, err := call(p, wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
 		if err != nil {
@@ -1332,13 +1336,17 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 || len(f.cmdArgs) < 1 {
 		return fmt.Errorf("usage: breeze lock exec <path...> [--shared] --as NAME -- <command...>")
 	}
+	lockPaths, err := canonicalLockPaths(f.rest)
+	if err != nil {
+		return err
+	}
 	conn, err := dialOrStart(p)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	payload, _ := json.Marshal(wire.LockExecRequest{Paths: f.rest, Shared: f.shared})
+	payload, _ := json.Marshal(wire.LockExecRequest{Paths: lockPaths, Shared: f.shared})
 	resp, err := callOnConn(conn, wire.Request{Op: wire.OpLockExec, As: as, Payload: payload})
 	if err != nil {
 		return err

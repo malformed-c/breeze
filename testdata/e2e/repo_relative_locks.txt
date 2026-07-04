@@ -1,0 +1,29 @@
+# Lock paths relative to a git worktree's toplevel canonicalize identically across
+# every worktree of the same repo, so two agents each in their own worktree checkout
+# contend for the very same logical file instead of two unrelated absolute paths
+# that happen to share a name.
+env BREEZE_DIR=$WORK/state
+
+exec git init -q repo
+cd repo
+exec git -c user.email=test@example.com -c user.name=test commit -q --allow-empty -m init
+exec git worktree add -q ../wt -b wt1branch
+mkdir a/b
+cd a/b
+
+exec breeze lock acquire file.txt --as alice --ttl 5m --json
+stdout '"paths":\s*\[\s*"a/b/file.txt"\s*\]'
+
+cd $WORK/wt
+exec git rev-parse --show-toplevel
+
+# The same logical path, named relative to THIS worktree's own toplevel, must
+# conflict with alice's still-held lock even though this is a different directory.
+! exec breeze lock acquire a/b/file.txt --as bob --ttl 5m
+stderr 'conflict|lock'
+
+exec breeze lock list --json
+stdout '"paths":\s*\[\s*"a/b/file.txt"\s*\]'
+stdout '"holder":\s*"alice"'
+
+exec breeze stop

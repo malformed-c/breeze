@@ -11,14 +11,18 @@ import (
 
 var ErrLockConflict = fmt.Errorf("lock conflict")
 
-func canonicalPaths(paths []string) ([]string, error) {
+// canonicalPaths only Cleans and dedupes — it deliberately does NOT call
+// filepath.Abs. The daemon is a long-lived process with an arbitrary cwd unrelated
+// to whichever worktree a caller is sitting in, so absolutizing here would silently
+// resolve relative paths against the wrong directory. Callers (the CLI's
+// canonicalLockPaths) are responsible for turning a raw path into its final
+// canonical form — either an absolute filesystem path, or a path relative to a git
+// worktree's toplevel (so the same logical file locks consistently across every
+// worktree of one repo) — using their OWN real cwd before it ever reaches here.
+func canonicalPaths(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, filepath.Clean(abs))
+		out = append(out, filepath.Clean(p))
 	}
 	sort.Strings(out)
 	// dedupe
@@ -30,7 +34,7 @@ func canonicalPaths(paths []string) ([]string, error) {
 		}
 		last = p
 	}
-	return deduped, nil
+	return deduped
 }
 
 // conflicts reports whether a lock request for paths/mode conflicts with an existing
@@ -51,11 +55,7 @@ func locksConflict(paths []string, mode LockMode, existing *FileLock) bool {
 // (breeze lock acquire/exec). ok=false means conflict (caller may retry after waiting
 // on WaitChannelsForPaths). No RBAC check — locks carry no policy by design.
 func (e *Engine) TryAcquireLock(holder string, rawPaths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, error) {
-	paths, err := canonicalPaths(rawPaths)
-	if err != nil {
-		return nil, false, err
-	}
-	return e.tryAcquire(LockKindFile, holder, paths, mode, ttl, attached)
+	return e.tryAcquire(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached)
 }
 
 // TryAcquireResourceLock is the internal-use counterpart for non-filesystem
@@ -139,10 +139,7 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 // single channel that closes when ANY of them is signaled (release/expire touching
 // that path) — mirrors mess's per-key Broker.waitChan pattern applied per contested path.
 func (e *Engine) WaitChannelsForPaths(rawPaths []string) (<-chan struct{}, error) {
-	paths, err := canonicalPaths(rawPaths)
-	if err != nil {
-		return nil, err
-	}
+	paths := canonicalPaths(rawPaths)
 	ch := make(chan struct{})
 	e.mu.Lock()
 	for _, p := range paths {

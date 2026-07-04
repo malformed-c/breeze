@@ -97,6 +97,14 @@ breeze inventory [--json]     # separate view of internal RESOURCE locks (e.g. a
 Prefer `lock exec` over acquire+manually-remembering-to-release when running an
 actual command — a killed/crashed agent still releases the lock immediately.
 
+A relative path is resolved against **your own cwd**, not the daemon's, and — if
+you're inside a git worktree — reduced to a path relative to that worktree's
+toplevel. So `breeze lock acquire src/main.go` names the same logical resource no
+matter which worktree of the repo you run it from (they share one daemon), letting
+two agents in two different worktree checkouts of the same repo actually contend for
+one lock. Outside a repo, or for a path outside the current worktree, it's just a
+plain absolute path, same as always.
+
 ## 4. Pipelines — the main feature
 
 A pipeline is an admin-defined ordered list of stages, keyed by commit hash:

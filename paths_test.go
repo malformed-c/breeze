@@ -96,6 +96,86 @@ func TestResolvePathsSharedAcrossWorktrees(t *testing.T) {
 	}
 }
 
+func TestCanonicalLockPathsOutsideAnyRepo(t *testing.T) {
+	dir := t.TempDir() // guaranteed not inside a git repo
+	restore := chdir(t, dir)
+	defer restore()
+
+	got, err := canonicalLockPaths([]string{"target/file.txt"})
+	if err != nil {
+		t.Fatalf("canonicalLockPaths: %v", err)
+	}
+	want := filepath.Join(dir, "target/file.txt")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("expected a plain absolute path %q outside any repo, got %v", want, got)
+	}
+}
+
+// TestCanonicalLockPathsAgreeAcrossWorktrees is the point of repo-relative path
+// locking: the same logical file, named the same relative way, must canonicalize to
+// the identical string from every worktree of one repo — even though each worktree
+// is a physically distinct directory — so two agents in different worktrees of the
+// same repo actually contend for the same lock instead of silently locking two
+// different absolute paths that happen to share a basename.
+func TestCanonicalLockPathsAgreeAcrossWorktrees(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
+
+	worktree := filepath.Join(t.TempDir(), "wt1")
+	runIn(t, repo, "git", "worktree", "add", "-q", worktree, "-b", "wt1branch")
+
+	sub := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	restoreMain := chdir(t, sub)
+	gotMain, err := canonicalLockPaths([]string{"file.txt"})
+	restoreMain()
+	if err != nil {
+		t.Fatalf("canonicalLockPaths (main worktree subdir): %v", err)
+	}
+	if want := "a/b/file.txt"; len(gotMain) != 1 || gotMain[0] != want {
+		t.Fatalf("expected %q relative to the worktree toplevel, got %v", want, gotMain)
+	}
+
+	restoreWt := chdir(t, worktree)
+	gotWt, err := canonicalLockPaths([]string{"a/b/file.txt"})
+	restoreWt()
+	if err != nil {
+		t.Fatalf("canonicalLockPaths (linked worktree): %v", err)
+	}
+
+	if gotMain[0] != gotWt[0] {
+		t.Fatalf("expected the same logical path to canonicalize identically across worktrees — main=%v worktree=%v", gotMain, gotWt)
+	}
+}
+
+// TestCanonicalLockPathsFallsBackOutsideTheWorktree covers a path that exists but
+// lives outside the current worktree entirely (e.g. locking something in /tmp while
+// sitting inside a repo) — this must NOT be forced into a bogus "../.." relative
+// path; it should fall back to a plain absolute path, same as outside any repo.
+func TestCanonicalLockPathsFallsBackOutsideTheWorktree(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	restore := chdir(t, repo)
+	defer restore()
+
+	outside := filepath.Join(t.TempDir(), "elsewhere.txt")
+	got, err := canonicalLockPaths([]string{outside})
+	if err != nil {
+		t.Fatalf("canonicalLockPaths: %v", err)
+	}
+	if len(got) != 1 || got[0] != outside {
+		t.Fatalf("expected the absolute out-of-worktree path %q unchanged, got %v", outside, got)
+	}
+}
+
 func chdir(t *testing.T, dir string) func() {
 	t.Helper()
 	old, err := os.Getwd()

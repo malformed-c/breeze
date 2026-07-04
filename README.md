@@ -109,6 +109,18 @@ holder or `--force` can release), not a permission check.
 internally (e.g. a deploy stage's exclusivity on a `(target, environment)` pair) —
 kept apart from real file paths shown by `lock list`.
 
+**Paths are resolved client-side, relative to your git worktree's toplevel when
+you're in one.** A relative path like `src/main.go` doesn't get resolved against the
+daemon's own (arbitrary, long-lived) working directory — it's resolved against
+*your* actual cwd, and then, if you're inside a git worktree, reduced to a path
+relative to that worktree's root. That means `breeze lock acquire src/main.go` names
+the same logical resource no matter which of a repo's worktrees you run it from
+(they all share one breeze daemon per the per-repo rule above), so two agents in two
+different worktree checkouts correctly contend for the same lock instead of two
+unrelated absolute paths that happen to share a name. A path outside any repo, or
+outside the current worktree entirely, falls back to a plain absolute filesystem
+path, unchanged from locking any other real file.
+
 ### Pipelines — the main feature
 
 A pipeline is an admin-defined, ordered list of **stages**, keyed by commit hash.

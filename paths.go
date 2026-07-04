@@ -88,3 +88,55 @@ func detectGitCommonDir() (string, bool) {
 func (p paths) ensureDir() error {
 	return os.MkdirAll(p.dir, 0o700)
 }
+
+// detectGitToplevel returns the absolute path to the current worktree's own root
+// directory (NOT the shared --git-common-dir — every linked worktree of a repo has
+// its own distinct toplevel directory on disk, even though they share one .git).
+func detectGitToplevel() (string, bool) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", false
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	return abs, true
+}
+
+// canonicalLockPaths resolves each raw `breeze lock` path argument the way the
+// daemon itself no longer can: relative to THIS process's actual cwd, not the
+// daemon's (a long-lived daemon's cwd is arbitrary and unrelated to whichever
+// worktree a caller happens to be sitting in). When the path lives inside a git
+// worktree, it's further reduced to a path relative to that worktree's toplevel —
+// so `breeze lock acquire src/main.go` names the same logical resource regardless
+// of which of the repo's worktrees (each its own absolute directory, sharing one
+// breeze daemon per resolvePaths' --git-common-dir rule) it's invoked from. Outside
+// any repo, or for a path that lives outside the current worktree entirely, it falls
+// back to a plain absolute filesystem path — unchanged from breeze's original
+// behavior, just computed with the correct (client-side) cwd instead of the
+// daemon's.
+func canonicalLockPaths(raw []string) ([]string, error) {
+	out := make([]string, len(raw))
+	for i, p := range raw {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = abs
+		toplevel, ok := detectGitToplevel()
+		if !ok {
+			continue
+		}
+		rel, err := filepath.Rel(toplevel, abs)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue // outside this worktree entirely — keep the absolute path
+		}
+		out[i] = rel
+	}
+	return out, nil
+}
