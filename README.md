@@ -27,6 +27,11 @@ agent just calls into it.
 go build -o ~/.local/bin/breeze .   # or `go install` to wherever your GOBIN is
 ```
 
+This repo ships a [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills)
+at `.claude/skills/breeze/SKILL.md` — clone this repo and Claude Code picks it up
+automatically as a project-scoped skill, no separate install step. It's the same
+content as the operational cheat-sheet below, kept in sync with it.
+
 ## Per-repo by default
 
 breeze picks its state directory in this order:
