@@ -73,10 +73,21 @@ func (e *Engine) SetOnChange(fn func(Snapshot)) {
 }
 
 // changed must be called with e.mu held; it snapshots state and fires onChange
-// outside the lock to avoid reentrant deadlocks (mirrors mess's daemon.persist wiring),
-// and wakes every subscribed operator.watch connection so it can push a fresh
-// surface — every mutation runs through here, so this is the one choke point that
-// makes operator.watch event-driven rather than a polling loop.
+// synchronously, and wakes every subscribed operator.watch connection so it can push
+// a fresh surface — every mutation runs through here, so this is the one choke point
+// that makes operator.watch event-driven rather than a polling loop.
+//
+// onChange is called inline, not via a spawned goroutine: it's wired to
+// snapshotWriter.submit (see daemon.go), which is itself fast and never touches
+// e.mu (it only records the snapshot as "pending" under its own separate mutex and,
+// if needed, spawns its own goroutine for the actual slow disk write) — so calling
+// it synchronously here can never deadlock or meaningfully delay the caller. Calling
+// it via `go fn(snap)` instead (the original design) was a real bug: the Go
+// scheduler gives no guarantee about when a newly spawned goroutine actually runs,
+// so a shutdown sequence's snapshotWriter.waitIdle() (see daemon.go) could run
+// BEFORE that goroutine had even called submit() yet — observing "nothing pending"
+// when a write hadn't been queued yet, not because it had already finished — and
+// proceed to tear down before the most recent mutation was ever persisted.
 func (e *Engine) changed() {
 	for _, ch := range e.operatorSubs {
 		select {
@@ -88,9 +99,7 @@ func (e *Engine) changed() {
 	if e.onChange == nil {
 		return
 	}
-	snap := e.snapshotLocked()
-	fn := e.onChange
-	go fn(snap)
+	e.onChange(e.snapshotLocked())
 }
 
 // SubscribeOperatorChanges registers a new wake channel, signaled (non-blockingly,
