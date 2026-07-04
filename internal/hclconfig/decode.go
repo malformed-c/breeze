@@ -1,0 +1,182 @@
+// Package hclconfig translates HCL pipeline configuration into breeze's wire types.
+// This is a CLI-only concern (used exclusively by `breeze apply`) — the daemon has
+// zero knowledge of HCL, keeping it dependency-light and the daemon's registered
+// state as the sole source of truth. HCL is purely a nicer authoring format for
+// payloads the wire protocol already accepts, not a new mechanism.
+//
+// A separate *HCL struct set is decoded via gohcl, then translated into wire types,
+// rather than putting hcl: tags directly on the wire structs: gohcl's ,label/,block/
+// ,remain conventions don't map 1:1 onto the wire shape (EnvironmentDeps is a plain
+// map[string][]string with no natural HCL block/label shape for a dynamic,
+// unknown-ahead-of-time set of attribute names, decoded via hcl.Body.JustAttributes;
+// fans_out=true on a stage block needs translating into the wire Pipeline.FanOutAt
+// index). Isolating this here keeps HCL-specific quirks out of the wire model.
+package hclconfig
+
+import (
+	"fmt"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsimple"
+
+	"breeze/internal/wire"
+)
+
+type ConfigHCL struct {
+	Pipelines []PipelineHCL `hcl:"pipeline,block"`
+	Roles     []RoleHCL     `hcl:"role,block"`
+}
+
+type PipelineHCL struct {
+	Name         string        `hcl:"name,label"`
+	Environments []string      `hcl:"environments,optional"`
+	EnvDeps      *EnvDepsBlock `hcl:"environment_deps,block"`
+	BriefsDir    string        `hcl:"briefs_dir,optional"`
+	Stages       []StageHCL    `hcl:"stage,block"`
+}
+
+// EnvDepsBlock captures the environment_deps block's attributes dynamically — its
+// attribute names are arbitrary environment names, unknown ahead of time, so this
+// can't be a fixed-field struct like the rest.
+type EnvDepsBlock struct {
+	Remain hcl.Body `hcl:",remain"`
+}
+
+type StageHCL struct {
+	Name              string    `hcl:"name,label"`
+	Type              string    `hcl:"type"`
+	FansOut           bool      `hcl:"fans_out,optional"`
+	RequiredRole      string    `hcl:"required_role,optional"`
+	ConcurrencyLimit  int       `hcl:"concurrency_limit,optional"`
+	RequiredApprovals int       `hcl:"required_approvals,optional"`
+	ApproverRole      string    `hcl:"approver_role,optional"`
+	Target            string    `hcl:"target,optional"`
+	Command           []string  `hcl:"command,optional"`
+	Timeout           string    `hcl:"timeout,optional"`
+	PreGate           []HookHCL `hcl:"pre_gate,block"`
+	PostAction        []HookHCL `hcl:"post_action,block"`
+}
+
+type HookHCL struct {
+	Command []string `hcl:"command"`
+	Timeout string   `hcl:"timeout"`
+}
+
+// RoleHCL is accepted syntactically (so a config file can document the roles a
+// pipeline expects) but is not currently translated into any mutating RPC: breeze
+// has no `role.create` op (roles are free-form, assigned via `role.assign <role>
+// <identity>`, which needs an identity this block shape doesn't carry) — bare role
+// declarations are a documentation aid for now, a no-op for `breeze apply`.
+type RoleHCL struct {
+	Name string `hcl:"name,label"`
+}
+
+// ParseFile parses path (HCL or JSON syntax, dispatched by file extension per
+// hclsimple's convention) into wire.Pipeline values ready for pipeline.register.
+func ParseFile(path string) ([]wire.Pipeline, error) {
+	var cfg ConfigHCL
+	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
+		return nil, err
+	}
+	pipelines := make([]wire.Pipeline, 0, len(cfg.Pipelines))
+	for _, ph := range cfg.Pipelines {
+		p, err := translatePipeline(ph)
+		if err != nil {
+			return nil, fmt.Errorf("pipeline %q: %w", ph.Name, err)
+		}
+		pipelines = append(pipelines, p)
+	}
+	return pipelines, nil
+}
+
+func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
+	stages := make([]wire.StageDef, 0, len(ph.Stages))
+	fanOutAt := len(ph.Stages) // default: no fan-out point at all
+	fanOutCount := 0
+	for i, sh := range ph.Stages {
+		sd, err := translateStage(sh)
+		if err != nil {
+			return wire.Pipeline{}, fmt.Errorf("stage %q: %w", sh.Name, err)
+		}
+		stages = append(stages, sd)
+		if sh.FansOut {
+			fanOutCount++
+			fanOutAt = i
+		}
+	}
+	if fanOutCount > 1 {
+		return wire.Pipeline{}, fmt.Errorf("only one stage may set fans_out = true, found %d", fanOutCount)
+	}
+
+	envDeps, err := translateEnvDeps(ph.EnvDeps)
+	if err != nil {
+		return wire.Pipeline{}, err
+	}
+
+	return wire.Pipeline{
+		Name: ph.Name, Stages: stages, FanOutAt: fanOutAt,
+		Environments: ph.Environments, EnvironmentDeps: envDeps, BriefsDir: ph.BriefsDir,
+	}, nil
+}
+
+func translateEnvDeps(block *EnvDepsBlock) (map[string][]string, error) {
+	if block == nil {
+		return nil, nil
+	}
+	attrs, diags := block.Remain.JustAttributes()
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	out := make(map[string][]string, len(attrs))
+	for name, attr := range attrs {
+		val, diags := attr.Expr.Value(nil)
+		if diags.HasErrors() {
+			return nil, diags
+		}
+		if !val.CanIterateElements() {
+			return nil, fmt.Errorf("environment_deps.%s must be a list of environment names", name)
+		}
+		var deps []string
+		it := val.ElementIterator()
+		for it.Next() {
+			_, v := it.Element()
+			deps = append(deps, v.AsString())
+		}
+		out[name] = deps
+	}
+	return out, nil
+}
+
+func translateStage(sh StageHCL) (wire.StageDef, error) {
+	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command)}
+	switch sh.Type {
+	case "command":
+		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
+	case "approval":
+		sd.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: sh.RequiredApprovals, RequiredRole: sh.ApproverRole}
+	case "deploy":
+		sd.DeployPolicy = &wire.DeployPolicy{RequiredRole: sh.RequiredRole, Target: sh.Target}
+	default:
+		return wire.StageDef{}, fmt.Errorf("unknown stage type %q (must be command, approval, or deploy)", sh.Type)
+	}
+	for _, h := range sh.PreGate {
+		sd.PreGate = append(sd.PreGate, translateHook(h))
+	}
+	for _, h := range sh.PostAction {
+		sd.PostAction = append(sd.PostAction, translateHook(h))
+	}
+	return sd, nil
+}
+
+func translateHook(h HookHCL) wire.Hook {
+	return wire.Hook{Command: commandFromList(h.Command), Timeout: h.Timeout}
+}
+
+// commandFromList implements the documented convention: a command list's first
+// element is the executable path, the rest are its arguments.
+func commandFromList(cmd []string) wire.CommandTemplate {
+	if len(cmd) == 0 {
+		return wire.CommandTemplate{}
+	}
+	return wire.CommandTemplate{Path: cmd[0], Args: cmd[1:]}
+}

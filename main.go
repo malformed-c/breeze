@@ -1,0 +1,914 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"breeze/internal/hclconfig"
+	"breeze/internal/wire"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(1)
+	}
+	p := resolvePaths()
+	cmd := os.Args[1]
+	args := os.Args[2:]
+
+	var err error
+	switch cmd {
+	case "daemon":
+		err = runDaemon(p)
+	case "stop":
+		err = cmdStop(p)
+	case "ping":
+		err = cmdPing(p)
+	case "status":
+		err = cmdStatus(p, args)
+	case "whoami":
+		err = cmdWhoAmI(p, args)
+	case "ps":
+		err = cmdPs(p, args)
+	case "identity":
+		err = cmdIdentity(p, args)
+	case "role":
+		err = cmdRole(p, args)
+	case "lock":
+		err = cmdLock(p, args)
+	case "inventory":
+		err = cmdInventory(p, args)
+	case "pipeline":
+		err = cmdPipeline(p, args)
+	case "stage":
+		err = cmdStage(p, args)
+	case "deploy":
+		err = cmdDeploy(p, args)
+	case "apply":
+		err = cmdApply(p, args)
+	default:
+		usage()
+		os.Exit(1)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "breeze:", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `usage: breeze <command> [args]
+
+commands:
+  daemon                                run the daemon in the foreground
+  stop                                  shut the daemon down
+  ping                                  check daemon liveness (auto-starts it)
+  status [--json]                       one-shot overview: liveness, identity/lock/
+                                         resource/pipeline counts
+  whoami [--as NAME]                    print resolved identity
+  ps [--json]                           list identities and locks
+
+  identity register <name>              mint a token, print it once (fresh name: no
+                                         auth needed; existing name: rotate with its
+                                         own --as/--token, or --force as an admin)
+  identity revoke <name> --as ADMIN --token T
+
+  role assign <role> <identity> --as ADMIN --token T
+  role revoke <role> <identity> --as ADMIN --token T
+  role list [--json]
+
+  lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
+  lock exec <path...> [--shared] --as NAME -- <command...>
+  lock release <lock-id> --as NAME [--force]
+  lock renew <lock-id> [--ttl D] --as NAME
+  lock list [--json]
+
+  inventory [--json]                    list non-file resources (e.g. deploy-env
+                                         exclusivity) and their current holder
+
+  pipeline register <file.json|-> --as ADMIN --token T
+  pipeline show <name> [--json]
+  pipeline list [--json]
+  pipeline status <name> <commit> [--json]
+
+  stage start   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  stage approve <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  stage status  <pipeline> <stage> <commit> [--env NAME] [--json]
+  stage wait    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
+                                         # designed to be backgrounded: start, then
+                                         # background this command and continue other work
+
+  deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]
+
+  apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
+                                         # HCL-authored pipeline config, client-side
+                                         # only; upserts via pipeline.register`)
+}
+
+// --- flag helpers (small, ad hoc — breeze payloads are structured, not free text,
+// so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
+
+type flagSet struct {
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file string
+	shared, wait, force, jsonOut, dryRun, prune                 bool
+	rest                                                        []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                     []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+}
+
+func parseFlags(args []string) flagSet {
+	var f flagSet
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch a {
+		case "--as":
+			i++
+			if i < len(args) {
+				f.as = args[i]
+			}
+		case "--token":
+			i++
+			if i < len(args) {
+				f.token = args[i]
+			}
+		case "--token-file":
+			i++
+			if i < len(args) {
+				f.tokenFile = args[i]
+			}
+		case "--ttl":
+			i++
+			if i < len(args) {
+				f.ttl = args[i]
+			}
+		case "--timeout":
+			i++
+			if i < len(args) {
+				f.timeout = args[i]
+			}
+		case "--env":
+			i++
+			if i < len(args) {
+				f.env = args[i]
+			}
+		case "--brief":
+			i++
+			if i < len(args) {
+				f.brief = args[i]
+			}
+		case "--limit":
+			i++
+			if i < len(args) {
+				f.limit = args[i]
+			}
+		case "-f", "--file":
+			i++
+			if i < len(args) {
+				f.file = args[i]
+			}
+		case "--prune":
+			f.prune = true
+		case "--shared":
+			f.shared = true
+		case "--wait":
+			f.wait = true
+		case "--force":
+			f.force = true
+		case "--json":
+			f.jsonOut = true
+		case "--dry-run":
+			f.dryRun = true
+		case "--":
+			f.cmdArgs = append(f.cmdArgs, args[i+1:]...)
+			i = len(args)
+			continue
+		default:
+			f.rest = append(f.rest, a)
+		}
+		i++
+	}
+	return f
+}
+
+// resolveToken returns the explicit token, reading --token-file if --token wasn't given.
+func (f flagSet) resolveToken() (string, error) {
+	if f.token != "" {
+		return f.token, nil
+	}
+	if f.tokenFile != "" {
+		data, err := os.ReadFile(f.tokenFile)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(data)), nil
+	}
+	return "", nil
+}
+
+// resolveIdentity implements the Tier-1 chain: --as > session-scoped file > BREEZE_AGENT.
+// This is client-side convenience resolution only — the daemon never trusts it for
+// anything authorization-bearing (Tier-2 ops require --as+--token explicitly, checked
+// server-side regardless of what this function would have guessed).
+func resolveIdentity(p paths, f flagSet) string {
+	if f.as != "" {
+		return f.as
+	}
+	if sid := sessionID(); sid != "" {
+		data, err := os.ReadFile(identFile(p, sid))
+		if err == nil {
+			if name := strings.TrimSpace(string(data)); name != "" {
+				return name
+			}
+		}
+	}
+	return os.Getenv("BREEZE_AGENT")
+}
+
+func sessionID() string {
+	for _, k := range []string{"BREEZE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"} {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func identFile(p paths, sessionID string) string {
+	return p.identDir + "/" + sanitizeFileName(sessionID) + "/name"
+}
+
+func sanitizeFileName(s string) string {
+	return strings.NewReplacer("/", "_", "\\", "_").Replace(s)
+}
+
+func printJSON(v any) {
+	data, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(data))
+}
+
+// --- commands ---
+
+func cmdStop(p paths) error {
+	_, err := call(p, wire.Request{Op: wire.OpStop})
+	if err != nil {
+		return err
+	}
+	fmt.Println("stopped")
+	return nil
+}
+
+func cmdPing(p paths) error {
+	resp, err := call(p, wire.Request{Op: wire.OpPing})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.PingResponse](resp)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pong (pid %d, version %s)\n", out.Pid, out.Version)
+	return nil
+}
+
+// cmdStatus gives a one-shot overview by composing existing ops client-side (no new
+// wire Op needed): liveness, identity/lock counts (via ps), and registered pipelines.
+func cmdStatus(p paths, args []string) error {
+	f := parseFlags(args)
+
+	pingResp, err := call(p, wire.Request{Op: wire.OpPing})
+	if err != nil {
+		return err
+	}
+	ping, err := decodePayload[wire.PingResponse](pingResp)
+	if err != nil {
+		return err
+	}
+
+	psResp, err := call(p, wire.Request{Op: wire.OpPs})
+	if err != nil {
+		return err
+	}
+	ps, err := decodePayload[wire.PsResponse](psResp)
+	if err != nil {
+		return err
+	}
+
+	invResp, err := call(p, wire.Request{Op: wire.OpInventory})
+	if err != nil {
+		return err
+	}
+	inv, err := decodePayload[wire.InventoryResponse](invResp)
+	if err != nil {
+		return err
+	}
+
+	pipeResp, err := call(p, wire.Request{Op: wire.OpPipelineList})
+	if err != nil {
+		return err
+	}
+	pipe, err := decodePayload[wire.PipelineListResponse](pipeResp)
+	if err != nil {
+		return err
+	}
+
+	if f.jsonOut {
+		printJSON(struct {
+			Ping      wire.PingResponse         `json:"ping"`
+			Ps        wire.PsResponse           `json:"ps"`
+			Inventory wire.InventoryResponse    `json:"inventory"`
+			Pipelines wire.PipelineListResponse `json:"pipelines"`
+		}{ping, ps, inv, pipe})
+		return nil
+	}
+	fmt.Printf("breeze daemon: pid %d, version %s\n", ping.Pid, ping.Version)
+	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
+		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
+	return nil
+}
+
+func cmdWhoAmI(p paths, args []string) error {
+	f := parseFlags(args)
+	as := resolveIdentity(p, f)
+	resp, err := call(p, wire.Request{Op: wire.OpWhoAmI, As: as})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.WhoAmIResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	if out.Name == "" {
+		fmt.Println("(no identity)")
+		return nil
+	}
+	fmt.Printf("%s roles=%s\n", out.Name, strings.Join(out.Roles, ","))
+	return nil
+}
+
+func cmdPs(p paths, args []string) error {
+	f := parseFlags(args)
+	resp, err := call(p, wire.Request{Op: wire.OpPs})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.PsResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	fmt.Println("identities:")
+	for _, id := range out.Identities {
+		fmt.Printf("  %-20s roles=%-20s token=%v\n", id.Name, strings.Join(id.Roles, ","), id.HasToken)
+	}
+	fmt.Println("locks:")
+	for _, l := range out.Locks {
+		fmt.Printf("  %-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
+	}
+	return nil
+}
+
+func cmdIdentity(p paths, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze identity register|revoke ...")
+	}
+	sub, rest := args[0], args[1:]
+	f := parseFlags(rest)
+	switch sub {
+	case "register":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze identity register <name> [--as NAME --token T | --force --as ADMIN --token T]")
+		}
+		name := f.rest[0]
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force})
+		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: f.as, Token: token, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.IdentityRegisterResponse](resp)
+		if err != nil {
+			return err
+		}
+		if sid := sessionID(); sid != "" {
+			path := identFile(p, sid)
+			os.MkdirAll(path[:strings.LastIndex(path, "/")], 0o700)
+			os.WriteFile(path, []byte(out.Name+"\n"), 0o600)
+		}
+		fmt.Println(out.Token)
+		return nil
+	case "revoke":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze identity revoke <name> --as ADMIN --token T")
+		}
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(wire.IdentityRevokeRequest{Name: f.rest[0]})
+		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: f.as, Token: token, Payload: payload})
+		return err
+	default:
+		return fmt.Errorf("unknown identity subcommand %q", sub)
+	}
+}
+
+func cmdRole(p paths, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze role assign|revoke|list ...")
+	}
+	sub, rest := args[0], args[1:]
+	f := parseFlags(rest)
+	switch sub {
+	case "assign", "revoke":
+		if len(f.rest) < 2 {
+			return fmt.Errorf("usage: breeze role %s <role> <identity> --as ADMIN --token T", sub)
+		}
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		op := wire.OpRoleAssign
+		var payload []byte
+		if sub == "assign" {
+			payload, _ = json.Marshal(wire.RoleAssignRequest{Role: f.rest[0], Identity: f.rest[1]})
+		} else {
+			op = wire.OpRoleRevoke
+			payload, _ = json.Marshal(wire.RoleRevokeRequest{Role: f.rest[0], Identity: f.rest[1]})
+		}
+		_, err = call(p, wire.Request{Op: op, As: f.as, Token: token, Payload: payload})
+		return err
+	case "list":
+		resp, err := call(p, wire.Request{Op: wire.OpRoleList})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.RoleListResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		for _, id := range out.Identities {
+			fmt.Printf("%-20s %s\n", id.Name, strings.Join(id.Roles, ","))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown role subcommand %q", sub)
+	}
+}
+
+func cmdLock(p paths, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze lock acquire|exec|release|renew|list ...")
+	}
+	sub, rest := args[0], args[1:]
+	f := parseFlags(rest)
+	as := resolveIdentity(p, f)
+	switch sub {
+	case "acquire":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME")
+		}
+		payload, _ := json.Marshal(wire.LockAcquireRequest{
+			Paths: f.rest, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout,
+		})
+		resp, err := call(p, wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.LockAcquireResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		fmt.Println(out.Lock.ID)
+		return nil
+	case "release":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze lock release <lock-id> --as NAME [--force]")
+		}
+		payload, _ := json.Marshal(wire.LockReleaseRequest{ID: f.rest[0], Force: f.force})
+		_, err := call(p, wire.Request{Op: wire.OpLockRelease, As: as, Payload: payload})
+		return err
+	case "renew":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze lock renew <lock-id> [--ttl D] --as NAME")
+		}
+		payload, _ := json.Marshal(wire.LockRenewRequest{ID: f.rest[0], TTL: f.ttl})
+		_, err := call(p, wire.Request{Op: wire.OpLockRenew, As: as, Payload: payload})
+		return err
+	case "list":
+		resp, err := call(p, wire.Request{Op: wire.OpLockList})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.LockListResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		for _, l := range out.Locks {
+			fmt.Printf("%-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
+		}
+		return nil
+	case "exec":
+		return cmdLockExec(p, as, f)
+	default:
+		return fmt.Errorf("unknown lock subcommand %q", sub)
+	}
+}
+
+// cmdApply implements `breeze apply -f pipeline.hcl` — parses HCL client-side into
+// the same wire.Pipeline payloads pipeline.register already accepts (no new wire Op),
+// diffs against currently-registered pipelines, and upserts only what's new or
+// changed. The daemon never sees HCL; this is purely a client-side authoring
+// convenience, per the design.
+func cmdApply(p paths, args []string) error {
+	f := parseFlags(args)
+	if f.file == "" {
+		return fmt.Errorf("usage: breeze apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]")
+	}
+	if f.prune {
+		return fmt.Errorf("--prune is not yet supported (breeze has no pipeline-removal RPC) — refusing rather than silently ignoring it")
+	}
+
+	pipelines, err := hclconfig.ParseFile(f.file)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", f.file, err)
+	}
+
+	type planItem struct {
+		name   string
+		action string // "new" | "changed" | "unchanged"
+	}
+	var plan []planItem
+	var toApply []wire.Pipeline
+
+	for _, pl := range pipelines {
+		showPayload, _ := json.Marshal(wire.PipelineShowRequest{Name: pl.Name})
+		resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: showPayload})
+		action := "new"
+		if err == nil {
+			current, decErr := decodePayload[wire.PipelineShowResponse](resp)
+			if decErr == nil && pipelinesEqual(current.Pipeline, pl) {
+				action = "unchanged"
+			} else if decErr == nil {
+				action = "changed"
+			}
+		}
+		plan = append(plan, planItem{name: pl.Name, action: action})
+		if action != "unchanged" {
+			toApply = append(toApply, pl)
+		}
+	}
+
+	for _, item := range plan {
+		symbol := map[string]string{"new": "+", "changed": "~", "unchanged": "="}[item.action]
+		fmt.Printf("%s pipeline %s (%s)\n", symbol, item.name, item.action)
+	}
+
+	if f.dryRun {
+		return nil
+	}
+	if len(toApply) == 0 {
+		return nil
+	}
+
+	token, err := f.resolveToken()
+	if err != nil {
+		return err
+	}
+	for _, pl := range toApply {
+		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pl})
+		if _, err := call(p, wire.Request{Op: wire.OpPipelineRegister, As: f.as, Token: token, Payload: payload}); err != nil {
+			return fmt.Errorf("registering pipeline %q: %w", pl.Name, err)
+		}
+	}
+	return nil
+}
+
+// pipelinesEqual compares the parts of a Pipeline that `breeze apply` can actually
+// change — ignoring CreatedBy/CreatedAt (the daemon stamps these itself on every
+// register call) and normalizing duration strings (the server round-trips Timeout
+// through time.Duration, so "1m" as authored comes back as "1m0s" — textually
+// different, semantically identical; comparing raw strings would report "changed" on
+// every single no-op re-apply).
+func pipelinesEqual(a, b wire.Pipeline) bool {
+	a.CreatedBy, a.CreatedAt = "", time.Time{}
+	b.CreatedBy, b.CreatedAt = "", time.Time{}
+	normalizePipelineDurations(&a)
+	normalizePipelineDurations(&b)
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return string(aj) == string(bj)
+}
+
+func normalizePipelineDurations(p *wire.Pipeline) {
+	for i := range p.Stages {
+		p.Stages[i].Timeout = normalizeDuration(p.Stages[i].Timeout)
+		for j := range p.Stages[i].PreGate {
+			p.Stages[i].PreGate[j].Timeout = normalizeDuration(p.Stages[i].PreGate[j].Timeout)
+		}
+		for j := range p.Stages[i].PostAction {
+			p.Stages[i].PostAction[j].Timeout = normalizeDuration(p.Stages[i].PostAction[j].Timeout)
+		}
+	}
+}
+
+func normalizeDuration(s string) string {
+	d, err := parseOptionalDuration(s)
+	if err != nil {
+		return s // leave unparseable strings as-is; registration itself will reject them
+	}
+	return d.String()
+}
+
+func cmdPipeline(p paths, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze pipeline register|show|list ...")
+	}
+	sub, rest := args[0], args[1:]
+	f := parseFlags(rest)
+	switch sub {
+	case "register":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze pipeline register <file.json|-> --as ADMIN --token T")
+		}
+		var data []byte
+		var err error
+		if f.rest[0] == "-" {
+			data, err = io.ReadAll(os.Stdin)
+		} else {
+			data, err = os.ReadFile(f.rest[0])
+		}
+		if err != nil {
+			return err
+		}
+		var pipeline wire.Pipeline
+		if err := json.Unmarshal(data, &pipeline); err != nil {
+			return fmt.Errorf("parsing pipeline JSON: %w", err)
+		}
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pipeline})
+		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: f.as, Token: token, Payload: payload})
+		return err
+	case "show":
+		if len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze pipeline show <name> [--json]")
+		}
+		payload, _ := json.Marshal(wire.PipelineShowRequest{Name: f.rest[0]})
+		resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.PipelineShowResponse](resp)
+		if err != nil {
+			return err
+		}
+		printJSON(out.Pipeline)
+		return nil
+	case "list":
+		resp, err := call(p, wire.Request{Op: wire.OpPipelineList})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.PipelineListResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		for _, pl := range out.Pipelines {
+			fmt.Printf("%-20s stages=%d fanOutAt=%d environments=%v\n", pl.Name, len(pl.Stages), pl.FanOutAt, pl.Environments)
+		}
+		return nil
+	case "status":
+		if len(f.rest) < 2 {
+			return fmt.Errorf("usage: breeze pipeline status <name> <commit> [--json]")
+		}
+		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: f.rest[1]})
+		resp, err := call(p, wire.Request{Op: wire.OpPipelineStatus, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.PipelineStatusResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		for _, inst := range out.Instances {
+			env := inst.Environment
+			if env == "" {
+				env = "-"
+			}
+			fmt.Printf("%-10s %-10s %-16s %s\n", inst.Stage, env, inst.Status, inst.Actor)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown pipeline subcommand %q", sub)
+	}
+}
+
+func cmdStage(p paths, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: breeze stage start|approve|status ...")
+	}
+	sub, rest := args[0], args[1:]
+	f := parseFlags(rest)
+	if len(f.rest) < 3 {
+		return fmt.Errorf("usage: breeze stage %s <pipeline> <stage> <commit> [--env NAME] ...", sub)
+	}
+	pipeline, stage, commit := f.rest[0], f.rest[1], f.rest[2]
+	as := resolveIdentity(p, f)
+
+	switch sub {
+	case "start", "approve":
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		op := wire.OpStageStart
+		var payload []byte
+		if sub == "start" {
+			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
+		} else {
+			op = wire.OpStageApprove
+			payload, _ = json.Marshal(wire.StageApproveRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
+		}
+		resp, err := call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.StageStartResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		if out.Instance.Error != "" {
+			fmt.Println(out.Instance.Error)
+		}
+		return nil
+	case "status":
+		payload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env})
+		resp, err := call(p, wire.Request{Op: wire.OpStageStatus, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.StageStatusResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		return nil
+	case "wait":
+		payload, _ := json.Marshal(wire.StageWaitRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Timeout: f.timeout})
+		resp, err := call(p, wire.Request{Op: wire.OpStageWait, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.StageStatusResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		if out.TimedOut {
+			fmt.Printf("%s: %s (timed out waiting for resolution)\n", out.Instance.Stage, out.Instance.Status)
+			return fmt.Errorf("timed out")
+		}
+		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		return nil
+	default:
+		return fmt.Errorf("unknown stage subcommand %q", sub)
+	}
+}
+
+func cmdDeploy(p paths, args []string) error {
+	if len(args) == 0 || args[0] != "history" {
+		return fmt.Errorf("usage: breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]")
+	}
+	f := parseFlags(args[1:])
+	if len(f.rest) < 2 {
+		return fmt.Errorf("usage: breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]")
+	}
+	limit := 0
+	if f.limit != "" {
+		fmt.Sscanf(f.limit, "%d", &limit)
+	}
+	payload, _ := json.Marshal(wire.DeployHistoryRequest{Pipeline: f.rest[0], Stage: f.rest[1], Environment: f.env, Limit: limit})
+	resp, err := call(p, wire.Request{Op: wire.OpDeployHistory, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.DeployHistoryResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	for _, e := range out.Entries {
+		fmt.Printf("%-10s %-8s seq=%-4d %-10s %s\n", e.Commit, e.Environment, e.Seq, e.Outcome, e.Actor)
+	}
+	return nil
+}
+
+// cmdInventory lists non-file resources (e.g. a deploy stage's (target,environment)
+// exclusivity lock, once step 9 wires that up) and their current holder — kept
+// separate from `breeze lock list`, which only ever shows real filesystem paths.
+func cmdInventory(p paths, args []string) error {
+	f := parseFlags(args)
+	resp, err := call(p, wire.Request{Op: wire.OpInventory})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.InventoryResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	if len(out.Resources) == 0 {
+		fmt.Println("(no resources held)")
+		return nil
+	}
+	for _, r := range out.Resources {
+		fmt.Printf("%-6s %-8s %-20s %s\n", r.ID, r.Mode, r.Holder, r.Key)
+	}
+	return nil
+}
+
+func cmdLockExec(p paths, as string, f flagSet) error {
+	if len(f.rest) < 1 || len(f.cmdArgs) < 1 {
+		return fmt.Errorf("usage: breeze lock exec <path...> [--shared] --as NAME -- <command...>")
+	}
+	conn, err := dialOrStart(p)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	payload, _ := json.Marshal(wire.LockExecRequest{Paths: f.rest, Shared: f.shared})
+	resp, err := callOnConn(conn, wire.Request{Op: wire.OpLockExec, As: as, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.LockAcquireResponse](resp)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "breeze: acquired %s (%s), running command...\n", out.Lock.ID, out.Lock.Mode)
+
+	cmd := exec.Command(f.cmdArgs[0], f.cmdArgs[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	runErr := cmd.Run()
+	// Closing conn (via defer) signals the daemon to release the lock. We keep the
+	// connection open for the command's whole lifetime on purpose — that's what
+	// makes this mode crash-safe (see daemon.go's handleLockExec).
+	return runErr
+}

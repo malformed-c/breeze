@@ -1,0 +1,340 @@
+// Package wire defines breeze's daemon<->client protocol: one JSON Request/Response
+// value per connection, encoded directly onto a Unix domain socket connection via
+// encoding/json (no manual framing), mirroring mess's proto.go/client.go pattern.
+package wire
+
+import (
+	"encoding/json"
+	"time"
+)
+
+type Op string
+
+const (
+	OpPing   Op = "ping"
+	OpStop   Op = "stop"
+	OpWhoAmI Op = "whoami"
+	OpPs     Op = "ps"
+
+	OpIdentityRegister Op = "identity.register"
+	OpIdentityRevoke   Op = "identity.revoke"
+
+	OpRoleAssign Op = "role.assign"
+	OpRoleRevoke Op = "role.revoke"
+	OpRoleList   Op = "role.list"
+
+	OpLockAcquire Op = "lock.acquire"
+	OpLockExec    Op = "lock.exec" // streaming
+	OpLockRelease Op = "lock.release"
+	OpLockRenew   Op = "lock.renew"
+	OpLockList    Op = "lock.list"
+
+	OpInventory Op = "inventory" // resource locks (non-file), separate from lock.list
+
+	OpPipelineRegister Op = "pipeline.register"
+	OpPipelineShow     Op = "pipeline.show"
+	OpPipelineList     Op = "pipeline.list"
+	OpPipelineStatus   Op = "pipeline.status"
+
+	OpStageStart   Op = "stage.start"
+	OpStageApprove Op = "stage.approve"
+	OpStageStatus  Op = "stage.status"
+	OpStageWait    Op = "stage.wait" // streaming
+
+	OpDeployHistory Op = "deploy.history"
+)
+
+// Request is the single envelope for every op. Payload is op-specific and decoded
+// by the daemon's dispatcher into the matching *Request struct below.
+type Request struct {
+	Op      Op              `json:"op"`
+	As      string          `json:"as,omitempty"`
+	Token   string          `json:"token,omitempty"`
+	Session string          `json:"session,omitempty"` // attribution/ps convenience ONLY, never authorization
+	Timeout string          `json:"timeout,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// Response is the single envelope for every reply. Payload is op-specific.
+type Response struct {
+	OK      bool            `json:"ok"`
+	Error   string          `json:"error,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// --- Per-op payloads ---
+
+type PingResponse struct {
+	Pid     int    `json:"pid"`
+	Version string `json:"version"`
+}
+
+type WhoAmIResponse struct {
+	Name  string   `json:"name,omitempty"`
+	Roles []string `json:"roles,omitempty"`
+}
+
+type PsResponse struct {
+	Identities []IdentityInfo `json:"identities,omitempty"`
+	Locks      []LockInfo     `json:"locks,omitempty"`
+}
+
+type IdentityInfo struct {
+	Name         string    `json:"name"`
+	Roles        []string  `json:"roles,omitempty"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	HasToken     bool      `json:"hasToken"`
+}
+
+type IdentityRegisterRequest struct {
+	Name  string `json:"name"`
+	Force bool   `json:"force,omitempty"` // admin override to rotate someone else's token (requires --as/--token of an admin)
+}
+type IdentityRegisterResponse struct {
+	Name  string `json:"name"`
+	Token string `json:"token"` // plaintext, printed once by the CLI, never persisted server-side
+}
+
+type IdentityRevokeRequest struct {
+	Name string `json:"name"`
+}
+
+type RoleAssignRequest struct {
+	Role     string `json:"role"`
+	Identity string `json:"identity"`
+}
+type RoleRevokeRequest struct {
+	Role     string `json:"role"`
+	Identity string `json:"identity"`
+}
+type RoleListResponse struct {
+	Identities []IdentityInfo `json:"identities"`
+}
+
+// --- Locks ---
+
+type LockInfo struct {
+	ID         string    `json:"id"`
+	Paths      []string  `json:"paths"`
+	Mode       string    `json:"mode"`
+	Holder     string    `json:"holder"`
+	AcquiredAt time.Time `json:"acquiredAt"`
+	ExpiresAt  time.Time `json:"expiresAt,omitzero"`
+	Attached   bool      `json:"attached"`
+}
+
+type LockAcquireRequest struct {
+	Paths   []string `json:"paths"`
+	Shared  bool     `json:"shared,omitempty"`
+	TTL     string   `json:"ttl,omitempty"`
+	Wait    bool     `json:"wait,omitempty"`
+	Timeout string   `json:"timeout,omitempty"`
+}
+type LockAcquireResponse struct {
+	Lock LockInfo `json:"lock"`
+}
+
+type LockExecRequest struct {
+	Paths  []string `json:"paths"`
+	Shared bool     `json:"shared,omitempty"`
+}
+
+type LockReleaseRequest struct {
+	ID    string `json:"id"`
+	Force bool   `json:"force,omitempty"`
+}
+
+type LockRenewRequest struct {
+	ID  string `json:"id"`
+	TTL string `json:"ttl,omitempty"`
+}
+
+type LockListResponse struct {
+	Locks []LockInfo `json:"locks"`
+}
+
+// ResourceInfo is an inventory entry: a non-file resource currently held/running and
+// by whom (e.g. a deploy stage's (target,environment) exclusivity). Deliberately kept
+// as a distinct response type from LockInfo even though it shares the same underlying
+// fields today, since inventory's resource shape may grow independently of file locks
+// (e.g. gaining a "kind" like "deploy-env" vs plain "resource" as more resource types
+// beyond internal locks are added).
+type ResourceInfo struct {
+	ID         string    `json:"id"`
+	Key        string    `json:"key"`
+	Mode       string    `json:"mode"`
+	Holder     string    `json:"holder"`
+	AcquiredAt time.Time `json:"acquiredAt"`
+	ExpiresAt  time.Time `json:"expiresAt,omitzero"`
+}
+
+type InventoryResponse struct {
+	Resources []ResourceInfo `json:"resources"`
+}
+
+// --- Pipelines / stages ---
+
+type CommandTemplate struct {
+	Path string   `json:"path"`
+	Args []string `json:"args,omitempty"`
+	Env  []string `json:"env,omitempty"`
+	Dir  string   `json:"dir,omitempty"`
+}
+
+type Hook struct {
+	Command CommandTemplate `json:"command"`
+	Timeout string          `json:"timeout"`
+}
+
+type CommandPolicy struct {
+	RequiredRole  string `json:"requiredRole,omitempty"`
+	MaxConcurrent int    `json:"maxConcurrent,omitempty"`
+}
+type ApprovalPolicy struct {
+	RequiredApprovals int    `json:"requiredApprovals"`
+	RequiredRole      string `json:"requiredRole,omitempty"`
+}
+type DeployPolicy struct {
+	RequiredRole string `json:"requiredRole,omitempty"`
+	Target       string `json:"target,omitempty"`
+}
+
+type StageDef struct {
+	Name           string          `json:"name"`
+	Type           string          `json:"type"` // "command" | "approval" | "deploy"
+	Command        CommandTemplate `json:"command"`
+	CommandPolicy  *CommandPolicy  `json:"commandPolicy,omitempty"`
+	ApprovalPolicy *ApprovalPolicy `json:"approvalPolicy,omitempty"`
+	DeployPolicy   *DeployPolicy   `json:"deployPolicy,omitempty"`
+	PreGate        []Hook          `json:"preGate,omitempty"`
+	PostAction     []Hook          `json:"postAction,omitempty"`
+	Timeout        string          `json:"timeout"`
+}
+
+type Pipeline struct {
+	Name            string              `json:"name"`
+	Stages          []StageDef          `json:"stages"`
+	FanOutAt        int                 `json:"fanOutAt"`
+	Environments    []string            `json:"environments,omitempty"`
+	EnvironmentDeps map[string][]string `json:"environmentDeps,omitempty"`
+	BriefsDir       string              `json:"briefsDir,omitempty"`
+	CreatedBy       string              `json:"createdBy,omitempty"`
+	CreatedAt       time.Time           `json:"createdAt,omitzero"`
+}
+
+type PipelineRegisterRequest struct {
+	Pipeline Pipeline `json:"pipeline"`
+}
+
+type PipelineShowRequest struct {
+	Name string `json:"name"`
+}
+type PipelineShowResponse struct {
+	Pipeline Pipeline `json:"pipeline"`
+}
+
+type PipelineListResponse struct {
+	Pipelines []Pipeline `json:"pipelines"`
+}
+
+type PipelineStatusRequest struct {
+	Pipeline string `json:"pipeline"`
+	Commit   string `json:"commit"`
+}
+type PipelineStatusResponse struct {
+	Instances []StageInstance `json:"instances"`
+}
+
+// --- Stage instances ---
+
+type Approval struct {
+	Identity string    `json:"identity"`
+	Role     string    `json:"role"`
+	At       time.Time `json:"at"`
+	Brief    string    `json:"brief,omitempty"`
+}
+
+type StageInstance struct {
+	Pipeline    string     `json:"pipeline"`
+	Stage       string     `json:"stage"`
+	Commit      string     `json:"commit"`
+	Environment string     `json:"environment,omitempty"`
+	Status      string     `json:"status"`
+	Approvals   []Approval `json:"approvals,omitempty"`
+	StartedAt   time.Time  `json:"startedAt,omitzero"`
+	FinishedAt  time.Time  `json:"finishedAt,omitzero"`
+	ExitCode    int        `json:"exitCode,omitempty"`
+	Stdout      string     `json:"stdout,omitempty"`
+	Stderr      string     `json:"stderr,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	Actor       string     `json:"actor,omitempty"`
+	Brief       string     `json:"brief,omitempty"`
+}
+
+type StageStartRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	Brief       string `json:"brief,omitempty"`
+}
+type StageStartResponse struct {
+	Instance StageInstance `json:"instance"`
+}
+
+type StageApproveRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	Brief       string `json:"brief,omitempty"`
+}
+type StageApproveResponse struct {
+	Instance StageInstance `json:"instance"`
+}
+
+type StageStatusRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+}
+type StageStatusResponse struct {
+	Instance StageInstance `json:"instance"`
+	TimedOut bool          `json:"timedOut,omitempty"` // stage.wait only: instance is best-effort, not yet resolved
+}
+
+type StageWaitRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+}
+
+// --- Deploy history ---
+
+type DeployHistoryEntry struct {
+	Pipeline    string    `json:"pipeline"`
+	Stage       string    `json:"stage"`
+	Target      string    `json:"target"`
+	Environment string    `json:"environment"`
+	Commit      string    `json:"commit"`
+	Actor       string    `json:"actor"`
+	Seq         int       `json:"seq"`
+	StartedAt   time.Time `json:"startedAt"`
+	FinishedAt  time.Time `json:"finishedAt,omitzero"`
+	ExitCode    int       `json:"exitCode"`
+	Outcome     string    `json:"outcome"`
+	Error       string    `json:"error,omitempty"`
+}
+
+type DeployHistoryRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Environment string `json:"environment,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+}
+type DeployHistoryResponse struct {
+	Entries []DeployHistoryEntry `json:"entries"`
+}
