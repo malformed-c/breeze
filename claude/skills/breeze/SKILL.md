@@ -161,6 +161,11 @@ breeze stage status  <pipeline> <stage> <commit> [--env NAME] [--json]
 breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]
 ```
 
+Any `<commit>` argument accepts a short (4+ hex char) or full SHA — the CLI expands
+it client-side against your cwd's git repo before sending it, so a short and full
+form for the same commit always hit the same stage instance. Plain-text output
+shows commits truncated to 12 chars; `--json` always shows the full value.
+
 `stage start`/`approve` only need `--token` if the target stage actually has a
 `required_role` set, or is an approval stage. Check `pipeline show <name>` first if
 unsure whether a given stage needs one.

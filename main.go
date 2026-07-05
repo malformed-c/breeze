@@ -508,25 +508,25 @@ func cmdOperator(p paths, args []string) error {
 	fmt.Printf("Needs review (%d):\n", len(out.PendingApprovals))
 	for _, a := range out.PendingApprovals {
 		fmt.Printf("  %-15s %-10s %-10s %-8s %d/%d approvals (role: %s)\n",
-			a.Pipeline, a.Stage, a.Commit, envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole)
+			a.Pipeline, a.Stage, shortCommitForDisplay(a.Commit), envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole)
 	}
 
 	fmt.Printf("Running now (%d):\n", len(out.Running))
 	for _, r := range out.Running {
 		fmt.Printf("  %-15s %-10s %-10s %-8s actor=%-10s started=%s\n",
-			r.Pipeline, r.Stage, r.Commit, envOrDash(r.Environment), r.Actor, r.StartedAt.Format("15:04:05"))
+			r.Pipeline, r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, r.StartedAt.Format("15:04:05"))
 	}
 
 	fmt.Printf("Recent failures (%d):\n", len(out.RecentFailures))
 	for _, fl := range out.RecentFailures {
 		fmt.Printf("  %-15s %-10s %-10s %-8s %-12s %s\n",
-			fl.Pipeline, fl.Stage, fl.Commit, envOrDash(fl.Environment), fl.Status, fl.Error)
+			fl.Pipeline, fl.Stage, shortCommitForDisplay(fl.Commit), envOrDash(fl.Environment), fl.Status, fl.Error)
 	}
 
 	fmt.Printf("Recent successes (%d):\n", len(out.RecentSuccesses))
 	for _, s := range out.RecentSuccesses {
 		fmt.Printf("  %-15s %-10s %-10s %-8s %s\n",
-			s.Pipeline, s.Stage, s.Commit, envOrDash(s.Environment), s.FinishedAt.Format("15:04:05"))
+			s.Pipeline, s.Stage, shortCommitForDisplay(s.Commit), envOrDash(s.Environment), s.FinishedAt.Format("15:04:05"))
 	}
 
 	fmt.Printf("Locks held (%d):\n", len(out.Locks))
@@ -751,7 +751,7 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperator
 		}
 		seen.approvals[key] = true
 		desktopNotify("breeze: review needed",
-			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
+			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, shortCommitForDisplay(a.Commit), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
 	}
 	for _, fl := range out.RecentFailures {
 		key := recentFailureKey(fl)
@@ -760,7 +760,7 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperator
 		}
 		seen.failures[key] = true
 		desktopNotify("breeze: stage failed",
-			fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, fl.Commit, fl.Error))
+			fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, shortCommitForDisplay(fl.Commit), fl.Error))
 	}
 	for _, s := range out.RecentSuccesses {
 		key := recentSuccessKey(s)
@@ -769,7 +769,7 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperator
 		}
 		seen.successes[key] = true
 		desktopNotify("breeze: stage succeeded",
-			fmt.Sprintf("%s/%s %s", s.Pipeline, s.Stage, s.Commit))
+			fmt.Sprintf("%s/%s %s", s.Pipeline, s.Stage, shortCommitForDisplay(s.Commit)))
 	}
 }
 
@@ -1246,7 +1246,7 @@ func cmdPipeline(p paths, args []string) error {
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze pipeline status <name> <commit> [--json]")
 		}
-		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: f.rest[1]})
+		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: resolveCommit(f.rest[1])})
 		resp, err := call(p, wire.Request{Op: wire.OpPipelineStatus, Payload: payload})
 		if err != nil {
 			return err
@@ -1281,7 +1281,7 @@ func cmdStage(p paths, args []string) error {
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: breeze stage %s <pipeline> <stage> <commit> [--env NAME] ...", sub)
 	}
-	pipeline, stage, commit := f.rest[0], f.rest[1], f.rest[2]
+	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
 	as := resolveIdentity(p, f)
 
 	switch sub {
@@ -1420,7 +1420,7 @@ func cmdDeployHistory(p paths, args []string) error {
 		return nil
 	}
 	for _, e := range out.Entries {
-		fmt.Printf("%-10s %-8s seq=%-4d %-10s %s\n", e.Commit, e.Environment, e.Seq, e.Outcome, e.Actor)
+		fmt.Printf("%-10s %-8s seq=%-4d %-10s %s\n", shortCommitForDisplay(e.Commit), e.Environment, e.Seq, e.Outcome, e.Actor)
 	}
 	return nil
 }
@@ -1434,7 +1434,7 @@ func cmdDeployRollback(p paths, args []string) error {
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: breeze deploy rollback <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
 	}
-	pipeline, stage, commit := f.rest[0], f.rest[1], f.rest[2]
+	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
 	as := resolveIdentity(p, f)
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {

@@ -1,0 +1,50 @@
+# A short (abbreviated) commit SHA and its full form must resolve to the exact
+# same StageKey — internal/engine's StageKey.Commit is a literal map key with no
+# SHA-prefix awareness of its own, so client-side expansion is what makes
+# `stage start build <short>` and `stage status build <full>` refer to the same
+# thing. The commit here is deterministic (git commit-tree against the well-known
+# empty tree hash, with fixed author/committer identity and dates) so the full and
+# short SHAs can be hardcoded rather than captured from git's output at test time.
+env BREEZE_DIR=$WORK/state
+env GIT_AUTHOR_NAME=test
+env GIT_AUTHOR_EMAIL=test@example.com
+env GIT_COMMITTER_NAME=test
+env GIT_COMMITTER_EMAIL=test@example.com
+env GIT_AUTHOR_DATE=2020-01-01T00:00:00Z
+env GIT_COMMITTER_DATE=2020-01-01T00:00:00Z
+
+exec breeze identity register admin
+cp stdout admin.token
+
+exec git init -q repo
+cd repo
+exec git commit-tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -m fixed
+stdout '^9f2b8e57dc05142602169f739afaa5ec29f411ed$'
+
+exec breeze apply -f ../pipeline.hcl --as admin --token-file ../admin.token --dry-run
+stdout '\+ pipeline release \(new\)'
+exec breeze apply -f ../pipeline.hcl --as admin --token-file ../admin.token
+
+# Trigger with the SHORT form.
+exec breeze stage start release build 9f2b8e57dc --as ci
+stdout 'build: succeeded'
+
+# Status with the FULL form must show the same (already-succeeded) instance —
+# proving both forms resolved to the identical StageKey, not two unrelated ones.
+exec breeze stage status release build 9f2b8e57dc05142602169f739afaa5ec29f411ed --json
+stdout '"status":\s*"succeeded"'
+
+# JSON output always shows the full, untruncated commit — never the 12-char
+# display-only shortened form.
+stdout '"commit":\s*"9f2b8e57dc05142602169f739afaa5ec29f411ed"'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true", "{commit}"]
+  }
+}

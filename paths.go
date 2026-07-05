@@ -116,6 +116,74 @@ func detectGitToplevel() (string, bool) {
 	return abs, true
 }
 
+// looksLikeAbbreviatedSHA reports whether s could be a short (not-yet-full) git
+// commit SHA prefix — hex-only, shorter than a real SHA-1 (40) or SHA-256 (64)
+// hash. Deliberately conservative: only strings matching this are ever passed to
+// expandCommit's git rev-parse call, so an arbitrary non-git commit key (breeze
+// treats "commit" as an opaque string by design — e.g. "livetest-1", a version
+// tag, anything a caller with no git repo at all might use) is never mistaken
+// for a ref and silently resolved to something unrelated.
+func looksLikeAbbreviatedSHA(s string) bool {
+	if len(s) < 4 || len(s) >= 40 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// expandCommit resolves ref to its full commit SHA via `git rev-parse`, mirroring
+// detectGitCommonDir/detectGitToplevel's shellout style. "^{commit}" rejects
+// non-commit objects (e.g. an abbreviated tag/tree hash) rather than silently
+// resolving to the wrong kind of thing.
+func expandCommit(ref string) (string, bool) {
+	out, err := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
+	if err != nil {
+		return "", false
+	}
+	full := strings.TrimSpace(string(out))
+	if full == "" {
+		return "", false
+	}
+	return full, true
+}
+
+// resolveCommit normalizes a CLI-supplied <commit> argument so a short and full
+// SHA for the same commit always resolve to the exact identical string —
+// required for correctness, not just convenience: internal/engine's StageKey.Commit
+// is a literal map key with zero SHA-prefix awareness of its own, so `stage start`
+// with a short SHA and `stage status` with the full one for what's logically the
+// same commit would otherwise silently become two unrelated StageKeys. Only ever
+// attempts expansion for strings that look like an abbreviated SHA prefix (see
+// looksLikeAbbreviatedSHA); anything else, or any expansion failure (not in a
+// repo, ambiguous, unknown ref), passes through unchanged — this must never block
+// or error a command, since breeze's commit key has to keep working for non-git
+// callers exactly as before.
+func resolveCommit(raw string) string {
+	if !looksLikeAbbreviatedSHA(raw) {
+		return raw
+	}
+	if full, ok := expandCommit(raw); ok {
+		return full
+	}
+	return raw
+}
+
+// shortCommitForDisplay truncates a commit string to a 12-char prefix for
+// human-readable (non-JSON) output only — mirrors internal/engine/briefs.go's
+// identical shortCommit convention for brief filenames, so the same commit reads
+// the same length everywhere breeze shows it. JSON output always shows the full,
+// untruncated value callers might need to pass back verbatim.
+func shortCommitForDisplay(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
 // canonicalLockPaths resolves each raw `breeze lock` path argument the way the
 // daemon itself no longer can: relative to THIS process's actual cwd, not the
 // daemon's (a long-lived daemon's cwd is arbitrary and unrelated to whichever

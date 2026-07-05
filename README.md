@@ -148,6 +148,19 @@ Three stage types:
 Everything (a build script, a CI check, a Slack ping) is just an admin-configured
 command — breeze has zero built-in knowledge of git, GitHub, or any CI system.
 
+#### Short commit SHAs
+
+Any `<commit>` CLI argument accepts either a full SHA or an abbreviated prefix (4+
+hex chars) — the CLI expands it client-side via `git rev-parse` (in whatever repo
+your current directory is inside) before sending it to the daemon, so `stage start
+build abc1234` and `stage status build abc1234def...` for the same commit always
+resolve to the identical stage instance. This is a CLI-side convenience only: the
+daemon itself has no git awareness and treats a commit as an opaque string, so
+anything that isn't a plausible abbreviated SHA (a version tag, a synthetic key
+like `livetest-1`) passes through unchanged. Human-readable output (plain-text, not
+`--json`) shows commits truncated to 12 characters for readability; `--json` output
+always shows the full value, since callers may need to pass it back verbatim.
+
 #### Environments and the fan-out point
 
 A pipeline can declare `environments` and one stage with `fans_out = true`. Every

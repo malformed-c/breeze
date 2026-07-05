@@ -176,6 +176,129 @@ func TestCanonicalLockPathsFallsBackOutsideTheWorktree(t *testing.T) {
 	}
 }
 
+func TestLooksLikeAbbreviatedSHA(t *testing.T) {
+	cases := map[string]bool{
+		"abc123":                true,
+		"ABCDEF12":              true,
+		"abc":                   false, // too short (< 4)
+		strings.Repeat("a", 40): false, // full-length SHA-1, not "abbreviated"
+		strings.Repeat("a", 64): false, // full-length SHA-256
+		"livetest-1":            false, // hyphen, not hex
+		"deadbeefzz":            false, // non-hex chars
+		"abcd":                  true,  // exactly the 4-char floor
+		strings.Repeat("a", 39): true,  // just under the 40-char ceiling
+	}
+	for in, want := range cases {
+		if got := looksLikeAbbreviatedSHA(in); got != want {
+			t.Errorf("looksLikeAbbreviatedSHA(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestExpandCommitOutsideAnyRepo(t *testing.T) {
+	dir := t.TempDir() // guaranteed not inside a git repo
+	restore := chdir(t, dir)
+	defer restore()
+
+	if _, ok := expandCommit("abc123"); ok {
+		t.Fatalf("expected expandCommit to fail outside any repo")
+	}
+}
+
+func TestExpandCommitResolvesAbbreviatedSHA(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
+
+	restore := chdir(t, repo)
+	defer restore()
+
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	full := strings.TrimSpace(string(out))
+	short := full[:7]
+
+	got, ok := expandCommit(short)
+	if !ok {
+		t.Fatalf("expandCommit(%q) failed, want success", short)
+	}
+	if got != full {
+		t.Fatalf("expandCommit(%q) = %q, want %q", short, got, full)
+	}
+}
+
+func TestResolveCommitPassesThroughNonSHALikeInput(t *testing.T) {
+	dir := t.TempDir()
+	restore := chdir(t, dir)
+	defer restore()
+
+	for _, raw := range []string{"livetest-1", "v1.2.3", strings.Repeat("a", 40)} {
+		if got := resolveCommit(raw); got != raw {
+			t.Errorf("resolveCommit(%q) = %q, want unchanged", raw, got)
+		}
+	}
+}
+
+func TestResolveCommitExpandsShortSHAToMatchFull(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
+
+	restore := chdir(t, repo)
+	defer restore()
+
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	full := strings.TrimSpace(string(out))
+	short := full[:7]
+
+	// The whole point: resolveCommit(short) and resolveCommit(full) must produce
+	// the IDENTICAL string, since StageKey.Commit is a literal map key.
+	if got := resolveCommit(short); got != full {
+		t.Fatalf("resolveCommit(short) = %q, want %q", got, full)
+	}
+	if got := resolveCommit(full); got != full {
+		t.Fatalf("resolveCommit(full) = %q, want %q (should pass through unchanged)", got, full)
+	}
+}
+
+func TestResolveCommitFallsBackOnUnknownRef(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	restore := chdir(t, repo)
+	defer restore()
+
+	// Looks like a short SHA but doesn't exist in this (freshly-initialized, commit-less) repo.
+	raw := "deadbee"
+	if got := resolveCommit(raw); got != raw {
+		t.Fatalf("resolveCommit(%q) = %q, want unchanged fallback on expansion failure", raw, got)
+	}
+}
+
+func TestShortCommitForDisplay(t *testing.T) {
+	cases := map[string]string{
+		"abc123":                "abc123",
+		strings.Repeat("a", 12): strings.Repeat("a", 12),
+		strings.Repeat("a", 40): strings.Repeat("a", 12),
+		"":                      "",
+	}
+	for in, want := range cases {
+		if got := shortCommitForDisplay(in); got != want {
+			t.Errorf("shortCommitForDisplay(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func chdir(t *testing.T, dir string) func() {
 	t.Helper()
 	old, err := os.Getwd()
