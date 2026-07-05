@@ -555,6 +555,28 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		}
 		return okResponse(wire.StageApproveResponse{Instance: stageInstanceToWire(*inst)})
 
+	case wire.OpStageCancel:
+		var p wire.StageCancelRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		pipeline, ok := d.eng.Pipeline(p.Pipeline)
+		if !ok {
+			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
+		}
+		i := pipeline.StageIndex(p.Stage)
+		if i < 0 {
+			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
+		}
+		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
+			return errResponse(err)
+		}
+		inst, err := d.eng.CancelStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Reason)
+		if err != nil {
+			return errResponse(err)
+		}
+		return okResponse(wire.StageCancelResponse{Instance: stageInstanceToWire(*inst)})
+
 	case wire.OpStageStatus:
 		var p wire.StageStatusRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {

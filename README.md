@@ -458,6 +458,28 @@ and the real `stage start ... deploy`/`deploy rollback`, and simply stops workin
 once `--ttl` elapses — nothing to explicitly revoke, though a shorter follow-up
 `deploy grant` for the same (pipeline, environment, grantee) replaces it outright.
 
+### Recovering a stuck stage
+
+```sh
+breeze stage cancel <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO --token T
+```
+
+A manual escape hatch for a `Running`/`Awaiting` instance that's never going to
+resolve on its own — most commonly one orphaned by a daemon restart or stop mid-run
+(see "Design notes" below; that specific cause is now handled automatically, this
+is for the general case). Forces it to a terminal `Failed` state with your
+`--reason` (or a default one) as the error, so it's immediately retryable via a
+fresh `stage start`. Requires the same RBAC that stage would need to trigger (its
+own `RequiredRole`), or admin.
+
+**Limitation**: this only mutates *tracked* state — there's no live handle to an
+actually-still-running process to kill. If the underlying command is genuinely
+still executing (as opposed to already gone, the restart-orphaned case), cancelling
+it doesn't stop that process, and its real result can still land afterward and
+overwrite your cancellation. This is the right tool for "the process is already
+gone and the record is just stuck," not for "stop this command that's still
+running" (there's no mechanism for the latter today).
+
 ### Waiting instead of polling
 
 ```sh

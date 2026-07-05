@@ -105,6 +105,76 @@ func TestCancelRunningStagesIgnoresNonRunning(t *testing.T) {
 	}
 }
 
+// TestCancelStage covers the manual escape hatch: a Running instance can be
+// force-cancelled by an actor holding the stage's own required role, an
+// unrelated identity is rejected, and a terminal (already-resolved) instance has
+// nothing to cancel.
+func TestCancelStage(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].CommandPolicy.RequiredRole = "builder"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"ci", "mallory"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if err := e.AssignRole("ci", "builder"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	key := StageKey{Commit: "abc123"}
+	stuck := &StageInstance{Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci", StartedAt: time.Now()}
+	e.instances[instanceKey("release", "build", key)] = stuck
+
+	// mallory lacks the "builder" role (and isn't admin) — rejected.
+	if _, err := e.CancelStage("release", "build", "abc123", "", "mallory", ""); err == nil {
+		t.Fatalf("expected mallory's cancel attempt to be rejected")
+	}
+
+	// ci holds "builder" — the same role that gates triggering "build" — so it
+	// may cancel it too.
+	inst, err := e.CancelStage("release", "build", "abc123", "", "ci", "stuck after a restart")
+	if err != nil {
+		t.Fatalf("expected ci's cancel to succeed: %v", err)
+	}
+	if inst.Status != StageFailed || inst.Error != "stuck after a restart" {
+		t.Fatalf("unexpected cancelled instance: %+v", inst)
+	}
+
+	// Already terminal — nothing to cancel.
+	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", ""); err == nil {
+		t.Fatalf("expected cancelling an already-terminal instance to be rejected")
+	}
+}
+
+// TestCancelStageAdminOverride confirms an admin can cancel any stage regardless
+// of whether it holds the stage's own required role.
+func TestCancelStageAdminOverride(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].CommandPolicy.RequiredRole = "builder"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("root", ""); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("root", "admin"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	key := StageKey{Commit: "abc123"}
+	stuck := &StageInstance{Pipeline: "release", Stage: "build", Key: key, Status: StageRunning}
+	e.instances[instanceKey("release", "build", key)] = stuck
+
+	if _, err := e.CancelStage("release", "build", "abc123", "", "root", ""); err != nil {
+		t.Fatalf("expected admin override to succeed: %v", err)
+	}
+}
+
 func TestGate1PrerequisiteAndSkipPrevention(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)

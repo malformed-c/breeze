@@ -42,6 +42,7 @@ const (
 	OpStageApprove Op = "stage.approve"
 	OpStageStatus  Op = "stage.status"
 	OpStageWait    Op = "stage.wait" // streaming
+	OpStageCancel  Op = "stage.cancel"
 
 	OpDeployHistory   Op = "deploy.history"
 	OpDeployRollback  Op = "deploy.rollback"
@@ -328,6 +329,17 @@ type StageApproveRequest struct {
 	Brief       string `json:"brief,omitempty"`
 }
 type StageApproveResponse struct {
+	Instance StageInstance `json:"instance"`
+}
+
+type StageCancelRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+type StageCancelResponse struct {
 	Instance StageInstance `json:"instance"`
 }
 

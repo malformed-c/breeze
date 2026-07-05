@@ -135,6 +135,11 @@ commands:
   stage wait    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
                                          # designed to be backgrounded: start, then
                                          # background this command and continue other work
+  stage cancel  <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO [--token T]
+                                         force a stuck Running/Awaiting instance to
+                                         Failed (e.g. after a daemon restart orphaned
+                                         it) so it can be retried; same RBAC as
+                                         triggering that stage would need, or admin
 
   deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
   deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
@@ -157,11 +162,11 @@ commands:
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent string
-	shared, wait, force, jsonOut, dryRun, prune                                          bool
-	targets                                                                              []string // repeated --target NAME
-	rest                                                                                 []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                                              []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason string
+	shared, wait, force, jsonOut, dryRun, prune                                                  bool
+	targets                                                                                      []string // repeated --target NAME
+	rest                                                                                         []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 }
 
 func parseFlags(args []string) flagSet {
@@ -214,6 +219,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.messAgent = args[i]
+			}
+		case "--reason":
+			i++
+			if i < len(args) {
+				f.reason = args[i]
 			}
 		case "--target":
 			i++
@@ -1210,7 +1220,7 @@ func cmdPipeline(p paths, args []string) error {
 
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze stage start|approve|status ...")
+		return fmt.Errorf("usage: breeze stage start|approve|status|wait|cancel ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
@@ -1286,6 +1296,26 @@ func cmdStage(p paths, args []string) error {
 			return fmt.Errorf("timed out")
 		}
 		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		return nil
+	case "cancel":
+		token, err := f.resolveToken()
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(wire.StageCancelRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Reason: f.reason})
+		resp, err := call(p, wire.Request{Op: wire.OpStageCancel, As: as, Token: token, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.StageCancelResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		fmt.Printf("%s: %s (cancelled)\n", out.Instance.Stage, out.Instance.Status)
 		return nil
 	default:
 		return fmt.Errorf("unknown stage subcommand %q", sub)

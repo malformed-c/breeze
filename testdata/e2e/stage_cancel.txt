@@ -1,0 +1,51 @@
+# breeze stage cancel is the manual escape hatch for a stuck Running/Awaiting
+# instance (e.g. one left behind by a daemon restart mid-run, see
+# TestShutdownCancelsRunningStages for the automatic case this complements) --
+# force it to a terminal, retryable Failed state.
+#
+# Known limitation this test deliberately works around: cancel only mutates
+# TRACKED state, it doesn't kill an actually-still-alive underlying process (no
+# live handle to it exists to cancel) -- if the real command is still genuinely
+# running (unlike the restart-orphaned case, where it's already gone) and later
+# completes on its own, that real result can still land and overwrite the
+# cancellation. The build command here never finishes within the test's
+# lifetime for exactly this reason -- it's killed outright at the end instead.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register ci
+cp stdout ci.token
+exec breeze role assign builder ci --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# Start a slow build in the background, wait for it to actually reach Running.
+exec breeze stage start release build abc123 --as ci --token-file ci.token &build&
+exec sleep 0.3
+exec breeze stage status release build abc123 --json
+stdout '"status":\s*"running"'
+
+# ci (holds "builder", the role gating this stage) cancels the stuck run.
+exec breeze stage cancel release build abc123 --as ci --reason stuck-cancelling --token-file ci.token
+stdout 'build: failed \(cancelled\)'
+
+exec breeze stage status release build abc123 --json
+stdout '"status":\s*"failed"'
+stdout '"error":\s*"stuck-cancelling"'
+
+# Now retriggerable — the whole point of clearing a stuck instance.
+exec breeze stage start release build newcommit --as ci --token-file ci.token
+stdout 'build: succeeded'
+
+kill
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type          = "command"
+    required_role = "builder"
+    timeout       = "30s"
+    command       = ["/bin/sh", "-c", "case \"$0\" in abc123) sleep 300 ;; *) exit 0 ;; esac", "{commit}"]
+  }
+}

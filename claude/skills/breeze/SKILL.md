@@ -170,6 +170,14 @@ unsure whether a given stage needs one.
 state for that commit in one call, so you can see what's actually eligible before
 you try (a rejected attempt is harmless, just noisy).
 
+A stage stuck `running`/`awaiting` forever (e.g. orphaned by a daemon restart —
+now handled automatically, but not every stuck-forever cause is) can be forced to
+`failed` (and thus retryable) with `breeze stage cancel <pipeline> <stage>
+<commit> [--env NAME] [--reason "..."] --as WHO --token T` — same RBAC as
+triggering it. Only mutates tracked state, doesn't kill an actually-still-running
+process; for the "the process is truly gone, the record is just stuck" case, not
+"stop this thing that's still going."
+
 ### Waiting instead of polling
 
 ```sh

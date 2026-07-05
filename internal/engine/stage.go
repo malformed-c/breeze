@@ -554,6 +554,67 @@ func (e *Engine) CancelRunningStages(reason string) int {
 	return len(toNotify)
 }
 
+// CancelStage is the manual escape hatch for a stuck stage instance — a general
+// recovery tool regardless of WHY it's stuck (a daemon restart/stop mid-run is one
+// cause, now separately handled by CancelRunningStages, but not the only
+// conceivable one, e.g. a hook that hangs past its own intended lifetime some
+// other way). Only Running or Awaiting instances can be cancelled — anything
+// already terminal has nothing to cancel. Requires the same RBAC a real trigger
+// of that stage would (its own RequiredRole) or admin, since this is a real state
+// mutation, not a read.
+func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor, reason string) (*StageInstance, error) {
+	e.mu.Lock()
+	p, ok := e.pipelines[pipelineName]
+	if !ok {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
+	}
+	i := p.StageIndex(stageName)
+	if i < 0 {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
+	}
+	role := requiredRoleFor(p.Stages[i])
+	if role != "" {
+		id, ok := e.identities[actor]
+		if !ok || !(id.HasRole(role) || id.HasRole("admin")) {
+			e.mu.Unlock()
+			return nil, gateErr("actor %q lacks required role %q (or admin) to cancel stage %q", actor, role, stageName)
+		}
+	}
+	key, err := keyFor(p, i, commit, environment)
+	if err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	inst := e.getInstance(pipelineName, stageName, key)
+	if inst == nil {
+		e.mu.Unlock()
+		return nil, ErrNotFound
+	}
+	if inst.Status != StageRunning && inst.Status != StageAwaiting {
+		status := inst.Status
+		e.mu.Unlock()
+		return nil, fmt.Errorf("stage %q (%s) is %s, not running/awaiting — nothing to cancel", stageName, key, status)
+	}
+	if reason == "" {
+		reason = "cancelled by " + actor
+	}
+	inst.Status = StageFailed
+	inst.Error = reason
+	inst.FinishedAt = e.now()
+	e.audit("stage.cancelled", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", pipelineName, stageName, key, reason))
+	e.notifyStageLocked(pipelineName, stageName, key)
+	briefsDir := p.BriefsDir
+	e.changed()
+	cp := *inst
+	e.mu.Unlock()
+
+	e.notifyResolution(pipelineName, stageName, &cp)
+	e.recordBrief(briefsDir, &cp)
+	return &cp, nil
+}
+
 // PipelineStatus returns every materialized stage instance for a given commit, across
 // every stage and (if fanned out) every environment.
 func (e *Engine) PipelineStatus(pipelineName, commit string) ([]StageInstance, error) {
