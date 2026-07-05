@@ -12,6 +12,14 @@ import (
 // typed enums). Kept separate from daemon.go since both the pipeline and (later)
 // stage/deploy dispatch cases need it.
 
+func identityToWire(id engine.Identity) wire.IdentityInfo {
+	return wire.IdentityInfo{
+		Name: id.Name, Roles: rolesToStrings(id.Roles),
+		RegisteredAt: id.RegisteredAt, HasToken: id.TokenHash != "",
+		MessAgent: id.MessAgent, NotifyOptOut: id.NotifyOptOut,
+	}
+}
+
 func commandTemplateFromWire(w wire.CommandTemplate) engine.CommandTemplate {
 	return engine.CommandTemplate{Path: w.Path, Args: w.Args, Env: w.Env, Dir: w.Dir}
 }

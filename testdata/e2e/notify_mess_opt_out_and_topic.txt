@@ -17,6 +17,16 @@ exec breeze role assign reviewer carol --as admin --token-file admin.token
 # carol opts out of breeze's mess notifications entirely.
 exec breeze identity notify off --as carol
 
+# Regression check: `ps` and `role list` are two separate RPC handlers that both
+# render IdentityInfo — MessAgent/NotifyOptOut must show up in BOTH, not just one
+# (a real bug found live: role.list's handler had its own inline IdentityInfo
+# construction that never got these fields added).
+exec breeze ps --json
+stdout '"messAgent":\s*"alice-on-mess"'
+exec breeze role list --json
+stdout '"messAgent":\s*"alice-on-mess"'
+stdout '"notifyOptOut":\s*true'
+
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 exec breeze stage start release build abc123 --as ci
 exec sleep 0.5

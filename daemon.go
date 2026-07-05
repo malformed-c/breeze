@@ -242,11 +242,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		ids := d.eng.Identities()
 		infos := make([]wire.IdentityInfo, 0, len(ids))
 		for _, id := range ids {
-			infos = append(infos, wire.IdentityInfo{
-				Name: id.Name, Roles: rolesToStrings(id.Roles),
-				RegisteredAt: id.RegisteredAt, HasToken: id.TokenHash != "",
-				MessAgent: id.MessAgent, NotifyOptOut: id.NotifyOptOut,
-			})
+			infos = append(infos, identityToWire(id))
 		}
 		locks := d.eng.ListLocks()
 		lockInfos := make([]wire.LockInfo, 0, len(locks))
@@ -340,7 +336,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		ids := d.eng.Identities()
 		infos := make([]wire.IdentityInfo, 0, len(ids))
 		for _, id := range ids {
-			infos = append(infos, wire.IdentityInfo{Name: id.Name, Roles: rolesToStrings(id.Roles), RegisteredAt: id.RegisteredAt, HasToken: id.TokenHash != ""})
+			infos = append(infos, identityToWire(id))
 		}
 		return okResponse(wire.RoleListResponse{Identities: infos})
 
