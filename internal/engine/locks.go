@@ -217,6 +217,21 @@ func (e *Engine) ListResourceLocks() []FileLock {
 	return e.listLocksByKind(LockKindResource)
 }
 
+// ListAllLocks returns every lock regardless of kind (breeze lock list --all) —
+// "what am I holding" naturally spans both a file lock and a deploy claim at once,
+// so this is the one-command answer instead of cross-referencing ListLocks and
+// ListResourceLocks (or reaching for the broader operator dashboard) by hand.
+func (e *Engine) ListAllLocks() []FileLock {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]FileLock, 0, len(e.locks))
+	for _, l := range e.locks {
+		out = append(out, *l)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 func (e *Engine) listLocksByKind(kind LockKind) []FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()

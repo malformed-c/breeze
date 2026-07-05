@@ -183,6 +183,14 @@ type LockRenewRequest struct {
 	TTL string `json:"ttl,omitempty"`
 }
 
+// LockListRequest's All flag additionally includes resource-kind locks (deploy
+// claims and other internal exclusivity holds) alongside file locks — "what am I
+// holding" naturally includes both, without reaching for the broader `operator`
+// dashboard just to see your own locks and claims together.
+type LockListRequest struct {
+	All bool `json:"all,omitempty"`
+}
+
 type LockListResponse struct {
 	Locks []LockInfo `json:"locks"`
 }

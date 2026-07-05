@@ -1,0 +1,46 @@
+# `breeze lock list` (default) only ever shows real file paths — same as before.
+# `breeze lock list --all` additionally includes resource-kind locks (like a
+# deploy claim), so "what am I holding right now" is answerable with one focused
+# command instead of cross-referencing `lock list` and `inventory`, or reaching for
+# the broader `operator` dashboard just to see your own holds together.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze role assign deployer admin --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+exec breeze lock acquire some/file.txt --as admin --ttl 5m
+exec breeze deploy claim release deploy --env staging --as admin --token-file admin.token
+
+# Default `lock list`: file lock only, no resource claim.
+exec breeze lock list --json
+stdout 'some/file\.txt'
+! stdout 'deploy/deploy/staging'
+
+# `--all`: both the file lock and the resource claim appear together.
+exec breeze lock list --all --json
+stdout 'some/file\.txt'
+stdout 'deploy/deploy/staging'
+stdout '"kind":\s*"file"'
+stdout '"kind":\s*"resource"'
+
+# Plain-text output includes a Kind column under --all.
+exec breeze lock list --all
+stdout 'file\s+exclusive'
+stdout 'resource\s+exclusive'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  environments = ["staging"]
+
+  stage "deploy" {
+    type          = "deploy"
+    fans_out      = true
+    required_role = "deployer"
+    timeout       = "10s"
+    command       = ["/bin/true"]
+  }
+}

@@ -99,10 +99,10 @@ breeze lock exec <path...> [--shared] --as <name> -- <command...>   # crash-safe
                                                                      # command's whole life, released
                                                                      # instantly if the process dies
 breeze lock release <lock-id> --as <name> [--force]
-breeze lock list [--json]
+breeze lock list [--all] [--json]   # --all also includes resource locks (e.g. deploy claims)
 breeze lock check <path...> [--as <name>] [--json]   # read-only, no acquire/release involved
-breeze inventory [--json]     # separate view of internal RESOURCE locks (e.g. a deploy's
-                               # (target,environment) exclusivity) — not file paths
+breeze inventory [--json]     # resource-locks-only view (e.g. a deploy's (target,environment)
+                               # exclusivity) — not file paths
 ```
 
 Prefer `lock exec` over acquire+manually-remembering-to-release when running an

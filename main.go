@@ -118,7 +118,7 @@ commands:
   lock exec <path...> [--shared] --as NAME -- <command...>
   lock release <lock-id> --as NAME [--force]
   lock renew <lock-id> [--ttl D] --as NAME
-  lock list [--json]
+  lock list [--all] [--json]                  # --all also includes resource locks (deploy claims)
   lock check <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
 
   inventory [--json]                    list non-file resources (e.g. deploy-env
@@ -163,7 +163,7 @@ commands:
 
 type flagSet struct {
 	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason string
-	shared, wait, force, jsonOut, dryRun, prune                                                  bool
+	shared, wait, force, jsonOut, dryRun, prune, all                                             bool
 	targets                                                                                      []string // repeated --target NAME
 	rest                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
@@ -257,6 +257,8 @@ func parseFlags(args []string) flagSet {
 			f.jsonOut = true
 		case "--dry-run":
 			f.dryRun = true
+		case "--all":
+			f.all = true
 		case "--":
 			f.cmdArgs = append(f.cmdArgs, args[i+1:]...)
 			i = len(args)
@@ -982,7 +984,8 @@ func cmdLock(p paths, args []string) error {
 		_, err := call(p, wire.Request{Op: wire.OpLockRenew, As: as, Payload: payload})
 		return err
 	case "list":
-		resp, err := call(p, wire.Request{Op: wire.OpLockList})
+		payload, _ := json.Marshal(wire.LockListRequest{All: f.all})
+		resp, err := call(p, wire.Request{Op: wire.OpLockList, Payload: payload})
 		if err != nil {
 			return err
 		}
@@ -994,8 +997,14 @@ func cmdLock(p paths, args []string) error {
 			printJSON(out)
 			return nil
 		}
-		for _, l := range out.Locks {
-			fmt.Printf("%-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
+		if f.all {
+			for _, l := range out.Locks {
+				fmt.Printf("%-6s %-8s %-8s %-20s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
+			}
+		} else {
+			for _, l := range out.Locks {
+				fmt.Printf("%-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
+			}
 		}
 		return nil
 	case "check":
@@ -1580,8 +1589,10 @@ func cmdDeployGrantList(p paths, args []string) error {
 }
 
 // cmdInventory lists non-file resources (e.g. a deploy stage's (target,environment)
-// exclusivity lock, once step 9 wires that up) and their current holder — kept
-// separate from `breeze lock list`, which only ever shows real filesystem paths.
+// exclusivity lock) and their current holder — kept as its own view distinct from
+// `breeze lock list`'s default (real filesystem paths only); `lock list --all`
+// unions both kinds for "what am I holding right now" without reaching for the
+// broader `operator` dashboard.
 func cmdInventory(p paths, args []string) error {
 	f := parseFlags(args)
 	resp, err := call(p, wire.Request{Op: wire.OpInventory})

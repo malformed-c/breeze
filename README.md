@@ -99,7 +99,7 @@ breeze lock exec /path/to/file --as alice -- ./build.sh           # attached: he
                                                                   # whole life, released the instant
                                                                   # the process dies — the crash-safe mode
 breeze lock release <lock-id> --as alice
-breeze lock list [--json]
+breeze lock list [--all] [--json]
 breeze lock check /path/to/file [--as alice] [--json]   # read-only: is this locked by someone else?
 ```
 
@@ -117,7 +117,10 @@ for any reason other than an actual conflict.
 
 `breeze inventory` shows a separate class of *resource* locks breeze creates
 internally (e.g. a deploy stage's exclusivity on a `(target, environment)` pair) —
-kept apart from real file paths shown by `lock list`.
+kept apart from real file paths shown by `lock list` by default. `breeze lock list
+--all` unions both kinds together — "what am I holding right now" (a file lock
+*and* a deploy claim at once) without cross-referencing two commands, or reaching
+for the broader `breeze operator` dashboard just to see your own holds.
 
 **Paths are resolved client-side, relative to your git worktree's toplevel when
 you're in one.** A relative path like `src/main.go` doesn't get resolved against the

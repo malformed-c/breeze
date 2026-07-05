@@ -649,7 +649,18 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		return okResponse(struct{}{})
 
 	case wire.OpLockList:
-		locks := d.eng.ListLocks()
+		var p wire.LockListRequest
+		if len(req.Payload) > 0 {
+			if err := json.Unmarshal(req.Payload, &p); err != nil {
+				return errResponse(err)
+			}
+		}
+		var locks []engine.FileLock
+		if p.All {
+			locks = d.eng.ListAllLocks()
+		} else {
+			locks = d.eng.ListLocks()
+		}
 		out := make([]wire.LockInfo, 0, len(locks))
 		for _, l := range locks {
 			out = append(out, lockToWire(l))

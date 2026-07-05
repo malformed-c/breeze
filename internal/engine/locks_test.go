@@ -144,6 +144,33 @@ func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	}
 }
 
+func TestListAllLocksUnionsFileAndResourceKinds(t *testing.T) {
+	e := New()
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
+		t.Fatalf("file lock acquire failed: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour); err != nil || !ok {
+		t.Fatalf("resource lock acquire failed: ok=%v err=%v", ok, err)
+	}
+
+	all := e.ListAllLocks()
+	if len(all) != 2 {
+		t.Fatalf("expected ListAllLocks to return both the file lock and the resource lock, got %+v", all)
+	}
+	var sawFile, sawResource bool
+	for _, l := range all {
+		switch l.Kind {
+		case LockKindFile:
+			sawFile = true
+		case LockKindResource:
+			sawResource = true
+		}
+	}
+	if !sawFile || !sawResource {
+		t.Fatalf("expected both kinds present, got %+v", all)
+	}
+}
+
 func TestSweepExpiredLocks(t *testing.T) {
 	e := New()
 	fakeNow := time.Now()
