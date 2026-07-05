@@ -440,16 +440,30 @@ breeze stage wait  release build abc123 --timeout 30m &   # background it, keep 
 ```
 
 `stage wait` blocks until the stage resolves (or times out) — designed to be
-backgrounded via your shell or Claude Code's own background-Bash execution. On
+backgrounded via your shell or Claude Code's own background-Bash execution. On every
 resolution, breeze also proactively shells out to `mess send <identity> "..."`
-(best-effort, only if `mess` is installed) for every identity holding the required
-role of a newly-eligible approval stage — so reviewers get pinged the moment
-there's something to review, without needing to poll. It deliberately does **not**
-notify the identity that triggered the stage that just resolved: `stage start`/
-`stage approve` are synchronous RPCs that already hand that same caller the
-resolved instance directly as their response, so pinging them about their own
-call's own result would just be noise — if you want to be woken up rather than
-checking back yourself, that's exactly what backgrounding `stage wait` is for.
+(best-effort, only if `mess` is installed):
+
+- On success, every identity holding the required role of the stage that's now
+  eligible next — whatever its type (an approval's reviewers, or the role gating the
+  next command/deploy stage) — so whoever can act on it hears about it immediately.
+- On failure or a gate failure, `mess send user "..."` — mess's well-known human
+  mailbox (see mess's own docs: sending to `user` or your login name both
+  desktop-notifies and lands in a durably `recv`-able inbox) — regardless of role
+  structure, since a failure needs a human's attention and there's no "next stage"
+  to derive a more specific target from. This is what makes failure notification
+  actually reliable day to day: it doesn't depend on anyone remembering to leave a
+  separate `breeze operator notify` watcher running (see below) — the daemon itself
+  is always running by construction, pushing through a channel (mess) that's also
+  always running.
+
+It deliberately does **not** notify the identity that triggered the stage that just
+resolved, even when that same identity also holds the role being notified (e.g. one
+identity acting as both CI and reviewer) — `stage start`/`stage approve` are
+synchronous RPCs that already hand that same caller the resolved instance directly
+as their response, so pinging them about their own call's own result would just be
+noise — if you want to be woken up rather than checking back yourself, that's
+exactly what backgrounding `stage wait` is for.
 
 ### Briefs
 

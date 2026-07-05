@@ -70,6 +70,139 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	}
 }
 
+// TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole is a regression test:
+// notifyResolution used to only ever EXCLUDE the actor by accident, whenever the
+// actor happened not to also hold the role being notified. When the same identity
+// both triggers a stage and holds the next stage's required role (a realistic setup
+// — a solo operator/admin doing everything), the old code pinged them about their
+// own action on every single run. Found live: an identity used as both the CI actor
+// and the reviewer had accumulated dozens of self-notifications in its real mess
+// mailbox.
+func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	if _, err := e.RegisterIdentity("bob"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("bob", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotIdentities []string
+	e.SetNotifyFn(func(identities []string, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentities = identities
+	})
+
+	// bob triggers build himself, while ALSO holding the role review's about to
+	// require — he must not be pinged about his own action.
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "bob", ""); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range gotIdentities {
+		if id == "bob" {
+			t.Fatalf("expected the actor 'bob' NOT to be notified even though he holds the reviewer role, got %v", gotIdentities)
+		}
+	}
+}
+
+// TestNotifyResolutionNotifiesUserOnFailure confirms a failed/gate_failed
+// resolution always pings mess's well-known human mailbox ("user"), regardless of
+// pipeline role structure — there's no "next stage" to derive a more specific
+// target from, and a failure is exactly the kind of thing that needs a human's
+// attention without depending on a separately-run desktop-notify watcher process.
+func TestNotifyResolutionNotifiesUserOnFailure(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/false"}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotIdentities []string
+	e.SetNotifyFn(func(identities []string, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentities = identities
+	})
+
+	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if inst.Status != StageFailed {
+		t.Fatalf("expected build to fail (uses /bin/false), got %s", inst.Status)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotIdentities) != 1 || gotIdentities[0] != "user" {
+		t.Fatalf("expected a failure to notify exactly [\"user\"], got %v", gotIdentities)
+	}
+}
+
+// TestNotifyResolutionTargetsNextStageRoleForAnyType confirms the notify target
+// isn't limited to "next stage is an approval" — a deploy stage's RequiredRole
+// holders get notified the moment the preceding stage succeeds too, since they're
+// equally "the ones who can now act on it."
+func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[2].DeployPolicy.RequiredRole = "deployer"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("alice"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("carol"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("alice", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if err := e.AssignRole("carol", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if _, err := e.RegisterIdentity("dave"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("dave", "deployer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotIdentities []string
+	e.SetNotifyFn(func(identities []string, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentities = identities
+	})
+
+	if _, err := e.ApproveStage("release", "review", "abc123", "", "alice", ""); err != nil {
+		t.Fatalf("approve 1: %v", err)
+	}
+	if _, err := e.ApproveStage("release", "review", "abc123", "", "carol", ""); err != nil {
+		t.Fatalf("approve 2: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotIdentities) != 1 || gotIdentities[0] != "dave" {
+		t.Fatalf("expected review's success to notify deploy's role holder [\"dave\"], got %v", gotIdentities)
+	}
+}
+
 func TestNotifyResolutionIsNoOpWithoutFn(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)

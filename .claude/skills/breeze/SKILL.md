@@ -165,11 +165,16 @@ you try (a rejected attempt is harmless, just noisy).
 ```sh
 breeze stage start release build abc123 --as ci
 breeze stage wait  release build abc123 --timeout 30m &     # background this
-# ...continue other work; if this unblocks a downstream approval stage, breeze
-# also proactively `mess send`s every reviewer — best-effort, only if `mess` is
-# installed and running. It does NOT also ping you about your own build's result:
-# stage start/approve are synchronous, so you already got that directly as the
-# response — `stage wait` is the mechanism for being woken instead of checking back.
+# ...continue other work; breeze also proactively `mess send`s on resolution
+# (best-effort, only if `mess` is installed): on success, whoever holds the role
+# gating whatever's now eligible next (reviewers, or the next command/deploy's
+# role); on failure, `mess send user "..."` — mess's human mailbox — regardless of
+# role structure, since that's the case that used to depend on a separately-run
+# desktop-notify watcher actually being alive. It never pings the identity that
+# triggered the stage that just resolved, even if that identity also holds the
+# notified role: stage start/approve are synchronous, so you already got that
+# directly as the response — `stage wait` is the mechanism for being woken instead
+# of checking back.
 ```
 
 Prefer backgrounding `stage wait` (via your shell `&` or Claude Code's background

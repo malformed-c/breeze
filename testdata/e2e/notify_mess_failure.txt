@@ -1,0 +1,33 @@
+# A failed stage always notifies mess's well-known human mailbox ("user"),
+# regardless of pipeline role structure — there's no "next stage" to derive a
+# more specific target from, and this is exactly the case that used to depend on a
+# separately-run `breeze operator notify` watcher process actually being alive.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+chmod 0755 bin/mess
+
+exec breeze identity register ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+exec breeze stage start release build abc123 --as ci
+stdout 'build: failed'
+
+exec sleep 0.5
+exists mess-calls.log
+grep '^send user breeze: release/build \(abc123\) -> failed$' mess-calls.log
+
+exec breeze stop
+
+-- bin/mess --
+#!/bin/sh
+echo "$@" >> mess-calls.log
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+}

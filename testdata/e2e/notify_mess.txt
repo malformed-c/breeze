@@ -1,0 +1,47 @@
+# The daemon's mess-notify integration (notify.go's notifyResolution + notify.go's
+# notifyViaMess) shells out to a real `mess send` on stage resolution. Hermetic here:
+# a fake `mess` script on PATH records its args instead of talking to the real
+# messenger, so this test asserts exactly who breeze tried to notify and with what
+# message, with no dependency on mess actually being installed or running.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+chmod 0755 bin/mess
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register alice
+exec breeze identity register ci
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# ci triggers build; the next stage (review) requires "reviewer" -> alice should be
+# notified, but NOT ci (the actor notifying itself about its own action).
+exec breeze stage start release build abc123 --as ci
+
+# The notify callback fires asynchronously (fire-and-forget, no RPC signal) — give it
+# a moment before checking what the fake mess script recorded.
+exec sleep 0.5
+exists mess-calls.log
+grep '^send alice breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+! grep '^send ci ' mess-calls.log
+
+exec breeze stop
+
+-- bin/mess --
+#!/bin/sh
+echo "$@" >> mess-calls.log
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/sh", "-c", "true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+}
