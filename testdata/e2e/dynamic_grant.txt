@@ -1,0 +1,52 @@
+# A deploy claim holder is a de-facto temporary environment owner: it can
+# `deploy grant` a scoped window to someone else without being the pipeline's
+# declared EnvironmentOwners entry or an admin — "holding == owning, for exactly
+# as long as you hold it."
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register mallory
+cp stdout mallory.token
+exec breeze identity register bob
+cp stdout bob.token
+
+exec breeze role assign deployer mallory --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# mallory is not staging's declared owner (nobody is, here) and not an admin —
+# a grant attempt before claiming anything is rejected.
+! exec breeze deploy grant release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
+stderr 'only environment .* declared owner|admin|currently holding a deploy claim'
+
+# mallory claims the deploy stage's exclusivity for staging.
+exec breeze deploy claim release deploy --env staging --as mallory --token-file mallory.token
+stdout 'lock l1'
+
+# Now mallory, while holding that claim, CAN grant bob a scoped window.
+exec breeze deploy grant release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
+stdout 'granted bob access to release/staging'
+
+# Release mallory's own claim first — it's exclusive, so bob's actual deploy
+# would otherwise fail on a lock conflict regardless of RBAC/grant correctness.
+exec breeze lock release l1 --as mallory
+
+# bob can now deploy on the strength of the grant alone, despite lacking the
+# deployer role and never being a declared owner.
+exec breeze stage start release deploy abc123 --env staging --as bob --token-file bob.token
+stdout 'deploy: succeeded'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  environments = ["staging"]
+
+  stage "deploy" {
+    type          = "deploy"
+    fans_out      = true
+    required_role = "deployer"
+    timeout       = "10s"
+    command       = ["/bin/true"]
+  }
+}

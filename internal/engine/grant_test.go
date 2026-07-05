@@ -92,6 +92,45 @@ func TestGrantEnvironmentAccessRequiresOwnerOrAdmin(t *testing.T) {
 	}
 }
 
+// TestGrantEnvironmentAccessAllowsCurrentClaimHolder covers the "holding == owning,
+// for exactly as long as you hold it" delegation rule: an identity currently
+// holding a deploy claim/lock for an environment can grant access there even
+// without being the declared owner or an admin — but only WHILE it holds that
+// claim, not before.
+func TestGrantEnvironmentAccessAllowsCurrentClaimHolder(t *testing.T) {
+	e := New()
+	if err := e.RegisterPipeline(grantablePipeline(), "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"alice", "mallory", "bob"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+	if err := e.AssignRole("mallory", "deployer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	// mallory is neither staging's declared owner (alice) nor an admin — a grant
+	// attempt before claiming anything is rejected.
+	if _, err := e.GrantEnvironmentAccess("release", "staging", nil, "bob", "mallory", minute); err == nil {
+		t.Fatalf("expected mallory's grant to be rejected before she holds any claim")
+	}
+
+	// mallory claims the deploy stage's exclusivity for "staging" — she's now its
+	// de-facto temporary owner and may delegate a scoped window to bob.
+	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "mallory", minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	grant, err := e.GrantEnvironmentAccess("release", "staging", nil, "bob", "mallory", minute)
+	if err != nil {
+		t.Fatalf("expected mallory's grant to succeed while she holds the claim: %v", err)
+	}
+	if grant.GrantedBy != "mallory" {
+		t.Fatalf("unexpected grantedBy: %+v", grant)
+	}
+}
+
 func TestGrantEnvironmentAccessRequiresPositiveTTL(t *testing.T) {
 	e := New()
 	if err := e.RegisterPipeline(grantablePipeline(), "admin"); err != nil {

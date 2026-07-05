@@ -436,10 +436,16 @@ breeze deploy grant release --env staging --to bob --ttl 2h [--target release] -
 breeze deploy grants [release] [--env staging] [--json]   # Tier-1 read, no auth needed
 ```
 
-An environment's declared `environment_owners` identity (or an admin — never any
-other Tier-2 caller) can temporarily delegate deploy authority over it to someone
-who doesn't hold the role a deploy there normally requires — e.g. covering for the
-usual deployer while they're out, without a permanent `role assign`. `--ttl` is
+An environment's declared `environment_owners` identity, an admin, **or whoever
+currently holds a deploy claim/lock somewhere in that environment** can
+temporarily delegate deploy authority over it to someone who doesn't hold the
+role a deploy there normally requires — e.g. covering for the usual deployer
+while they're out, without a permanent `role assign`. That last case —
+"holding == owning, for exactly as long as you hold it" — is what makes this
+self-service without static config or admin escalation: `deploy claim` an
+environment to block everyone, then `deploy grant` a narrow window to let one
+other identity land a fix while your own claim keeps blocking everyone else,
+with no `environment_owners` entry or admin in the loop at all. `--ttl` is
 mandatory: a grant is always time-bounded, never a backdoor around RBAC forever.
 Omit `--target` to cover every deploy target in that environment, or repeat it to
 scope the grant to specific targets only (`--target release` doesn't also cover a

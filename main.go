@@ -782,7 +782,7 @@ func cmdIdentity(p paths, args []string) error {
 			return err
 		}
 		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force, MessAgent: f.messAgent})
-		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: f.as, Token: token, Payload: payload})
+		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: resolveIdentity(p, f), Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
@@ -806,17 +806,18 @@ func cmdIdentity(p paths, args []string) error {
 			return err
 		}
 		payload, _ := json.Marshal(wire.IdentityRevokeRequest{Name: f.rest[0]})
-		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: f.as, Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: resolveIdentity(p, f), Token: token, Payload: payload})
 		return err
 	case "notify":
 		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
-			return fmt.Errorf("usage: breeze identity notify on|off --as NAME")
+			return fmt.Errorf("usage: breeze identity notify on|off [--as NAME]")
 		}
-		if f.as == "" {
-			return fmt.Errorf("--as NAME required — this toggles YOUR OWN mess-notification preference")
+		as := resolveIdentity(p, f)
+		if as == "" {
+			return fmt.Errorf("no identity resolved — register one first, or pass --as NAME explicitly; this toggles YOUR OWN mess-notification preference")
 		}
 		payload, _ := json.Marshal(wire.IdentityNotifyRequest{OptOut: f.rest[0] == "off"})
-		_, err := call(p, wire.Request{Op: wire.OpIdentityNotify, As: f.as, Payload: payload})
+		_, err := call(p, wire.Request{Op: wire.OpIdentityNotify, As: as, Payload: payload})
 		return err
 	default:
 		return fmt.Errorf("unknown identity subcommand %q", sub)
@@ -846,7 +847,7 @@ func cmdRole(p paths, args []string) error {
 			op = wire.OpRoleRevoke
 			payload, _ = json.Marshal(wire.RoleRevokeRequest{Role: f.rest[0], Identity: f.rest[1]})
 		}
-		_, err = call(p, wire.Request{Op: op, As: f.as, Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: op, As: resolveIdentity(p, f), Token: token, Payload: payload})
 		return err
 	case "list":
 		resp, err := call(p, wire.Request{Op: wire.OpRoleList})
@@ -993,13 +994,13 @@ func cmdApply(p paths, args []string) error {
 	}
 
 	if f.dryRun {
-		if f.as != "" {
+		if as := resolveIdentity(p, f); as != "" {
 			token, err := f.resolveToken()
 			if err != nil {
 				return err
 			}
 			authPayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: "admin"})
-			resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: f.as, Token: token, Payload: authPayload})
+			resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: authPayload})
 			if err != nil {
 				return err
 			}
@@ -1008,9 +1009,9 @@ func cmdApply(p paths, args []string) error {
 				return err
 			}
 			if auth.Authorized {
-				fmt.Printf("✓ %s is authorized to apply this plan (holds admin)\n", f.as)
+				fmt.Printf("✓ %s is authorized to apply this plan (holds admin)\n", as)
 			} else {
-				fmt.Printf("✗ %s is NOT authorized to apply this plan: %s\n", f.as, auth.Reason)
+				fmt.Printf("✗ %s is NOT authorized to apply this plan: %s\n", as, auth.Reason)
 			}
 
 			// Being able to apply the pipeline (admin) is a separate question from
@@ -1024,7 +1025,7 @@ func cmdApply(p paths, args []string) error {
 						continue
 					}
 					stagePayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: role})
-					sresp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: f.as, Token: token, Payload: stagePayload})
+					sresp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: stagePayload})
 					if err != nil {
 						return err
 					}
@@ -1033,9 +1034,9 @@ func cmdApply(p paths, args []string) error {
 						return err
 					}
 					if stageAuth.Authorized {
-						fmt.Printf("  ✓ %s could operate %s/%s (requires role %q)\n", f.as, pl.Name, s.Name, role)
+						fmt.Printf("  ✓ %s could operate %s/%s (requires role %q)\n", as, pl.Name, s.Name, role)
 					} else {
-						fmt.Printf("  ✗ %s could NOT operate %s/%s: %s\n", f.as, pl.Name, s.Name, stageAuth.Reason)
+						fmt.Printf("  ✗ %s could NOT operate %s/%s: %s\n", as, pl.Name, s.Name, stageAuth.Reason)
 					}
 				}
 			}
@@ -1050,9 +1051,10 @@ func cmdApply(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+	as := resolveIdentity(p, f)
 	for _, pl := range toApply {
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pl})
-		if _, err := call(p, wire.Request{Op: wire.OpPipelineRegister, As: f.as, Token: token, Payload: payload}); err != nil {
+		if _, err := call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload}); err != nil {
 			return fmt.Errorf("registering pipeline %q: %w", pl.Name, err)
 		}
 	}
@@ -1142,7 +1144,7 @@ func cmdPipeline(p paths, args []string) error {
 			return err
 		}
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pipeline})
-		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: f.as, Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: resolveIdentity(p, f), Token: token, Payload: payload})
 		return err
 	case "show":
 		if len(f.rest) < 1 {

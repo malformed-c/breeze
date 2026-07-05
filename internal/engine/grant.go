@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -12,11 +13,18 @@ func envGrantKey(pipeline, environment, grantee string) string {
 
 // GrantEnvironmentAccess lets grantedBy delegate deploy authority over
 // (pipelineName, environment) — optionally restricted to targets — to grantee for
-// ttl. grantedBy must be either the pipeline's declared EnvironmentOwners[environment]
-// or hold the admin role; this is deliberately NOT open to arbitrary Tier-2 callers,
-// since it's a real (if time-bounded) authorization grant. A later call for the same
-// (pipeline, environment, grantee) replaces any prior grant outright rather than
-// stacking targets — the grant reflects "what's currently delegated," not a history.
+// ttl. grantedBy must be one of: the pipeline's declared
+// EnvironmentOwners[environment], an admin, or an identity CURRENTLY HOLDING a
+// deploy claim/lock somewhere in that environment — "holding == owning, for
+// exactly as long as you hold it": a claim holder is the de-facto temporary
+// gatekeeper for that environment and can self-service delegate a scoped window
+// to someone else without static config or admin escalation (e.g. claim an
+// environment to block everyone, then grant a narrow window to let one other
+// identity land a fix while your claim keeps blocking everyone else). This is
+// deliberately NOT open to arbitrary Tier-2 callers otherwise, since it's a real
+// (if time-bounded) authorization grant. A later call for the same (pipeline,
+// environment, grantee) replaces any prior grant outright rather than stacking
+// targets — the grant reflects "what's currently delegated," not a history.
 func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, targets []string, grantee, grantedBy string, ttl time.Duration) (*EnvironmentGrant, error) {
 	if ttl <= 0 {
 		return nil, fmt.Errorf("a positive --ttl is required — grants are always time-bounded, never permanent")
@@ -38,8 +46,9 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	owner := p.EnvironmentOwners[environment]
 	granter, ok := e.identities[grantedBy]
 	isAdmin := ok && granter.HasRole("admin")
-	if grantedBy != owner && !isAdmin {
-		return nil, gateErr("only environment %q's declared owner (%s) or an admin may grant access to it, not %q", environment, ownerOrNone(owner), grantedBy)
+	isCurrentHolder := e.holdsDeployClaimInEnvironmentLocked(environment, grantedBy)
+	if grantedBy != owner && !isAdmin && !isCurrentHolder {
+		return nil, gateErr("only environment %q's declared owner (%s), an admin, or an identity currently holding a deploy claim there may grant access to it, not %q", environment, ownerOrNone(owner), grantedBy)
 	}
 
 	if len(targets) > 0 {
@@ -60,6 +69,25 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	e.changed()
 	cp := *grant
 	return &cp, nil
+}
+
+// holdsDeployClaimInEnvironmentLocked reports whether holder currently holds ANY
+// deploy-target resource lock within environment (via `deploy claim` or a running
+// deploy stage) — regardless of which specific target. Must be called with e.mu
+// held.
+func (e *Engine) holdsDeployClaimInEnvironmentLocked(environment, holder string) bool {
+	suffix := "/" + environment
+	for _, l := range e.locks {
+		if l.Kind != LockKindResource || l.Holder != holder {
+			continue
+		}
+		for _, path := range l.Paths {
+			if strings.HasPrefix(path, "deploy/") && strings.HasSuffix(path, suffix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func ownerOrNone(owner string) string {

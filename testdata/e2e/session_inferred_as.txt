@@ -1,0 +1,33 @@
+# Every Tier-2 command falls back to the session-scoped identity (written by
+# `identity register`, keyed on BREEZE_SESSION_ID/CLAUDE_CODE_SESSION_ID/
+# CODEX_THREAD_ID) when --as is omitted, same as the Tier-1 lock/whoami commands
+# already did — a real inconsistency found via user feedback: half of Tier-2
+# (stage/deploy) already inferred it, half (identity/role/pipeline) required --as
+# spelled out on every call even within the same session. --token is still always
+# required explicitly regardless — this only ever infers WHO is asking, never
+# authorizes anything by itself.
+env BREEZE_DIR=$WORK/state
+env BREEZE_SESSION_ID=test-session-1
+
+# Registering writes the session-scoped identity file for "admin".
+exec breeze identity register admin
+cp stdout admin.token
+
+# Register carol under a DIFFERENT simulated session — registering an identity
+# always claims the session for whichever name was just registered, so doing this
+# under test-session-1 would reclaim it as "carol" instead of leaving it as "admin".
+env BREEZE_SESSION_ID=other-session
+exec breeze identity register carol
+env BREEZE_SESSION_ID=test-session-1
+
+# role assign, with NO --as at all — must infer "admin" from the session file.
+exec breeze role assign builder carol --token-file admin.token
+exec breeze role list --json
+stdout '"name":\s*"carol"[\s\S]*"builder"'
+
+# identity notify similarly infers the session identity.
+exec breeze identity notify off
+exec breeze role list --json
+stdout '"name":\s*"admin"[\s\S]*"notifyOptOut":\s*true'
+
+exec breeze stop

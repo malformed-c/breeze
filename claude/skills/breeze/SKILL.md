@@ -49,12 +49,18 @@ Two RBAC tiers, and it matters which one an op needs:
 - **Tier 1** (no real stakes: lock acquire/release, `whoami`, `ps`, any
   `*.list`/`*.show`/`*.status` read): `--as NAME` is enough, no token needed.
 - **Tier 2** (triggering a role-gated stage, approving a review, registering a
-  pipeline/role/identity): needs an explicit `--as NAME --token TOKEN` (or
-  `--token-file PATH`) on that **exact call**. This is deliberate — never rely on
-  an env var or an ambient default for this, and never expect it to carry over
+  pipeline/role/identity): `--as` may be omitted (falls back to the session-scoped
+  identity from `identity register`, same as Tier 1), but `--token`/`--token-file`
+  is **always** required explicitly on that **exact call**, never inferred from
+  anywhere. This split is deliberate: the name isn't sensitive, but the token is
+  the entire authorization check, and it never rides along ambiently — never rely
+  on an env var or an ambient default for it, and never expect it to carry over
   automatically to a subagent. If you're a subagent and need to do something
   Tier-2, you need the token *explicitly given to you* (in your prompt, or a
-  `--token-file` path you were told to read) — you do not inherit your parent's.
+  `--token-file` path you were told to read) — you do not inherit your parent's,
+  even though you'd inherit its plain *name* if it registered one (identity
+  registration/session files are keyed on the session id, which subagents share
+  with their parent — a known, accepted risk since a name carries no authority).
 
 ```sh
 breeze identity register <name>                         # fresh name: no auth needed, prints a token ONCE
@@ -223,16 +229,19 @@ breeze deploy grant <pipeline> --env NAME --to <identity> --ttl D [--target NAME
 breeze deploy grants [<pipeline>] [--env NAME] [--json]   # Tier-1 read, no auth needed
 ```
 
-Only the environment's declared `environment_owners` identity, or an admin — never
-any other Tier-2 caller — can run `deploy grant`. It lets the grantee deploy there
-even without the role a deploy normally requires, for exactly `--ttl` (mandatory:
-grants are always time-bounded). Omit `--target` to cover every deploy target in
-that environment, or repeat `--target NAME` to scope it narrower — a grant for
-`release` doesn't also authorize a `worker` target in the same environment. The
-grant satisfies `deploy claim`, `stage start ... deploy`, and `deploy rollback`
-alike; it just stops working when it expires, nothing to explicitly revoke. Check
-`breeze deploy grants` before assuming "lacks the role" fully explains why someone
-can or can't deploy somewhere — a live grant changes the answer.
+The environment's declared `environment_owners` identity, an admin, **or whoever
+currently holds a deploy claim/lock there** can run `deploy grant` — "holding ==
+owning, for exactly as long as you hold it": claim an environment to block
+everyone, then grant a narrow window to let one other identity in, no static
+config or admin needed. It lets the grantee deploy there even without the role a
+deploy normally requires, for exactly `--ttl` (mandatory: grants are always
+time-bounded). Omit `--target` to cover every deploy target in that environment,
+or repeat `--target NAME` to scope it narrower — a grant for `release` doesn't
+also authorize a `worker` target in the same environment. The grant satisfies
+`deploy claim`, `stage start ... deploy`, and `deploy rollback` alike; it just
+stops working when it expires, nothing to explicitly revoke. Check `breeze deploy
+grants` before assuming "lacks the role" fully explains why someone can or can't
+deploy somewhere — a live grant changes the answer.
 
 ### Debug stages and environments — unordered, but never unauthorized
 
