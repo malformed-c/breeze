@@ -472,9 +472,10 @@ func cmdOperatorNotify(p paths, args []string) error {
 
 	seenApprovals := make(map[string]bool)
 	seenFailures := make(map[string]bool)
+	primed := false
 	fmt.Println("watching breeze for approvals/failures (event-driven, Ctrl-C to stop)...")
 	for {
-		if err := watchOperatorOnce(p, seenApprovals, seenFailures); err != nil {
+		if err := watchOperatorOnce(p, seenApprovals, seenFailures, &primed); err != nil {
 			fmt.Fprintf(os.Stderr, "breeze operator notify: %v — reconnecting in %s\n", err, reconnectDelay)
 		}
 		time.Sleep(reconnectDelay)
@@ -483,8 +484,11 @@ func cmdOperatorNotify(p paths, args []string) error {
 
 // watchOperatorOnce holds one operator.watch connection open, decoding and acting on
 // each pushed OperatorSurfaceResponse in turn until the daemon closes the connection
-// or an error occurs (e.g. the daemon restarted) — the caller reconnects.
-func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool) error {
+// or an error occurs (e.g. the daemon restarted) — the caller reconnects. *primed
+// tracks whether a baseline snapshot has ever been taken across the process's whole
+// lifetime (including reconnects) — see notifyNewOperatorEvents' doc comment for why
+// the very first snapshot must never notify.
+func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool, primed *bool) error {
 	conn, err := dialOrStart(p)
 	if err != nil {
 		return err
@@ -507,7 +511,39 @@ func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool) err
 		if err != nil {
 			return err
 		}
+		if !*primed {
+			// The first snapshot this process ever sees is a baseline, not news: an
+			// approval or failure already sitting in history when the watcher starts
+			// isn't a new event, and notifying about it anyway is exactly the bug
+			// this guards against — starting `breeze operator notify` used to replay
+			// every pre-existing failure/approval as a fresh desktop notification
+			// burst, since seenApprovals/seenFailures started empty and treated
+			// "already there" the same as "just happened."
+			primeSeenOperatorEvents(out, seenApprovals, seenFailures)
+			*primed = true
+			continue
+		}
 		notifyNewOperatorEvents(out, seenApprovals, seenFailures)
+	}
+}
+
+func pendingApprovalKey(a wire.PendingApproval) string {
+	return fmt.Sprintf("%s/%s/%s/%s", a.Pipeline, a.Stage, a.Commit, a.Environment)
+}
+
+func recentFailureKey(fl wire.RecentFailure) string {
+	return fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
+}
+
+// primeSeenOperatorEvents marks every pending approval/recent failure already
+// present in out as seen, without notifying — the silent baseline a freshly
+// started watcher establishes before it starts reporting genuinely new events.
+func primeSeenOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, seenFailures map[string]bool) {
+	for _, a := range out.PendingApprovals {
+		seenApprovals[pendingApprovalKey(a)] = true
+	}
+	for _, fl := range out.RecentFailures {
+		seenFailures[recentFailureKey(fl)] = true
 	}
 }
 
@@ -515,10 +551,11 @@ func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool) err
 // recent failure in out not already present in seenApprovals/seenFailures (mutated
 // in place) — so a still-pending approval re-pushed on an unrelated later change
 // doesn't re-notify, but a genuinely new one (or a retry that fails again, keyed
-// through its own FinishedAt) does.
+// through its own FinishedAt) does. Only called after primeSeenOperatorEvents has
+// established a baseline from this process's first snapshot.
 func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, seenFailures map[string]bool) {
 	for _, a := range out.PendingApprovals {
-		key := fmt.Sprintf("%s/%s/%s/%s", a.Pipeline, a.Stage, a.Commit, a.Environment)
+		key := pendingApprovalKey(a)
 		if seenApprovals[key] {
 			continue
 		}
@@ -527,7 +564,7 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, se
 			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
 	}
 	for _, fl := range out.RecentFailures {
-		key := fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
+		key := recentFailureKey(fl)
 		if seenFailures[key] {
 			continue
 		}
@@ -539,7 +576,9 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, se
 
 // desktopNotify fires a best-effort OS desktop notification — a failure here (no
 // notify-send, no display server, ...) must never crash the watch loop.
-func desktopNotify(title, body string) {
+// desktopNotify is a var, not a plain func, so tests can substitute it and assert
+// on exactly what would have fired without actually shelling out to notify-send.
+var desktopNotify = func(title, body string) {
 	_ = exec.Command("notify-send", title, body).Run()
 }
 

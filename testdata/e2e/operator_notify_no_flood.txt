@@ -1,0 +1,47 @@
+# Regression test for a real, reproduced bug: starting `breeze operator notify`
+# fresh used to replay every PRE-EXISTING pending approval/failure as a desktop
+# notification burst, since its seen-maps started empty and treated "already there"
+# the same as "just happened." A fake `notify-send` on PATH records its calls
+# instead of touching the real desktop, so this is hermetic.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+chmod 0755 bin/notify-send
+
+exec breeze identity register ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# A failure that happens BEFORE the watcher ever starts — this is the "already in
+# history at connect time" case that must NOT be notified about.
+exec breeze stage start release build stalecommit --as ci
+stdout 'build: failed'
+
+exec breeze operator notify &notify&
+exec sleep 0.5
+! exists notify-calls.log
+
+# A failure that happens AFTER the watcher is already running — this one is
+# genuinely new and must be notified.
+exec breeze stage start release build freshcommit --as ci
+stdout 'build: failed'
+exec sleep 0.5
+
+exists notify-calls.log
+! grep 'stalecommit' notify-calls.log
+grep 'freshcommit' notify-calls.log
+
+kill
+exec breeze stop
+
+-- bin/notify-send --
+#!/bin/sh
+echo "$@" >> notify-calls.log
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+}

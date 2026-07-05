@@ -508,10 +508,16 @@ delay for a pending approval or stage failure it hasn't already notified about,
 without ever waking up to check on a timer in between. `--interval` here means the
 reconnect delay if the daemon restarts (default 3s), not a poll period. Meant to be
 left running in a terminal (or backgrounded) so you get pinged without keeping
-`breeze operator` open and re-checking it yourself. Each distinct pending-approval
-key and each distinct failure (keyed through its finish time, so a retry that fails
-again notifies again) fires exactly once per process lifetime — restarting the
-watcher re-notifies about whatever's still outstanding.
+`breeze operator` open and re-checking it yourself.
+
+The very first surface a freshly started watcher sees is treated as a silent
+baseline, not news — whatever's already pending/failed when you start it does NOT
+notify (a real bug, now fixed: starting the watcher used to replay every
+pre-existing pending approval and recent failure as an immediate notification
+burst). Only something appearing in a *later* surface that wasn't in that baseline
+fires — each distinct pending-approval key and each distinct failure (keyed through
+its finish time, so a retry that fails again notifies again) fires exactly once per
+process lifetime.
 
 ## Worked example
 

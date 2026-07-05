@@ -278,8 +278,10 @@ Linux/libnotify) with essentially zero delay for a pending approval or stage
 failure — `--interval` is the reconnect delay if the daemon restarts, not a poll
 period. Meant for a human to leave running rather than for agents to invoke, but
 worth knowing about if a user asks for desktop pings on breeze events.
-Each distinct approval/failure notifies once per process lifetime; restarting it
-re-notifies about whatever's still outstanding.
+The first surface a freshly started watcher sees is a silent baseline, not news —
+whatever's already outstanding when it starts does NOT notify (a real bug, fixed:
+it used to replay everything pre-existing as an immediate burst). Only something
+appearing in a later surface notifies, once per process lifetime.
 
 ## 5. Defining a pipeline (HCL via `breeze apply`)
 
