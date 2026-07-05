@@ -138,7 +138,7 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 	if len(targets) == 0 && (topicFn == nil || topic == "") {
 		return
 	}
-	message := fmt.Sprintf("breeze: %s/%s (%s) -> %s", pipelineName, stageName, inst.Key, inst.Status)
+	message := fmt.Sprintf("breeze: %s/%s (%s) -> %s", pipelineName, stageName, inst.Key.ShortString(), inst.Status)
 	if len(targets) > 0 && fn != nil {
 		fn(targets, message)
 	}

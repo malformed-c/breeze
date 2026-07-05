@@ -1,0 +1,45 @@
+# A blocked stage's prerequisite-failure message must (a) name what actually
+# happened (failed / has not run yet / etc.), not the generic "has not succeeded"
+# that read identically for every case, and (b) show a short commit, not the full
+# SHA, matching breeze's short-SHA display convention everywhere else — this text
+# arrives as a plain string in Response.Error, not a structured field the CLI can
+# reformat itself.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# build fails outright (/bin/false) — the RPC itself still succeeds, reporting
+# StageFailed as data.
+exec breeze stage start release build 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
+stdout 'build: failed'
+! stdout 'cancelled'
+
+# test is blocked because build FAILED — the message must say so explicitly,
+# with the commit shown short, not in full.
+! exec breeze stage start release test 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
+stderr 'prerequisite "build" \(98229189fcee\) failed'
+! stderr '98229189fcee04765b9b6f19c1ca64c67c9e749d'
+
+# On a commit that's never been touched at all, the message must say so —
+# "has not run yet", not "failed" (it never even ran) and not the generic
+# "has not succeeded".
+! exec breeze stage start release test deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --as ci
+stderr 'prerequisite "build" \(deadbeefdead\) has not run yet'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+  stage "test" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+}

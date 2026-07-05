@@ -53,6 +53,27 @@ func predecessorKey(p *Pipeline, i int, k StageKey) StageKey {
 	}
 }
 
+// describeStageState renders a gate-failure reason that reflects what actually
+// happened, rather than the ambiguous blanket "has not succeeded" that read
+// identically whether a prerequisite had genuinely failed, was still running, or
+// had simply never been triggered — those are different situations for whoever's
+// deciding what to do next (retry vs. wait vs. trigger it for the first time).
+func describeStageState(inst *StageInstance) string {
+	if inst == nil {
+		return "has not run yet"
+	}
+	switch inst.Status {
+	case StageFailed, StageGateFailed:
+		return "failed"
+	case StageRunning:
+		return "is still running"
+	case StageAwaiting:
+		return "is awaiting approval"
+	default:
+		return "has not succeeded"
+	}
+}
+
 // checkPrerequisite is Gate 1: stage i's predecessor (per predecessorKey) must have
 // succeeded — UNLESS stage i is marked Debug, in which case ordering is deliberately
 // not enforced (RBAC still is, separately). Must be called with e.mu held.
@@ -63,7 +84,7 @@ func (e *Engine) checkPrerequisite(p *Pipeline, i int, k StageKey) (bool, string
 	predKey := predecessorKey(p, i, k)
 	inst := e.getInstance(p.Name, p.Stages[i-1].Name, predKey)
 	if inst == nil || inst.Status != StageSucceeded {
-		return false, fmt.Sprintf("prerequisite %q (%s) has not succeeded", p.Stages[i-1].Name, predKey)
+		return false, fmt.Sprintf("prerequisite %q (%s) %s", p.Stages[i-1].Name, predKey.ShortString(), describeStageState(inst))
 	}
 	return true, ""
 }
@@ -82,7 +103,7 @@ func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, str
 	for _, dep := range p.EnvironmentDeps[k.Environment] {
 		inst := e.getInstance(p.Name, lastStage, StageKey{Commit: k.Commit, Environment: dep})
 		if inst == nil || inst.Status != StageSucceeded {
-			return false, fmt.Sprintf("environment %q depends on %q, whose full chain (last stage %q) has not succeeded for this commit", k.Environment, dep, lastStage)
+			return false, fmt.Sprintf("environment %q depends on %q, whose full chain (last stage %q) %s for this commit", k.Environment, dep, lastStage, describeStageState(inst))
 		}
 	}
 	return true, ""
@@ -334,6 +355,12 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
 	}, params)
 	e.unregisterRunningCancel(runKey)
+	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
+	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
+	// what calling a context's own CancelFunc does), which would make every
+	// naturally-failing command misreported as "cancelled" regardless of whether
+	// CancelStage ever actually ran.
+	wasCancelled := runCtx.Err() != nil
 	runCancel()
 
 	e.mu.Lock()
@@ -349,7 +376,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		inst.Error = "timed out"
 	} else if result.ExitCode != 0 {
 		inst.Status = StageFailed
-		if inst.Error == "" && runCtx.Err() != nil {
+		if inst.Error == "" && wasCancelled {
 			inst.Error = "cancelled"
 		}
 	} else {

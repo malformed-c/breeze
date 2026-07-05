@@ -199,6 +199,18 @@ func (k StageKey) String() string {
 	return k.Commit + "@" + k.Environment
 }
 
+// ShortString is String with the commit truncated for a human-readable diagnostic
+// message (e.g. a gate-failure reason) — the CLI's own commit-shortening (see
+// breeze's shortCommitForDisplay) never sees these, since they arrive as plain
+// text embedded in a Response.Error, not a structured field it can reformat.
+func (k StageKey) ShortString() string {
+	c := shortCommit(k.Commit)
+	if k.Environment == "" {
+		return c
+	}
+	return c + "@" + k.Environment
+}
+
 type StageStatus string
 
 const (

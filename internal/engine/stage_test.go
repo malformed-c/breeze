@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -233,8 +234,42 @@ running:
 		if inst.ExitCode >= 0 {
 			t.Fatalf("expected a negative exit code (killed by signal), got %d", inst.ExitCode)
 		}
+		// CancelStage already set the instance's Error to the caller's own reason
+		// ("test cancel") before the killed process's goroutine resumes here — the
+		// generic "cancelled" fallback only applies when nothing more specific was
+		// already recorded (e.g. a bare `context.Canceled` with no CancelStage
+		// reason attached), so the explicit reason must survive, not get overwritten.
+		if inst.Error != "test cancel" {
+			t.Fatalf(`expected CancelStage's own reason to survive, got %q`, inst.Error)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("StartCommandStage did not return within 5s of cancellation — process was not actually killed")
+	}
+}
+
+// TestFailedCommandIsNotMislabeledCancelled is a regression test: the running-cancel
+// context is cleaned up with an unconditional cancel() call after every command run
+// (cancelled or not, to satisfy vet's lostcancel check and free the context), which
+// makes ctx.Err() non-nil unconditionally — checking it AFTER that cleanup call
+// would misreport every ordinary failing command as "cancelled" even though
+// CancelStage was never involved. A plain nonzero exit must report Error == "".
+func TestFailedCommandIsNotMislabeledCancelled(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/false"}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	if err != nil {
+		t.Fatalf("StartCommandStage (the RPC itself should succeed even though the command fails): %v", err)
+	}
+	if inst.Status != StageFailed {
+		t.Fatalf("expected a plain nonzero exit to fail, got %s", inst.Status)
+	}
+	if inst.Error != "" {
+		t.Fatalf(`expected no Error for an ordinary command failure (never cancelled), got %q`, inst.Error)
 	}
 }
 
@@ -258,6 +293,58 @@ func TestGate1PrerequisiteAndSkipPrevention(t *testing.T) {
 	// review is an approval stage — StartCommandStage should refuse it.
 	if _, err := e.StartCommandStage("release", "review", "abc123", "", "ci", ""); err == nil {
 		t.Fatalf("expected StartCommandStage to reject a non-command stage")
+	}
+}
+
+// TestGate1PrerequisiteErrorReflectsActualState is a regression test for a
+// confusing error message: "has not succeeded" read identically whether the
+// prerequisite had genuinely failed, was still running, or had simply never been
+// triggered — three very different situations for whoever's deciding what to do
+// next. It also previously embedded the full, untruncated commit SHA in a
+// human-readable diagnostic, inconsistent with breeze's short-SHA display
+// convention everywhere else.
+func TestGate1PrerequisiteErrorReflectsActualState(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	longCommit := "abc123defabc123defabc123defabc123defabc1"
+
+	// Never touched: "has not run yet", not "failed".
+	_, err := e.StartCommandStage("release", "test", longCommit, "staging", "ci", "")
+	if err == nil {
+		t.Fatalf("expected an error before build/review have run")
+	}
+	if !strings.Contains(err.Error(), `has not run yet`) {
+		t.Fatalf("expected 'has not run yet' for an untouched prerequisite, got: %v", err)
+	}
+	if strings.Contains(err.Error(), longCommit) {
+		t.Fatalf("expected the commit to be truncated in the error message, got the full SHA: %v", err)
+	}
+
+	// Make build fail, then confirm the message says "failed", not the generic
+	// "has not succeeded".
+	pFail := Pipeline{
+		Name: "failpipe",
+		Stages: []StageDef{
+			{Name: "build", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/false"}, CommandPolicy: &CommandPolicy{}},
+			{Name: "test", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/true"}, CommandPolicy: &CommandPolicy{}},
+		},
+		FanOutAt: 2,
+	}
+	if err := e.RegisterPipeline(pFail, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.StartCommandStage("failpipe", "build", longCommit, "", "ci", ""); err != nil {
+		t.Fatalf("build (exit 1, but the RPC itself should succeed): %v", err)
+	}
+	_, err = e.StartCommandStage("failpipe", "test", longCommit, "", "ci", "")
+	if err == nil {
+		t.Fatalf("expected 'test' to be blocked by build's failure")
+	}
+	if !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("expected the message to say the prerequisite failed, got: %v", err)
+	}
+	if strings.Contains(err.Error(), longCommit) {
+		t.Fatalf("expected the commit to be truncated in the error message, got the full SHA: %v", err)
 	}
 }
 

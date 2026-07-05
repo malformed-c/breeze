@@ -284,6 +284,12 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
 	}, params)
 	e.unregisterRunningCancel(runKey)
+	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
+	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
+	// what calling a context's own CancelFunc does), which would make every
+	// naturally-failing deploy misreported as "cancelled" regardless of whether
+	// CancelStage ever actually ran.
+	wasCancelled := runCtx.Err() != nil
 	runCancel()
 
 	// Release unconditionally — a failed deploy must not wedge the environment.
@@ -306,7 +312,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		outcome = DeployFailed
 	} else if result.ExitCode != 0 {
 		inst.Status = StageFailed
-		if inst.Error == "" && runCtx.Err() != nil {
+		if inst.Error == "" && wasCancelled {
 			inst.Error = "cancelled"
 		}
 		outcome = DeployFailed
