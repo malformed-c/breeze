@@ -221,12 +221,24 @@ the *immediate* predecessor stage's actor, not every earlier actor in the chain.
   identity resolves ambiently — `--as` flag, or whatever's registered for your
   session. Low stakes, no token required.
 - **Tier 2** (triggering a role-gated stage, approving a review, registering a
-  pipeline, managing identities/roles): requires an explicit `--as NAME --token
-  TOKEN` on that exact call — never inherited from a file or env var. This is
-  deliberate: Claude Code subagents inherit their parent's session id (and thus
-  would inherit anything resolved from it), but a subagent is **never** handed a
-  token unless something explicitly puts it in that subagent's own prompt. Privilege
-  requires deliberate delegation, not ambient inheritance.
+  pipeline, managing identities/roles): `--as` may be omitted (same session-scoped
+  fallback as Tier 1), and so may `--token`/`--token-file` — see "Session-bound
+  tokens" below. Explicit `--as`/`--token` on the call always win over anything
+  inferred, and are still the only way to act as an identity your session isn't
+  currently bound to.
+
+**Session-bound tokens**: `identity register` binds the session (keyed the same
+way as the name file above) to BOTH the identity name and its token, not just the
+name — so a later Tier-2 call in that same session can omit `--as`/`--token`
+entirely, not just `--as`. This is a direct, deliberate choice, not a default to
+take lightly: Claude Code subagents inherit their parent's exact session id, so a
+subagent now inherits its parent's bound TOKEN too, not just its name — a name is
+harmless to inherit (no authority by itself), a token is the entire authorization
+check. If you spawn subagents that shouldn't silently gain your session's
+authority, don't rely on this — pass `--token`/`--token-file` explicitly to
+whatever narrower scope you actually want to delegate, the same way as before this
+existed. A bound token is only ever used for the identity it was bound to — naming
+a *different* `--as` on a call never falls back to a mismatched bound token.
 
 ```sh
 breeze identity register admin              # first-ever identity auto-gets the admin role;

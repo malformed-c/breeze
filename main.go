@@ -312,6 +312,60 @@ func sessionID() string {
 	return ""
 }
 
+// tokenFile is identFile's sibling — the session-scoped BOUND TOKEN, written
+// alongside the name on every `identity register` so a linked session can infer
+// both --as and --token on later Tier-2 calls, not just --as. Unlike the name
+// (harmless if a subagent reads it — it carries no authority by itself), this is
+// the actual credential: a subagent sharing its parent's session id would
+// inherit it too, exactly the ambient-authority risk Tier-2's explicit-token
+// design otherwise avoids. Direct, deliberate choice: automatic session-token
+// binding, not a separate opt-in step.
+func tokenFile(p paths, sessionID string) string {
+	return p.identDir + "/" + sanitizeFileName(sessionID) + "/token"
+}
+
+// bindSessionToken persists both the resolved identity name and its token for
+// this session — called once after every successful `identity register` (fresh
+// or rotation) so later calls in the same session can omit --as/--token
+// entirely. Best-effort: a failure here doesn't fail the registration itself,
+// it just means auto-binding didn't take for this call.
+func bindSessionToken(p paths, name, token string) {
+	sid := sessionID()
+	if sid == "" {
+		return
+	}
+	namePath := identFile(p, sid)
+	os.MkdirAll(namePath[:strings.LastIndex(namePath, "/")], 0o700)
+	os.WriteFile(namePath, []byte(name+"\n"), 0o600)
+	os.WriteFile(tokenFile(p, sid), []byte(token+"\n"), 0o600)
+}
+
+// resolveTokenAuto is resolveToken plus a fallback to the session-bound token
+// (see bindSessionToken) when neither --token nor --token-file was given —
+// ONLY if the session's bound identity name matches `as` exactly, so a bound
+// token for one identity is never silently used to authenticate as a different
+// one (e.g. after --as explicitly names someone else, or a stale binding from
+// before a `rename`-equivalent re-registration under a new name).
+func resolveTokenAuto(p paths, f flagSet, as string) (string, error) {
+	token, err := f.resolveToken()
+	if err != nil || token != "" {
+		return token, err
+	}
+	sid := sessionID()
+	if sid == "" || as == "" {
+		return "", nil
+	}
+	boundName, err := os.ReadFile(identFile(p, sid))
+	if err != nil || strings.TrimSpace(string(boundName)) != as {
+		return "", nil
+	}
+	data, err := os.ReadFile(tokenFile(p, sid))
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func identFile(p paths, sessionID string) string {
 	return p.identDir + "/" + sanitizeFileName(sessionID) + "/name"
 }
@@ -787,12 +841,13 @@ func cmdIdentity(p paths, args []string) error {
 			return fmt.Errorf("usage: breeze identity register <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
 		}
 		name := f.rest[0]
-		token, err := f.resolveToken()
+		as := resolveIdentity(p, f)
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force, MessAgent: f.messAgent})
-		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: resolveIdentity(p, f), Token: token, Payload: payload})
+		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: as, Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
@@ -800,23 +855,20 @@ func cmdIdentity(p paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		if sid := sessionID(); sid != "" {
-			path := identFile(p, sid)
-			os.MkdirAll(path[:strings.LastIndex(path, "/")], 0o700)
-			os.WriteFile(path, []byte(out.Name+"\n"), 0o600)
-		}
+		bindSessionToken(p, out.Name, out.Token)
 		fmt.Println(out.Token)
 		return nil
 	case "revoke":
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze identity revoke <name> --as ADMIN --token T")
 		}
-		token, err := f.resolveToken()
+		as := resolveIdentity(p, f)
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(wire.IdentityRevokeRequest{Name: f.rest[0]})
-		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: resolveIdentity(p, f), Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: as, Token: token, Payload: payload})
 		return err
 	case "notify":
 		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
@@ -845,7 +897,8 @@ func cmdRole(p paths, args []string) error {
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze role %s <role> <identity> --as ADMIN --token T", sub)
 		}
-		token, err := f.resolveToken()
+		as := resolveIdentity(p, f)
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
@@ -857,7 +910,7 @@ func cmdRole(p paths, args []string) error {
 			op = wire.OpRoleRevoke
 			payload, _ = json.Marshal(wire.RoleRevokeRequest{Role: f.rest[0], Identity: f.rest[1]})
 		}
-		_, err = call(p, wire.Request{Op: op, As: resolveIdentity(p, f), Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload})
 		return err
 	case "list":
 		resp, err := call(p, wire.Request{Op: wire.OpRoleList})
@@ -1005,7 +1058,7 @@ func cmdApply(p paths, args []string) error {
 
 	if f.dryRun {
 		if as := resolveIdentity(p, f); as != "" {
-			token, err := f.resolveToken()
+			token, err := resolveTokenAuto(p, f, as)
 			if err != nil {
 				return err
 			}
@@ -1057,11 +1110,11 @@ func cmdApply(p paths, args []string) error {
 		return nil
 	}
 
-	token, err := f.resolveToken()
+	as := resolveIdentity(p, f)
+	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
-	as := resolveIdentity(p, f)
 	for _, pl := range toApply {
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pl})
 		if _, err := call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload}); err != nil {
@@ -1149,12 +1202,13 @@ func cmdPipeline(p paths, args []string) error {
 		if err := json.Unmarshal(data, &pipeline); err != nil {
 			return fmt.Errorf("parsing pipeline JSON: %w", err)
 		}
-		token, err := f.resolveToken()
+		as := resolveIdentity(p, f)
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pipeline})
-		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: resolveIdentity(p, f), Token: token, Payload: payload})
+		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload})
 		return err
 	case "show":
 		if len(f.rest) < 1 {
@@ -1232,7 +1286,7 @@ func cmdStage(p paths, args []string) error {
 
 	switch sub {
 	case "start", "approve":
-		token, err := f.resolveToken()
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
@@ -1298,7 +1352,7 @@ func cmdStage(p paths, args []string) error {
 		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
 		return nil
 	case "cancel":
-		token, err := f.resolveToken()
+		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
@@ -1382,7 +1436,7 @@ func cmdDeployRollback(p paths, args []string) error {
 	}
 	pipeline, stage, commit := f.rest[0], f.rest[1], f.rest[2]
 	as := resolveIdentity(p, f)
-	token, err := f.resolveToken()
+	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
@@ -1420,7 +1474,7 @@ func cmdDeployClaim(p paths, args []string) error {
 	}
 	pipeline, stage := f.rest[0], f.rest[1]
 	as := resolveIdentity(p, f)
-	token, err := f.resolveToken()
+	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
@@ -1465,7 +1519,7 @@ func cmdDeployGrant(p paths, args []string) error {
 	}
 	pipeline := f.rest[0]
 	as := resolveIdentity(p, f)
-	token, err := f.resolveToken()
+	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}

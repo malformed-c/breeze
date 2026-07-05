@@ -49,18 +49,18 @@ Two RBAC tiers, and it matters which one an op needs:
 - **Tier 1** (no real stakes: lock acquire/release, `whoami`, `ps`, any
   `*.list`/`*.show`/`*.status` read): `--as NAME` is enough, no token needed.
 - **Tier 2** (triggering a role-gated stage, approving a review, registering a
-  pipeline/role/identity): `--as` may be omitted (falls back to the session-scoped
-  identity from `identity register`, same as Tier 1), but `--token`/`--token-file`
-  is **always** required explicitly on that **exact call**, never inferred from
-  anywhere. This split is deliberate: the name isn't sensitive, but the token is
-  the entire authorization check, and it never rides along ambiently — never rely
-  on an env var or an ambient default for it, and never expect it to carry over
-  automatically to a subagent. If you're a subagent and need to do something
-  Tier-2, you need the token *explicitly given to you* (in your prompt, or a
-  `--token-file` path you were told to read) — you do not inherit your parent's,
-  even though you'd inherit its plain *name* if it registered one (identity
-  registration/session files are keyed on the session id, which subagents share
-  with their parent — a known, accepted risk since a name carries no authority).
+  pipeline/role/identity): both `--as` AND `--token`/`--token-file` may be omitted
+  — `identity register` binds the session to both the name and the token, not
+  just the name, so a later Tier-2 call in that same session can go bare. Explicit
+  `--as`/`--token` on a call always override the bound ones, and a bound token is
+  only ever used for the identity it was bound to (naming a *different* `--as`
+  never falls back to a mismatched bound token).
+  **Subagent caveat**: subagents inherit their parent's exact session id, so a
+  spawned subagent now inherits its parent's bound TOKEN too, not just its name —
+  unlike the name (harmless, no authority by itself), the token IS the entire
+  authorization check. If a subagent shouldn't silently get your session's
+  authority, don't rely on the binding for it — hand it `--token`/`--token-file`
+  explicitly for whatever narrower scope you actually mean to delegate.
 
 ```sh
 breeze identity register <name>                         # fresh name: no auth needed, prints a token ONCE

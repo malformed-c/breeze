@@ -1,0 +1,39 @@
+# `identity register` auto-binds both the session's identity NAME (existing
+# behavior) and its TOKEN (new) — so a Tier-2 call in the same session can omit
+# both --as and --token entirely afterward. Explicit --token/--token-file always
+# overrides the bound one, and a bound token is never used to authenticate as a
+# DIFFERENT identity than the one the session is actually bound to.
+env BREEZE_DIR=$WORK/state
+env BREEZE_SESSION_ID=test-session-1
+
+# Registering binds this session to "admin" + admin's own token.
+exec breeze identity register admin
+cp stdout admin.token
+
+# Register carol under a DIFFERENT simulated session so test-session-1 stays
+# bound to admin (registering always rebinds the CURRENT session to whatever
+# name was just registered).
+env BREEZE_SESSION_ID=other-session
+exec breeze identity register carol
+env BREEZE_SESSION_ID=test-session-1
+
+# No --as, no --token at all — both must be inferred from the session's bound
+# admin identity/token for this real Tier-2 op to succeed.
+exec breeze role assign builder carol
+exec breeze role list --json
+stdout '"name":\s*"carol"[\s\S]*"builder"'
+
+# A wrong EXPLICIT token still overrides (and fails) rather than silently
+# falling back to the bound one.
+! exec breeze role assign reviewer carol --token-file wrong.token
+stderr 'authentication failed'
+
+# Switching --as to an identity the session ISN'T bound to must NOT silently
+# reuse admin's bound token to authenticate as carol.
+! exec breeze role assign reviewer carol --as carol
+stderr 'this operation requires --as and --token'
+
+exec breeze stop
+
+-- wrong.token --
+not-a-real-token
