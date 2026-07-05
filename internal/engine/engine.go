@@ -4,6 +4,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"sync"
@@ -25,6 +26,18 @@ type Engine struct {
 	commitSeqCounter int
 
 	instances map[string]*StageInstance // pipeline+"/"+stage+"/"+key.String() -> instance
+
+	// runningCancel holds one context.CancelFunc per instance whose main command
+	// (hook.Run) is currently executing, keyed the same way as instances — the live
+	// handle CancelStage needs to actually interrupt a genuinely-still-running
+	// process (hook.Run's cmd.Cancel already SIGKILLs the whole process group the
+	// instant its context is done, for ANY reason, not just its own timeout; this
+	// just gives CancelStage a way to trigger that same mechanism from outside).
+	// Absent entirely for an instance that isn't actively running one — e.g. after
+	// a restart, the whole map (like everything else in-memory) is gone, so
+	// CancelRunningStages has nothing to cancel via this path either, correctly:
+	// that orphaned process is already unreachable regardless.
+	runningCancel map[string]context.CancelFunc
 
 	deployHistory map[string][]DeployRecord // pipeline+"/"+stage+"/"+env -> records
 
@@ -59,6 +72,7 @@ func New() *Engine {
 		commitSeq:       make(map[string]int),
 		lastDeployedSeq: make(map[string]int),
 		instances:       make(map[string]*StageInstance),
+		runningCancel:   make(map[string]context.CancelFunc),
 		deployHistory:   make(map[string][]DeployRecord),
 		envGrants:       make(map[string]*EnvironmentGrant),
 		waiters:         make(map[string][]chan struct{}),

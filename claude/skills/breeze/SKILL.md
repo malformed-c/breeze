@@ -174,9 +174,9 @@ A stage stuck `running`/`awaiting` forever (e.g. orphaned by a daemon restart �
 now handled automatically, but not every stuck-forever cause is) can be forced to
 `failed` (and thus retryable) with `breeze stage cancel <pipeline> <stage>
 <commit> [--env NAME] [--reason "..."] --as WHO --token T` — same RBAC as
-triggering it. Only mutates tracked state, doesn't kill an actually-still-running
-process; for the "the process is truly gone, the record is just stuck" case, not
-"stop this thing that's still going."
+triggering it. Also kills a genuinely-still-running process, not just tracked
+state — same context-cancellation-kills-the-process-group mechanism `hook.Run`
+uses on a timeout, just fired manually.
 
 ### Waiting instead of polling
 

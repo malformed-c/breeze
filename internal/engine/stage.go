@@ -88,6 +88,33 @@ func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, str
 	return true, ""
 }
 
+// registerRunningCancel/unregisterRunningCancel let a goroutine currently blocked
+// in hook.Run advertise a way to interrupt it — called WITHOUT e.mu held (they take
+// the lock themselves), bracketing the hook.Run call the same way a defer would.
+func (e *Engine) registerRunningCancel(key string, cancel context.CancelFunc) {
+	e.mu.Lock()
+	e.runningCancel[key] = cancel
+	e.mu.Unlock()
+}
+
+func (e *Engine) unregisterRunningCancel(key string) {
+	e.mu.Lock()
+	delete(e.runningCancel, key)
+	e.mu.Unlock()
+}
+
+// cancelIfRunningLocked invokes and removes the registered cancel func for key, if
+// any — must be called WITH e.mu held (runningCancel is guarded by it like every
+// other Engine field). Safe/fast to call while holding the lock: cancelling a
+// context never blocks on the child process actually dying, that reaping happens
+// independently in the goroutine still waiting on hook.Run.
+func (e *Engine) cancelIfRunningLocked(key string) {
+	if cancel, ok := e.runningCancel[key]; ok {
+		delete(e.runningCancel, key)
+		cancel()
+	}
+}
+
 func isTerminalStatus(s StageStatus) bool {
 	return s == StageSucceeded || s == StageFailed || s == StageGateFailed
 }
@@ -300,9 +327,14 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		return nil, err
 	}
 
-	result := hook.Run(context.Background(), hook.Template{
+	runKey := instanceKey(pipelineName, stageName, key)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	e.registerRunningCancel(runKey, runCancel)
+	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
 	}, params)
+	e.unregisterRunningCancel(runKey)
+	runCancel()
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
@@ -317,6 +349,9 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		inst.Error = "timed out"
 	} else if result.ExitCode != 0 {
 		inst.Status = StageFailed
+		if inst.Error == "" && runCtx.Err() != nil {
+			inst.Error = "cancelled"
+		}
 	} else {
 		inst.Status = StageSucceeded
 	}
@@ -600,6 +635,14 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	if reason == "" {
 		reason = "cancelled by " + actor
 	}
+	// Kill the actual process FIRST, before mutating tracked state: if its main
+	// command is genuinely still executing (as opposed to already gone, the
+	// restart-orphaned case CancelRunningStages handles), this triggers hook.Run's
+	// existing context-cancellation-kills-the-process-group behavior, closing the
+	// race a manual cancel used to have — without this, the real command's own
+	// eventual completion could still land afterward and silently overwrite the
+	// cancellation.
+	e.cancelIfRunningLocked(instanceKey(pipelineName, stageName, key))
 	inst.Status = StageFailed
 	inst.Error = reason
 	inst.FinishedAt = e.now()

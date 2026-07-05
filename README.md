@@ -472,13 +472,14 @@ is for the general case). Forces it to a terminal `Failed` state with your
 fresh `stage start`. Requires the same RBAC that stage would need to trigger (its
 own `RequiredRole`), or admin.
 
-**Limitation**: this only mutates *tracked* state — there's no live handle to an
-actually-still-running process to kill. If the underlying command is genuinely
-still executing (as opposed to already gone, the restart-orphaned case), cancelling
-it doesn't stop that process, and its real result can still land afterward and
-overwrite your cancellation. This is the right tool for "the process is already
-gone and the record is just stuck," not for "stop this command that's still
-running" (there's no mechanism for the latter today).
+If the underlying command is genuinely still executing (as opposed to already
+gone, the restart-orphaned case), cancel also interrupts the real process — its
+main command runs under a cancellable context (`Engine.runningCancel`), and
+cancelling it triggers the exact same context-cancellation-kills-the-whole-
+process-group mechanism `hook.Run` already uses on a timeout, just fired manually
+instead of by a deadline. This closes what used to be a real gap: without it, a
+still-genuinely-running command's own eventual (non-killed) completion could land
+after the cancellation and silently overwrite it back to a resolved state.
 
 ### Waiting instead of polling
 

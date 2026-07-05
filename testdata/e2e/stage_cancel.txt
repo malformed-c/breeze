@@ -3,13 +3,15 @@
 # TestShutdownCancelsRunningStages for the automatic case this complements) --
 # force it to a terminal, retryable Failed state.
 #
-# Known limitation this test deliberately works around: cancel only mutates
-# TRACKED state, it doesn't kill an actually-still-alive underlying process (no
-# live handle to it exists to cancel) -- if the real command is still genuinely
-# running (unlike the restart-orphaned case, where it's already gone) and later
-# completes on its own, that real result can still land and overwrite the
-# cancellation. The build command here never finishes within the test's
-# lifetime for exactly this reason -- it's killed outright at the end instead.
+# Cancel also interrupts a genuinely-still-executing process, not just tracked
+# state: hook.Run's main command runs under a cancellable context registered in
+# Engine.runningCancel, and CancelStage invokes it before mutating anything --
+# the SAME context-cancellation-kills-the-process-group mechanism already used
+# for timeouts, just triggered manually instead. The background build below
+# (sleep 300) is proof: it exits almost immediately once cancelled, rather than
+# running for its full 300s -- if this test ever regresses to only mutating
+# state (not actually killing the process), this background command would still
+# be alive at test end and `wait` below would hang for the sleep's full duration.
 env BREEZE_DIR=$WORK/state
 
 exec breeze identity register admin
@@ -29,6 +31,11 @@ stdout '"status":\s*"running"'
 exec breeze stage cancel release build abc123 --as ci --reason stuck-cancelling --token-file ci.token
 stdout 'build: failed \(cancelled\)'
 
+# The background process should be genuinely dead very quickly now (not stuck
+# running its full 300s) -- `wait` returns almost immediately, proving the kill,
+# not just the state mutation, actually happened.
+wait build
+
 exec breeze stage status release build abc123 --json
 stdout '"status":\s*"failed"'
 stdout '"error":\s*"stuck-cancelling"'
@@ -37,7 +44,6 @@ stdout '"error":\s*"stuck-cancelling"'
 exec breeze stage start release build newcommit --as ci --token-file ci.token
 stdout 'build: succeeded'
 
-kill
 exec breeze stop
 
 -- pipeline.hcl --

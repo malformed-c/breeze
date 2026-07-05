@@ -277,9 +277,14 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		return nil, gateErr
 	}
 
-	result := hook.Run(context.Background(), hook.Template{
+	runKey := instanceKey(pipelineName, stageName, key)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	e.registerRunningCancel(runKey, runCancel)
+	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
 	}, params)
+	e.unregisterRunningCancel(runKey)
+	runCancel()
 
 	// Release unconditionally — a failed deploy must not wedge the environment.
 	e.ReleaseLock(lock.ID, actor, true)
@@ -301,6 +306,9 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		outcome = DeployFailed
 	} else if result.ExitCode != 0 {
 		inst.Status = StageFailed
+		if inst.Error == "" && runCtx.Err() != nil {
+			inst.Error = "cancelled"
+		}
 		outcome = DeployFailed
 	} else {
 		inst.Status = StageSucceeded

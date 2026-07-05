@@ -175,6 +175,69 @@ func TestCancelStageAdminOverride(t *testing.T) {
 	}
 }
 
+// TestCancelStageKillsGenuinelyRunningProcess is a regression test: cancel used to
+// only mutate tracked state, leaving an actually-still-executing process alive to
+// potentially complete later and silently overwrite the cancellation. It now
+// interrupts the real process too, via the same context-cancellation-kills-the-
+// process-group mechanism hook.Run already uses for timeouts. Proof: a `sleep 300`
+// command exits almost immediately once cancelled, not after its full duration.
+func TestCancelStageKillsGenuinelyRunningProcess(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+	p.Stages[0].Timeout = 5 * time.Minute
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	done := make(chan *StageInstance, 1)
+	go func() {
+		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+		if err != nil {
+			t.Errorf("StartCommandStage: %v", err)
+			return
+		}
+		done <- inst
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		insts, err := e.PipelineStatus("release", "abc123")
+		if err == nil {
+			for _, i := range insts {
+				if i.Stage == "build" && i.Status == StageRunning {
+					goto running
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stage never reached Running before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+running:
+
+	start := time.Now()
+	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	select {
+	case inst := <-done:
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Fatalf("expected the sleep 300 process to die almost immediately once cancelled, took %s", elapsed)
+		}
+		if inst.ExitCode >= 0 {
+			t.Fatalf("expected a negative exit code (killed by signal), got %d", inst.ExitCode)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("StartCommandStage did not return within 5s of cancellation — process was not actually killed")
+	}
+}
+
 func TestGate1PrerequisiteAndSkipPrevention(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
