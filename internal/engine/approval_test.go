@@ -5,13 +5,13 @@ import "testing"
 func TestApprovalDedupAndRoleEnforcement(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("mallory"); err != nil {
+	if _, err := e.RegisterIdentity("mallory", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -59,10 +59,10 @@ func TestApprovalDedupAndRoleEnforcement(t *testing.T) {
 func TestRoleRevokedMidFlightDoesNotInvalidatePriorApproval(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -102,10 +102,10 @@ func TestRoleRevokedMidFlightDoesNotInvalidatePriorApproval(t *testing.T) {
 func TestGate2EnvironmentDependencyGraph(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -167,10 +167,10 @@ func TestGate2IndependentEnvironmentsProceedConcurrently(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {

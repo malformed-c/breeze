@@ -92,10 +92,16 @@ commands:
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
 
-  identity register <name>              mint a token, print it once (fresh name: no
+  identity register <name> [--mess-agent NAME]
+                                         mint a token, print it once (fresh name: no
                                          auth needed; existing name: rotate with its
-                                         own --as/--token, or --force as an admin)
+                                         own --as/--token, or --force as an admin).
+                                         --mess-agent maps this identity to a mess
+                                         agent name other than its own (default: same
+                                         name); omit to leave an existing mapping as-is
   identity revoke <name> --as ADMIN --token T
+  identity notify on|off --as NAME      opt in/out of breeze's mess notifications
+                                         (self-service, no token needed)
 
   role assign <role> <identity> --as ADMIN --token T
   role revoke <role> <identity> --as ADMIN --token T
@@ -144,11 +150,11 @@ commands:
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval string
-	shared, wait, force, jsonOut, dryRun, prune                               bool
-	targets                                                                   []string // repeated --target NAME
-	rest                                                                      []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                                   []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent string
+	shared, wait, force, jsonOut, dryRun, prune                                          bool
+	targets                                                                              []string // repeated --target NAME
+	rest                                                                                 []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                                              []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 }
 
 func parseFlags(args []string) flagSet {
@@ -196,6 +202,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.interval = args[i]
+			}
+		case "--mess-agent":
+			i++
+			if i < len(args) {
+				f.messAgent = args[i]
 			}
 		case "--target":
 			i++
@@ -447,11 +458,13 @@ func cmdOperator(p paths, args []string) error {
 
 // cmdOperatorNotify holds one streaming operator.watch connection open and fires an
 // OS desktop notification (via notify-send) for anything newly needing a human's
-// attention — a pending approval or a stage failure this process hasn't already
-// notified about. Event-driven, not polling: the daemon pushes a fresh surface the
-// instant something changes (any engine mutation runs through changed(), which wakes
-// every operator.watch subscriber — see Engine.SubscribeOperatorChanges), so this
-// blocks on the socket read and does no work at all between real events. Client-side
+// attention — a pending approval, a stage failure, or a stage success this process
+// hasn't already notified about (success matters just as much as failure for a
+// pipeline with no approval stage at all, where PendingApprovals is always empty).
+// Event-driven, not polling: the daemon pushes a fresh surface the instant something
+// changes (any engine mutation runs through changed(), which wakes every
+// operator.watch subscriber — see Engine.SubscribeOperatorChanges), so this blocks
+// on the socket read and does no work at all between real events. Client-side
 // Tier-1, same as `breeze operator` itself: no --as/--token needed. Runs until
 // interrupted; reconnects (after --interval, default 3s) if the daemon restarts.
 func cmdOperatorNotify(p paths, args []string) error {
@@ -470,15 +483,29 @@ func cmdOperatorNotify(p paths, args []string) error {
 		return fmt.Errorf("notify-send not found on PATH — desktop notifications need it (Linux/libnotify); use `breeze operator --json` yourself if it's unavailable")
 	}
 
-	seenApprovals := make(map[string]bool)
-	seenFailures := make(map[string]bool)
+	seen := newSeenOperatorEvents()
 	primed := false
-	fmt.Println("watching breeze for approvals/failures (event-driven, Ctrl-C to stop)...")
+	fmt.Println("watching breeze for approvals/failures/successes (event-driven, Ctrl-C to stop)...")
 	for {
-		if err := watchOperatorOnce(p, seenApprovals, seenFailures, &primed); err != nil {
+		if err := watchOperatorOnce(p, seen, &primed); err != nil {
 			fmt.Fprintf(os.Stderr, "breeze operator notify: %v — reconnecting in %s\n", err, reconnectDelay)
 		}
 		time.Sleep(reconnectDelay)
+	}
+}
+
+// seenOperatorEvents tracks, per event kind, which keys have already been notified
+// about (or silently primed as a baseline) — bundled into one struct rather than a
+// growing list of parallel map parameters as event kinds are added.
+type seenOperatorEvents struct {
+	approvals, failures, successes map[string]bool
+}
+
+func newSeenOperatorEvents() seenOperatorEvents {
+	return seenOperatorEvents{
+		approvals: make(map[string]bool),
+		failures:  make(map[string]bool),
+		successes: make(map[string]bool),
 	}
 }
 
@@ -488,7 +515,7 @@ func cmdOperatorNotify(p paths, args []string) error {
 // tracks whether a baseline snapshot has ever been taken across the process's whole
 // lifetime (including reconnects) — see notifyNewOperatorEvents' doc comment for why
 // the very first snapshot must never notify.
-func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool, primed *bool) error {
+func watchOperatorOnce(p paths, seen seenOperatorEvents, primed *bool) error {
 	conn, err := dialOrStart(p)
 	if err != nil {
 		return err
@@ -513,17 +540,17 @@ func watchOperatorOnce(p paths, seenApprovals, seenFailures map[string]bool, pri
 		}
 		if !*primed {
 			// The first snapshot this process ever sees is a baseline, not news: an
-			// approval or failure already sitting in history when the watcher starts
-			// isn't a new event, and notifying about it anyway is exactly the bug
-			// this guards against — starting `breeze operator notify` used to replay
-			// every pre-existing failure/approval as a fresh desktop notification
-			// burst, since seenApprovals/seenFailures started empty and treated
-			// "already there" the same as "just happened."
-			primeSeenOperatorEvents(out, seenApprovals, seenFailures)
+			// approval/failure/success already sitting in history when the watcher
+			// starts isn't a new event, and notifying about it anyway is exactly the
+			// bug this guards against — starting `breeze operator notify` used to
+			// replay everything pre-existing as a fresh desktop notification burst,
+			// since the seen-maps started empty and treated "already there" the same
+			// as "just happened."
+			primeSeenOperatorEvents(out, seen)
 			*primed = true
 			continue
 		}
-		notifyNewOperatorEvents(out, seenApprovals, seenFailures)
+		notifyNewOperatorEvents(out, seen)
 	}
 }
 
@@ -535,42 +562,58 @@ func recentFailureKey(fl wire.RecentFailure) string {
 	return fmt.Sprintf("%s/%s/%s/%s@%s", fl.Pipeline, fl.Stage, fl.Commit, fl.Environment, fl.FinishedAt.Format(time.RFC3339Nano))
 }
 
-// primeSeenOperatorEvents marks every pending approval/recent failure already
-// present in out as seen, without notifying — the silent baseline a freshly
+func recentSuccessKey(s wire.RecentSuccess) string {
+	return fmt.Sprintf("%s/%s/%s/%s@%s", s.Pipeline, s.Stage, s.Commit, s.Environment, s.FinishedAt.Format(time.RFC3339Nano))
+}
+
+// primeSeenOperatorEvents marks every pending approval/recent failure/recent success
+// already present in out as seen, without notifying — the silent baseline a freshly
 // started watcher establishes before it starts reporting genuinely new events.
-func primeSeenOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, seenFailures map[string]bool) {
+func primeSeenOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperatorEvents) {
 	for _, a := range out.PendingApprovals {
-		seenApprovals[pendingApprovalKey(a)] = true
+		seen.approvals[pendingApprovalKey(a)] = true
 	}
 	for _, fl := range out.RecentFailures {
-		seenFailures[recentFailureKey(fl)] = true
+		seen.failures[recentFailureKey(fl)] = true
+	}
+	for _, s := range out.RecentSuccesses {
+		seen.successes[recentSuccessKey(s)] = true
 	}
 }
 
-// notifyNewOperatorEvents fires a desktop notification for each pending approval or
-// recent failure in out not already present in seenApprovals/seenFailures (mutated
-// in place) — so a still-pending approval re-pushed on an unrelated later change
-// doesn't re-notify, but a genuinely new one (or a retry that fails again, keyed
-// through its own FinishedAt) does. Only called after primeSeenOperatorEvents has
-// established a baseline from this process's first snapshot.
-func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seenApprovals, seenFailures map[string]bool) {
+// notifyNewOperatorEvents fires a desktop notification for each pending approval,
+// recent failure, or recent success in out not already present in seen (mutated in
+// place) — so a still-pending approval re-pushed on an unrelated later change
+// doesn't re-notify, but a genuinely new one (or a retry that fails/succeeds again,
+// keyed through its own FinishedAt) does. Only called after primeSeenOperatorEvents
+// has established a baseline from this process's first snapshot.
+func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperatorEvents) {
 	for _, a := range out.PendingApprovals {
 		key := pendingApprovalKey(a)
-		if seenApprovals[key] {
+		if seen.approvals[key] {
 			continue
 		}
-		seenApprovals[key] = true
+		seen.approvals[key] = true
 		desktopNotify("breeze: review needed",
 			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, a.Commit, a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
 	}
 	for _, fl := range out.RecentFailures {
 		key := recentFailureKey(fl)
-		if seenFailures[key] {
+		if seen.failures[key] {
 			continue
 		}
-		seenFailures[key] = true
+		seen.failures[key] = true
 		desktopNotify("breeze: stage failed",
 			fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, fl.Commit, fl.Error))
+	}
+	for _, s := range out.RecentSuccesses {
+		key := recentSuccessKey(s)
+		if seen.successes[key] {
+			continue
+		}
+		seen.successes[key] = true
+		desktopNotify("breeze: stage succeeded",
+			fmt.Sprintf("%s/%s %s", s.Pipeline, s.Stage, s.Commit))
 	}
 }
 
@@ -632,21 +675,21 @@ func cmdPs(p paths, args []string) error {
 
 func cmdIdentity(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze identity register|revoke ...")
+		return fmt.Errorf("usage: breeze identity register|revoke|notify ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	switch sub {
 	case "register":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze identity register <name> [--as NAME --token T | --force --as ADMIN --token T]")
+			return fmt.Errorf("usage: breeze identity register <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
 		}
 		name := f.rest[0]
 		token, err := f.resolveToken()
 		if err != nil {
 			return err
 		}
-		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force})
+		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force, MessAgent: f.messAgent})
 		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: f.as, Token: token, Payload: payload})
 		if err != nil {
 			return err
@@ -672,6 +715,16 @@ func cmdIdentity(p paths, args []string) error {
 		}
 		payload, _ := json.Marshal(wire.IdentityRevokeRequest{Name: f.rest[0]})
 		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: f.as, Token: token, Payload: payload})
+		return err
+	case "notify":
+		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
+			return fmt.Errorf("usage: breeze identity notify on|off --as NAME")
+		}
+		if f.as == "" {
+			return fmt.Errorf("--as NAME required — this toggles YOUR OWN mess-notification preference")
+		}
+		payload, _ := json.Marshal(wire.IdentityNotifyRequest{OptOut: f.rest[0] == "off"})
+		_, err := call(p, wire.Request{Op: wire.OpIdentityNotify, As: f.as, Payload: payload})
 		return err
 	default:
 		return fmt.Errorf("unknown identity subcommand %q", sub)

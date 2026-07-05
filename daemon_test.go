@@ -41,7 +41,7 @@ func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
 	// Mutate, then IMMEDIATELY signal stop — racing the shutdown against the async
 	// snapshot write this mutation just triggered, exactly like the reported
 	// incident (a `deploy claim` immediately followed by `breeze daemon restart`).
-	if _, err := d.eng.RegisterIdentity("race-test-identity"); err != nil {
+	if _, err := d.eng.RegisterIdentity("race-test-identity", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	close(d.stop)

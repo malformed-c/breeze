@@ -245,6 +245,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			infos = append(infos, wire.IdentityInfo{
 				Name: id.Name, Roles: rolesToStrings(id.Roles),
 				RegisteredAt: id.RegisteredAt, HasToken: id.TokenHash != "",
+				MessAgent: id.MessAgent, NotifyOptOut: id.NotifyOptOut,
 			})
 		}
 		locks := d.eng.ListLocks()
@@ -274,11 +275,27 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				return errResponse(err)
 			}
 		}
-		token, err := d.eng.RegisterIdentity(p.Name)
+		token, err := d.eng.RegisterIdentity(p.Name, p.MessAgent)
 		if err != nil {
 			return errResponse(err)
 		}
 		return okResponse(wire.IdentityRegisterResponse{Name: p.Name, Token: token})
+
+	case wire.OpIdentityNotify:
+		// Tier-1: a self-service preference toggle with no security stakes (it only
+		// affects whether req.As itself receives breeze's mess pings), same risk
+		// model as lock holder attribution — no token required.
+		var p wire.IdentityNotifyRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		if req.As == "" {
+			return errResponse(fmt.Errorf("--as is required"))
+		}
+		if err := d.eng.SetNotifyOptOut(req.As, p.OptOut); err != nil {
+			return errResponse(err)
+		}
+		return okResponse(struct{}{})
 
 	case wire.OpIdentityRevoke:
 		if err := d.requireAdmin(req); err != nil {
@@ -803,6 +820,12 @@ func operatorSurfaceToWire(surface engine.OperatorSurface) wire.OperatorSurfaceR
 		out.RecentFailures = append(out.RecentFailures, wire.RecentFailure{
 			Pipeline: f.Pipeline, Stage: f.Stage, Commit: f.Key.Commit, Environment: f.Key.Environment,
 			Status: string(f.Status), Error: f.Error, FinishedAt: f.FinishedAt,
+		})
+	}
+	for _, s := range surface.RecentSuccesses {
+		out.RecentSuccesses = append(out.RecentSuccesses, wire.RecentSuccess{
+			Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
+			FinishedAt: s.FinishedAt,
 		})
 	}
 	for _, l := range surface.Locks {

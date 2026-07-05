@@ -21,8 +21,7 @@ func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 	desktopNotify = func(title, body string) { fired = append(fired, title+": "+body) }
 	defer func() { desktopNotify = restore }()
 
-	seenApprovals := make(map[string]bool)
-	seenFailures := make(map[string]bool)
+	seen := newSeenOperatorEvents()
 
 	staleFailure := wire.RecentFailure{Pipeline: "release", Stage: "build", Commit: "stale", FinishedAt: time.Unix(1000, 0)}
 	staleApproval := wire.PendingApproval{Pipeline: "release", Stage: "review", Commit: "stale"}
@@ -33,7 +32,7 @@ func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 
 	// The baseline snapshot (what watchOperatorOnce treats as "already there when
 	// the watcher started") must never fire a notification.
-	primeSeenOperatorEvents(baseline, seenApprovals, seenFailures)
+	primeSeenOperatorEvents(baseline, seen)
 	if len(fired) != 0 {
 		t.Fatalf("expected priming the baseline to fire zero notifications, got %v", fired)
 	}
@@ -45,9 +44,33 @@ func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 		RecentFailures:   []wire.RecentFailure{staleFailure, freshFailure},
 		PendingApprovals: []wire.PendingApproval{staleApproval},
 	}
-	notifyNewOperatorEvents(later, seenApprovals, seenFailures)
+	notifyNewOperatorEvents(later, seen)
 
 	if len(fired) != 1 || fired[0] != "breeze: stage failed: release/build fresh: " {
 		t.Fatalf("expected exactly one notification for the genuinely new failure, got %v", fired)
+	}
+}
+
+// TestRecentSuccessNotifies covers a pipeline with no approval stage at all (so
+// PendingApprovals is always empty) — success must still notify, or an operator
+// running only command/deploy stages would never hear about anything but failures.
+func TestRecentSuccessNotifies(t *testing.T) {
+	var fired []string
+	restore := desktopNotify
+	desktopNotify = func(title, body string) { fired = append(fired, title+": "+body) }
+	defer func() { desktopNotify = restore }()
+
+	seen := newSeenOperatorEvents()
+	staleSuccess := wire.RecentSuccess{Pipeline: "release", Stage: "build", Commit: "stale", FinishedAt: time.Unix(1000, 0)}
+	primeSeenOperatorEvents(wire.OperatorSurfaceResponse{RecentSuccesses: []wire.RecentSuccess{staleSuccess}}, seen)
+	if len(fired) != 0 {
+		t.Fatalf("expected priming the baseline to fire zero notifications, got %v", fired)
+	}
+
+	freshSuccess := wire.RecentSuccess{Pipeline: "release", Stage: "build", Commit: "fresh", FinishedAt: time.Unix(2000, 0)}
+	notifyNewOperatorEvents(wire.OperatorSurfaceResponse{RecentSuccesses: []wire.RecentSuccess{staleSuccess, freshSuccess}}, seen)
+
+	if len(fired) != 1 || fired[0] != "breeze: stage succeeded: release/build fresh" {
+		t.Fatalf("expected exactly one notification for the genuinely new success, got %v", fired)
 	}
 }

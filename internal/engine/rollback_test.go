@@ -8,10 +8,10 @@ import (
 func TestRollbackBypassesMonotonicOrdering(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -92,7 +92,7 @@ func TestRollbackStillRequiresRBAC(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("nobody"); err != nil {
+	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := e.RollbackDeployStage("release", "deploy", "commitX", "staging", "nobody", ""); err == nil {
@@ -114,10 +114,10 @@ func TestRollbackStillHoldsExclusiveLockAgainstConcurrentDeploy(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {

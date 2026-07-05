@@ -44,8 +44,9 @@ type Engine struct {
 	auditFn  func(AuditEvent)
 	auditSeq int
 
-	notifyFn func(identities []string, message string)
-	briefFn  func(dir, filename, header, section string)
+	notifyFn      func(identities []string, message string)
+	notifyTopicFn func(topic, message string)
+	briefFn       func(dir, filename, header, section string)
 
 	now func() time.Time // injectable for tests, mirrors mess's broker clock injection
 }

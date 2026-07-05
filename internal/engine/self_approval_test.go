@@ -15,7 +15,7 @@ func TestApprovalPolicyBlockPredecessorActor(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"ci", "alice", "bob"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestApprovalPolicyBlockPredecessorActor(t *testing.T) {
 func TestApprovalPolicyBlockPredecessorActorOffByDefault(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("ci"); err != nil {
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("ci", "reviewer"); err != nil {

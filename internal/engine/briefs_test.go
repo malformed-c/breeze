@@ -95,10 +95,10 @@ func TestRecordBriefDisabledWhenBriefsDirEmpty(t *testing.T) {
 
 func TestRecordBriefBundlesAllApprovalsIntoOneFile(t *testing.T) {
 	e := New()
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -176,13 +176,13 @@ func TestRecordBriefMultipleStagesShareOneFile(t *testing.T) {
 	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("bob", "reviewer"); err != nil {

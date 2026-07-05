@@ -29,3 +29,18 @@ func notifyViaMess(identities []string, message string) {
 		}(identity)
 	}
 }
+
+// notifyViaMessTopic is notifyViaMess's counterpart for Pipeline.NotifyTopic —
+// `mess pub <topic> "..."` instead of a per-identity send, same best-effort,
+// soft-dependency, never-blocks-the-caller semantics.
+func notifyViaMessTopic(topic, message string) {
+	messPath, err := exec.LookPath("mess")
+	if err != nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		exec.CommandContext(ctx, messPath, "pub", topic, message).Run()
+	}()
+}

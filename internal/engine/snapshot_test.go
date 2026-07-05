@@ -8,7 +8,7 @@ import (
 
 func TestSnapshotRoundTrip(t *testing.T) {
 	e := New()
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "admin"); err != nil {
@@ -59,13 +59,13 @@ func TestLoadZeroValueSnapshotLeavesMapsWritable(t *testing.T) {
 		t.Fatalf("StartCommandStage must not panic on commitSeq write after loading a zero-value snapshot: %v", err)
 	}
 
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("bob", "reviewer"); err != nil {

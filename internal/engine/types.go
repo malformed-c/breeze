@@ -14,6 +14,23 @@ type Identity struct {
 	TokenHash    string // hex sha256; empty = no live token
 	Roles        []Role
 	RegisteredAt time.Time
+	// MessAgent is the mess agent name breeze notifies via `mess send`/`mess pub`
+	// for this identity, formalizing the mapping instead of assuming it always
+	// matches Name by convention. Empty means "use Name" (the prior, still-default
+	// behavior).
+	MessAgent string
+	// NotifyOptOut, when true, excludes this identity from every mess notification
+	// breeze would otherwise send it (self-service preference, no security stakes).
+	NotifyOptOut bool
+}
+
+// MessTarget returns the mess agent name to notify this identity through —
+// MessAgent if explicitly set, otherwise Name itself (the default convention).
+func (id *Identity) MessTarget() string {
+	if id.MessAgent != "" {
+		return id.MessAgent
+	}
+	return id.Name
 }
 
 func (id *Identity) HasRole(r Role) bool {
@@ -131,8 +148,14 @@ type Pipeline struct {
 	// resource lock's Holder, which answers "who's actively using it right now."
 	EnvironmentOwners map[string]string
 	BriefsDir         string
-	CreatedBy         string
-	CreatedAt         time.Time
+	// NotifyTopic, if non-empty, publishes every stage resolution to this mess
+	// topic (`mess pub <topic> "..."`) in addition to notify.go's normal
+	// per-identity `mess send`s — so anyone subscribed (`mess sub <topic>`), not
+	// just role holders, can follow a pipeline's activity without needing an
+	// individual role assignment.
+	NotifyTopic string
+	CreatedBy   string
+	CreatedAt   time.Time
 }
 
 // EnvironmentGrant is a time-bounded delegation of deploy authority: the identity

@@ -17,6 +17,7 @@ pipeline "release" {
     prod    = "bob"
   }
   briefs_dir = "/home/engi/git/myrepo/docs/changelog"
+  notify_topic = "#release-activity"
 
   stage "build" {
     type              = "command"
@@ -81,6 +82,9 @@ func TestParseFileRoundTrip(t *testing.T) {
 	}
 	if p.BriefsDir != "/home/engi/git/myrepo/docs/changelog" {
 		t.Fatalf("unexpected briefsDir: %s", p.BriefsDir)
+	}
+	if p.NotifyTopic != "#release-activity" {
+		t.Fatalf("unexpected notifyTopic: %s", p.NotifyTopic)
 	}
 	deps, ok := p.EnvironmentDeps["prod"]
 	if !ok || len(deps) != 1 || deps[0] != "staging" {

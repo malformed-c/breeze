@@ -19,6 +19,7 @@ const (
 
 	OpIdentityRegister Op = "identity.register"
 	OpIdentityRevoke   Op = "identity.revoke"
+	OpIdentityNotify   Op = "identity.notify" // self-service mess-notification opt-out toggle
 
 	OpRoleAssign Op = "role.assign"
 	OpRoleRevoke Op = "role.revoke"
@@ -108,15 +109,22 @@ type IdentityInfo struct {
 	Roles        []string  `json:"roles,omitempty"`
 	RegisteredAt time.Time `json:"registeredAt"`
 	HasToken     bool      `json:"hasToken"`
+	MessAgent    string    `json:"messAgent,omitempty"`
+	NotifyOptOut bool      `json:"notifyOptOut,omitempty"`
 }
 
 type IdentityRegisterRequest struct {
-	Name  string `json:"name"`
-	Force bool   `json:"force,omitempty"` // admin override to rotate someone else's token (requires --as/--token of an admin)
+	Name      string `json:"name"`
+	Force     bool   `json:"force,omitempty"`     // admin override to rotate someone else's token (requires --as/--token of an admin)
+	MessAgent string `json:"messAgent,omitempty"` // sets/updates the mess-agent mapping; "" leaves an existing one untouched
 }
 type IdentityRegisterResponse struct {
 	Name  string `json:"name"`
 	Token string `json:"token"` // plaintext, printed once by the CLI, never persisted server-side
+}
+
+type IdentityNotifyRequest struct {
+	OptOut bool `json:"optOut"`
 }
 
 type IdentityRevokeRequest struct {
@@ -247,6 +255,7 @@ type Pipeline struct {
 	DebugEnvironments []string            `json:"debugEnvironments,omitempty"` // exempt from Gate 2 + monotonic ordering
 	EnvironmentOwners map[string]string   `json:"environmentOwners,omitempty"` // informational only, never enforced
 	BriefsDir         string              `json:"briefsDir,omitempty"`
+	NotifyTopic       string              `json:"notifyTopic,omitempty"` // publish every resolution to this mess topic
 	CreatedBy         string              `json:"createdBy,omitempty"`
 	CreatedAt         time.Time           `json:"createdAt,omitzero"`
 }
@@ -451,9 +460,18 @@ type RecentFailure struct {
 	FinishedAt  time.Time `json:"finishedAt,omitzero"`
 }
 
+type RecentSuccess struct {
+	Pipeline    string    `json:"pipeline"`
+	Stage       string    `json:"stage"`
+	Commit      string    `json:"commit"`
+	Environment string    `json:"environment,omitempty"`
+	FinishedAt  time.Time `json:"finishedAt,omitzero"`
+}
+
 type OperatorSurfaceResponse struct {
 	PendingApprovals []PendingApproval `json:"pendingApprovals,omitempty"`
 	Running          []RunningStage    `json:"running,omitempty"`
 	RecentFailures   []RecentFailure   `json:"recentFailures,omitempty"`
+	RecentSuccesses  []RecentSuccess   `json:"recentSuccesses,omitempty"`
 	Locks            []LockInfo        `json:"locks,omitempty"`
 }

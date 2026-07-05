@@ -167,6 +167,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		appendAuditLine(p.audit, ev)
 	})
 	eng.SetNotifyFn(notifyViaMess)
+	eng.SetNotifyTopicFn(notifyViaMessTopic)
 	eng.SetBriefFn(writeBriefFile)
 	return d, nil
 }

@@ -81,6 +81,10 @@ breeze role assign <role> <identity> --as admin --token-file <admin-token>
 breeze role list [--json]
 ```
 
+`identity register --mess-agent <name>` maps this identity to a different mess
+agent name for notifications (default: same name). `identity notify on|off --as
+<name>` self-service opts in/out of breeze's mess pings.
+
 ## 3. File locks — ad hoc, no policy, no auth needed beyond attribution
 
 ```sh
@@ -166,15 +170,12 @@ you try (a rejected attempt is harmless, just noisy).
 breeze stage start release build abc123 --as ci
 breeze stage wait  release build abc123 --timeout 30m &     # background this
 # ...continue other work; breeze also proactively `mess send`s on resolution
-# (best-effort, only if `mess` is installed): on success, whoever holds the role
-# gating whatever's now eligible next (reviewers, or the next command/deploy's
-# role); on failure, `mess send user "..."` — mess's human mailbox — regardless of
-# role structure, since that's the case that used to depend on a separately-run
-# desktop-notify watcher actually being alive. It never pings the identity that
-# triggered the stage that just resolved, even if that identity also holds the
-# notified role: stage start/approve are synchronous, so you already got that
-# directly as the response — `stage wait` is the mechanism for being woken instead
-# of checking back.
+# (best-effort): success -> the role holder for whatever's now eligible next;
+# failure -> `mess send user "..."`, always, regardless of role structure. Never
+# pings the actor that triggered the resolution itself (stage start/approve are
+# synchronous, so it already has the answer) or an identity with `identity notify
+# off` set. A pipeline with `notify_topic` set also `mess pub`s every resolution to
+# that topic, independent of the per-identity targets above.
 ```
 
 Prefer backgrounding `stage wait` (via your shell `&` or Claude Code's background

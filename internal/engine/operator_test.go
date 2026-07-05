@@ -8,7 +8,7 @@ import (
 func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {

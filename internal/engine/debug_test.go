@@ -24,7 +24,7 @@ func TestDebugStageSkipsOrderingButNotRBAC(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("nobody"); err != nil {
+	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -58,13 +58,13 @@ func TestDebugEnvironmentSkipsGate2AndMonotonicOrdering(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("bob", "reviewer"); err != nil {

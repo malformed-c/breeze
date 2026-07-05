@@ -13,10 +13,10 @@ import (
 func TestClaimDeployLockThenDeployReusesIt(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -82,14 +82,14 @@ func TestClaimDeployLockRequiresRole(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("mallory"); err != nil {
+	if _, err := e.RegisterIdentity("mallory", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "mallory", minute); err == nil {
 		t.Fatalf("expected claim to be rejected for an actor lacking the deployer role")
 	}
 
-	if _, err := e.RegisterIdentity("deployerid"); err != nil {
+	if _, err := e.RegisterIdentity("deployerid", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("deployerid", "deployer"); err != nil {
@@ -106,7 +106,7 @@ func TestClaimDeployLockRequiresRole(t *testing.T) {
 func TestClaimDeployLockRejectsUndeclaredEnvironment(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("ci"); err != nil {
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "nonexistent-env", "ci", minute); err == nil {
@@ -123,7 +123,7 @@ func TestClaimDeployLockRejectsUndeclaredEnvironment(t *testing.T) {
 func TestClaimDeployLockIsIdempotentForSameActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("ci"); err != nil {
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestClaimConflictErrorNamesTheHolder(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
 	for _, name := range []string{"alice", "bob"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 		if err := e.AssignRole(name, "reviewer"); err != nil {

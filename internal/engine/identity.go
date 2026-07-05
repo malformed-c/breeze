@@ -16,10 +16,13 @@ var ErrAuth = fmt.Errorf("authentication failed")
 // existing identity requires a valid existing token (self-service rotation) unless
 // force is set (admin override) — enforced by the caller (daemon.go) which already
 // knows the requester's identity/role; this method just performs the mutation.
+// messAgent, if non-empty, sets/updates the mess-agent mapping (see
+// Identity.MessTarget); empty leaves an existing mapping untouched rather than
+// clearing it, so re-registering to rotate a token doesn't silently drop it.
 //
 // Bootstrap rule: the first identity ever registered against an empty store
 // auto-gets the "admin" role.
-func (e *Engine) RegisterIdentity(name string) (token string, err error) {
+func (e *Engine) RegisterIdentity(name, messAgent string) (token string, err error) {
 	if name == "" {
 		return "", fmt.Errorf("identity name required")
 	}
@@ -36,8 +39,13 @@ func (e *Engine) RegisterIdentity(name string) (token string, err error) {
 	bootstrap := len(e.identities) == 0
 	existing, had := e.identities[name]
 	var roles []Role
+	var optOut bool
 	if had {
 		roles = existing.Roles
+		optOut = existing.NotifyOptOut
+		if messAgent == "" {
+			messAgent = existing.MessAgent
+		}
 	} else if bootstrap {
 		roles = []Role{"admin"}
 	}
@@ -46,9 +54,27 @@ func (e *Engine) RegisterIdentity(name string) (token string, err error) {
 		TokenHash:    hash,
 		Roles:        roles,
 		RegisteredAt: e.now(),
+		MessAgent:    messAgent,
+		NotifyOptOut: optOut,
 	}
 	e.changed()
 	return token, nil
+}
+
+// SetNotifyOptOut is a self-service preference toggle (Tier-1: no security
+// stakes, only affects whether this identity itself receives breeze's mess
+// notifications) — see notify.go's notifyResolution, which skips any identity
+// with NotifyOptOut set.
+func (e *Engine) SetNotifyOptOut(name string, optOut bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	id, ok := e.identities[name]
+	if !ok {
+		return ErrNotFound
+	}
+	id.NotifyOptOut = optOut
+	e.changed()
+	return nil
 }
 
 func (e *Engine) RevokeIdentity(name string) error {

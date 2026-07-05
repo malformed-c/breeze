@@ -125,7 +125,7 @@ func pipelineFromWire(w wire.Pipeline) (engine.Pipeline, error) {
 		Name: w.Name, Stages: stages, FanOutAt: w.FanOutAt,
 		Environments: w.Environments, EnvironmentDeps: w.EnvironmentDeps,
 		DebugEnvironments: w.DebugEnvironments, EnvironmentOwners: w.EnvironmentOwners,
-		BriefsDir: w.BriefsDir,
+		BriefsDir: w.BriefsDir, NotifyTopic: w.NotifyTopic,
 	}, nil
 }
 
@@ -138,7 +138,7 @@ func pipelineToWire(p engine.Pipeline) wire.Pipeline {
 		Name: p.Name, Stages: stages, FanOutAt: p.FanOutAt,
 		Environments: p.Environments, EnvironmentDeps: p.EnvironmentDeps,
 		DebugEnvironments: p.DebugEnvironments, EnvironmentOwners: p.EnvironmentOwners,
-		BriefsDir: p.BriefsDir,
+		BriefsDir: p.BriefsDir, NotifyTopic: p.NotifyTopic,
 		CreatedBy: p.CreatedBy, CreatedAt: p.CreatedAt,
 	}
 }

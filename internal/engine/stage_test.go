@@ -130,7 +130,7 @@ func TestRetrySemanticsReRunsFailedInstance(t *testing.T) {
 
 func TestRBACRequiredRoleEnforced(t *testing.T) {
 	e := New()
-	if _, err := e.RegisterIdentity("nobody"); err != nil {
+	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	p := Pipeline{

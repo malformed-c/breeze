@@ -242,6 +242,23 @@ breeze role assign deployer admin  --as admin --token-file .git/breeze/admin.tok
 breeze role list [--json]
 ```
 
+**Mapping to a mess agent, and opting out of notifications**: breeze's identity
+names and mess agent names are separate namespaces that typically coincide by
+convention — `--mess-agent` formalizes that mapping instead of just assuming it:
+
+```sh
+breeze identity register alice --mess-agent alice-on-mess   # notify.go's mess sends
+                                                             # now target "alice-on-mess",
+                                                             # not the raw identity name
+breeze identity notify off --as alice   # opt out of breeze's mess notifications entirely
+breeze identity notify on  --as alice   # opt back in
+```
+
+Both are self-service (Tier-1, no token needed — the same risk model as lock holder
+attribution: worst case is misattributing whose preference you're changing via
+`--as`, never a permission escalation). Omitting `--mess-agent` on a re-registration
+leaves an existing mapping untouched rather than clearing it.
+
 **A token is a bearer credential, full stop.** The entire Tier-2 check is
 `sha256(token) == stored_hash` — there's no secondary binding to *which process*
 presents it. Tier 2 defends against *accidental* inheritance (the subagent-session-id
@@ -271,6 +288,9 @@ pipeline "release" {
     prod    = "bob"
   }
   briefs_dir = "/home/you/myrepo/docs/changelog"   # optional; see "Briefs" below
+  notify_topic = "#release-activity"               # optional; mess topic every resolution
+                                                    # publishes to (see "Waiting instead of
+                                                    # polling" above)
 
   stage "build" {
     type              = "command"
@@ -464,6 +484,14 @@ synchronous RPCs that already hand that same caller the resolved instance direct
 as their response, so pinging them about their own call's own result would just be
 noise — if you want to be woken up rather than checking back yourself, that's
 exactly what backgrounding `stage wait` is for.
+
+An identity with `identity notify off` set is skipped entirely from the per-identity
+sends above (opt-out is a personal preference, checked independently of the actor
+exclusion). Separately, if the pipeline sets `notify_topic`, **every** resolution —
+success or failure, whether or not any per-identity target was computed — also
+publishes to that mess topic (`mess pub <topic> "..."`), so anyone subscribed via
+`mess sub <topic>` can follow a pipeline's activity without needing an individual
+role assignment.
 
 ### Briefs
 

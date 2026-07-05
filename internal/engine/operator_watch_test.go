@@ -20,7 +20,7 @@ func TestSubscribeOperatorChangesWakesOnMutation(t *testing.T) {
 	default:
 	}
 
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestSubscribeOperatorChangesCoalesces(t *testing.T) {
 	defer cancel()
 
 	for _, name := range []string{"alice", "bob", "carol"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
@@ -67,7 +67,7 @@ func TestSubscribeOperatorChangesCancelStopsFurtherWakes(t *testing.T) {
 	changed, cancel := e.SubscribeOperatorChanges()
 	cancel()
 
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 

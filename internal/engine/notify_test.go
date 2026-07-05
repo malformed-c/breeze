@@ -16,10 +16,10 @@ import (
 func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -28,7 +28,7 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := e.RegisterIdentity("ci"); err != nil {
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
@@ -158,10 +158,10 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("carol"); err != nil {
+	if _, err := e.RegisterIdentity("carol", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
@@ -170,7 +170,7 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 	if err := e.AssignRole("carol", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if _, err := e.RegisterIdentity("dave"); err != nil {
+	if _, err := e.RegisterIdentity("dave", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := e.AssignRole("dave", "deployer"); err != nil {
@@ -203,10 +203,117 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 	}
 }
 
+// TestNotifyResolutionSkipsOptedOutIdentities confirms NotifyOptOut is honored
+// independently of the actor-exclusion check — an opted-out reviewer never
+// receives a mess ping even for someone else's stage resolution.
+func TestNotifyResolutionSkipsOptedOutIdentities(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("alice", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if err := e.AssignRole("bob", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if err := e.SetNotifyOptOut("alice", true); err != nil {
+		t.Fatalf("opt out: %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotIdentities []string
+	e.SetNotifyFn(func(identities []string, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentities = identities
+	})
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotIdentities) != 1 || gotIdentities[0] != "bob" {
+		t.Fatalf("expected only bob (alice opted out), got %v", gotIdentities)
+	}
+}
+
+// TestNotifyResolutionUsesMessAgentMapping confirms a notified identity is sent to
+// its mapped MessAgent name, not its raw breeze identity name, when one is set.
+func TestNotifyResolutionUsesMessAgentMapping(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := e.AssignRole("alice", "reviewer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	var mu sync.Mutex
+	var gotIdentities []string
+	e.SetNotifyFn(func(identities []string, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotIdentities = identities
+	})
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotIdentities) != 1 || gotIdentities[0] != "alice-on-mess" {
+		t.Fatalf("expected the mapped mess-agent name, got %v", gotIdentities)
+	}
+}
+
+// TestNotifyResolutionPublishesToTopic confirms a pipeline with NotifyTopic set
+// publishes every resolution to that topic via SetNotifyTopicFn, independent of
+// (and even when there are zero) direct per-identity targets.
+func TestNotifyResolutionPublishesToTopic(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.NotifyTopic = "#release-activity"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	// Deliberately no reviewer registered — zero direct targets for build's
+	// success, but the topic publish must still fire.
+
+	var mu sync.Mutex
+	var gotTopic, gotMessage string
+	e.SetNotifyTopicFn(func(topic, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotTopic, gotMessage = topic, message
+	})
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotTopic != "#release-activity" {
+		t.Fatalf("expected a publish to #release-activity, got topic=%q", gotTopic)
+	}
+	if gotMessage == "" {
+		t.Fatalf("expected a non-empty message")
+	}
+}
+
 func TestNotifyResolutionIsNoOpWithoutFn(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
-	if _, err := e.RegisterIdentity("ci"); err != nil {
+	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	// No SetNotifyFn call — must not panic or block.

@@ -32,21 +32,34 @@ type RecentFailure struct {
 	FinishedAt      time.Time
 }
 
+// RecentSuccess is one stage instance that resolved to succeeded, newest first —
+// the equivalent of RecentFailure for pipelines with no approval stage at all (so
+// PendingApprovals is always empty): without this, an operator with a plain
+// command/deploy-only pipeline had no way to be notified of anything but failures.
+type RecentSuccess struct {
+	Pipeline, Stage string
+	Key             StageKey
+	FinishedAt      time.Time
+}
+
 // OperatorSurface is the consolidated "what needs my attention right now" view for a
 // human operator — deliberately cross-pipeline, cross-commit (unlike PipelineStatus,
 // which is scoped to one commit): every pending approval, every currently-running
-// stage, the most recent failures, and every lock (file and resource) currently held.
+// stage, the most recent failures/successes, and every lock (file and resource)
+// currently held.
 type OperatorSurface struct {
 	PendingApprovals []PendingApproval
 	Running          []RunningStage
 	RecentFailures   []RecentFailure
+	RecentSuccesses  []RecentSuccess
 	Locks            []FileLock
 }
 
-// maxRecentFailures caps the failures list so this stays a quick "what needs
-// attention" glance, not an unbounded history dump — deploy.history/audit.jsonl are
-// the place for full history.
+// maxRecentFailures/maxRecentSuccesses cap their lists so this stays a quick "what
+// needs attention" glance, not an unbounded history dump — deploy.history/
+// audit.jsonl are the place for full history.
 const maxRecentFailures = 20
+const maxRecentSuccesses = 20
 
 func (e *Engine) OperatorSurface() OperatorSurface {
 	e.mu.Lock()
@@ -78,6 +91,10 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 				Pipeline: inst.Pipeline, Stage: inst.Stage, Key: inst.Key,
 				Status: inst.Status, Error: inst.Error, FinishedAt: inst.FinishedAt,
 			})
+		case StageSucceeded:
+			out.RecentSuccesses = append(out.RecentSuccesses, RecentSuccess{
+				Pipeline: inst.Pipeline, Stage: inst.Stage, Key: inst.Key, FinishedAt: inst.FinishedAt,
+			})
 		}
 	}
 	sort.Slice(out.RecentFailures, func(i, j int) bool {
@@ -85,6 +102,12 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 	})
 	if len(out.RecentFailures) > maxRecentFailures {
 		out.RecentFailures = out.RecentFailures[:maxRecentFailures]
+	}
+	sort.Slice(out.RecentSuccesses, func(i, j int) bool {
+		return out.RecentSuccesses[i].FinishedAt.After(out.RecentSuccesses[j].FinishedAt)
+	})
+	if len(out.RecentSuccesses) > maxRecentSuccesses {
+		out.RecentSuccesses = out.RecentSuccesses[:maxRecentSuccesses]
 	}
 	// Stable, deterministic ordering for the other lists too (map iteration order is
 	// random in Go) — sorted by pipeline/stage/key rather than time, since these

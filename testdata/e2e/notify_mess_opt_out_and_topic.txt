@@ -1,0 +1,54 @@
+# Covers three deeper mess-integration pieces together: an identity's mess-agent
+# mapping (--mess-agent), a self-service notification opt-out (identity notify),
+# and a pipeline-level topic broadcast (notify_topic) — all via a fake `mess`
+# script on PATH, hermetic like notify_mess.txt.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+chmod 0755 bin/mess
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register alice --mess-agent alice-on-mess
+exec breeze identity register carol
+exec breeze identity register ci
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze role assign reviewer carol --as admin --token-file admin.token
+
+# carol opts out of breeze's mess notifications entirely.
+exec breeze identity notify off --as carol
+
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+exec breeze stage start release build abc123 --as ci
+exec sleep 0.5
+
+exists mess-calls.log
+# alice is notified via her MAPPED mess-agent name, not her raw identity name.
+grep '^send alice-on-mess breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+! grep 'send alice ' mess-calls.log
+# carol opted out entirely.
+! grep 'carol' mess-calls.log
+# the pipeline's notify_topic gets the same resolution published to it regardless
+# of the per-identity targets above.
+grep '^pub #release-activity breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+
+exec breeze stop
+
+-- bin/mess --
+#!/bin/sh
+echo "$@" >> mess-calls.log
+
+-- pipeline.hcl --
+pipeline "release" {
+  notify_topic = "#release-activity"
+
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/sh", "-c", "true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role       = "reviewer"
+  }
+}

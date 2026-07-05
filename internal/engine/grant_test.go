@@ -21,7 +21,7 @@ func TestGrantEnvironmentAccessLetsNonRoleHolderDeploy(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"alice", "bob", "mallory"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
@@ -68,7 +68,7 @@ func TestGrantEnvironmentAccessRequiresOwnerOrAdmin(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"alice", "bob", "mallory", "admin"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
@@ -97,10 +97,10 @@ func TestGrantEnvironmentAccessRequiresPositiveTTL(t *testing.T) {
 	if err := e.RegisterPipeline(grantablePipeline(), "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := e.GrantEnvironmentAccess("release", "staging", nil, "bob", "alice", 0); err == nil {
@@ -134,7 +134,7 @@ func TestGrantEnvironmentAccessScopedToTargets(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"alice", "bob"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
@@ -157,10 +157,10 @@ func TestGrantEnvironmentAccessRejectsUnknownTarget(t *testing.T) {
 	if err := e.RegisterPipeline(grantablePipeline(), "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("alice"); err != nil {
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := e.RegisterIdentity("bob"); err != nil {
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := e.GrantEnvironmentAccess("release", "staging", []string{"nonexistent-target"}, "bob", "alice", minute); err == nil {
@@ -177,7 +177,7 @@ func TestGrantEnvironmentAccessExpires(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"alice", "bob"} {
-		if _, err := e.RegisterIdentity(name); err != nil {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 		if err := e.AssignRole(name, "reviewer"); err != nil {
