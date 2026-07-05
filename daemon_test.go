@@ -129,6 +129,7 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 			if err != nil {
 				select {
 				case <-d.stop:
+					d.eng.CancelRunningStages("daemon shut down while this stage was running")
 					d.saver.waitIdle(5 * time.Second)
 					syscall.Flock(d.lockFD, syscall.LOCK_UN)
 					syscall.Close(d.lockFD)
@@ -141,6 +142,89 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 		}
 	}()
 	return done
+}
+
+// TestShutdownCancelsRunningStages is a regression test for a real bug reported
+// live: a stage caught mid-execution when the daemon shuts down (restart's
+// self-re-exec, or a plain stop) used to stay stuck "running" forever, since
+// nothing was ever going to call cmd.Wait/update it again — the goroutine that
+// would have done so is destroyed (restart) or simply gone (stop). Uses a stage
+// command that blocks briefly so the shutdown genuinely races an in-flight
+// execution, not a completed one — matching the reported incident (a stage
+// started, then a restart moments later).
+func TestShutdownCancelsRunningStages(t *testing.T) {
+	dir := t.TempDir()
+	p := paths{
+		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
+		state: dir + "/state.json", audit: dir + "/audit.jsonl",
+		daemonLog: dir + "/daemon.log", identDir: dir + "/ident",
+	}
+	if err := p.ensureDir(); err != nil {
+		t.Fatalf("ensureDir: %v", err)
+	}
+
+	d, err := tryBindDaemon(p, false)
+	if err != nil || d == nil {
+		t.Fatalf("bind: d=%v err=%v", d, err)
+	}
+	acceptDone := runAcceptLoopForTest(d, p.sock)
+
+	pipeline := engine.Pipeline{
+		Name:     "release",
+		FanOutAt: 1, // no fan-out point — a single commit-scoped stage
+		Stages: []engine.StageDef{
+			{Name: "build", Type: engine.StageCommand, Timeout: 5 * time.Second,
+				Command:       engine.CommandTemplate{Path: "/bin/sleep", Args: []string{"1"}},
+				CommandPolicy: &engine.CommandPolicy{}},
+		},
+	}
+	if err := d.eng.RegisterPipeline(pipeline, "admin"); err != nil {
+		t.Fatalf("register pipeline: %v", err)
+	}
+
+	go d.eng.StartCommandStage("release", "build", "abc123", "", "ci", "")
+
+	// Wait for the stage to actually reach Running before shutting down.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		insts, err := d.eng.PipelineStatus("release", "abc123")
+		if err == nil {
+			for _, i := range insts {
+				if i.Stage == "build" && i.Status == engine.StageRunning {
+					goto running
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stage never reached Running before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+running:
+
+	close(d.stop)
+	select {
+	case <-acceptDone:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("accept loop did not shut down")
+	}
+
+	snap, err := engine.LoadSnapshotFile(p.state)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	found := false
+	for _, inst := range snap.StageInstances {
+		if inst.Pipeline == "release" && inst.Stage == "build" {
+			found = true
+			if inst.Status != engine.StageFailed {
+				t.Fatalf("expected the stuck stage to be cancelled to Failed on shutdown, got %s", inst.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected to find the build instance in the persisted snapshot")
+	}
 }
 
 // TestSingleDaemonInstanceGuarantee spawns several concurrent runDaemon() attempts

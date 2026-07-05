@@ -668,6 +668,14 @@ authority it already legitimately holds. Concretely:
   clean-shutdown path (flock released, listener closed, socket removed) — never
   from the connection-handling goroutine that received the request, which would
   race the exec against the main loop's own shutdown/exit.
+- Any stage still `Running` at shutdown (restart or a plain `stop`) is force-
+  cancelled to `Failed` before anything else — a real bug found live: neither
+  path ever waited for an in-flight `hook.Run` execution, only for pending
+  snapshot writes, so a stage caught mid-run stayed stuck "running" forever
+  (surviving even a fresh daemon start) since nothing was ever going to call
+  `cmd.Wait`/update it again — the goroutine that would have is destroyed by a
+  restart's re-exec, or simply gone once the process exits on a plain stop. See
+  `Engine.CancelRunningStages`.
 - Every claim above is backed by a test — see `internal/engine/*_test.go`,
   `internal/hook/hook_test.go`, `internal/hclconfig/decode_test.go`, and the
   top-level `*_test.go` files (daemon startup guarantees, identity-rotation auth,

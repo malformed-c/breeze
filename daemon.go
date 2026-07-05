@@ -87,6 +87,18 @@ func runDaemon(p paths, args []string) error {
 		if err != nil {
 			select {
 			case <-d.stop:
+				// Cancel any stage still Running BEFORE waiting for snapshot writes
+				// (so the resulting mutation is covered by the same waitIdle below,
+				// not lost the same way a late-arriving one used to be) — a real bug
+				// found live: neither a restart's self-re-exec (which instantly
+				// destroys the goroutine blocked on that stage's child process,
+				// permanently orphaning it) nor a plain stop (the process exits with
+				// nothing left to ever call cmd.Wait) has ever waited for in-flight
+				// hook.Run executions, so a stage caught mid-run stayed stuck
+				// "running" forever, surviving even a fresh daemon start afterward.
+				if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process is now orphaned with no result; re-run `stage start` to retry"); n > 0 {
+					log.Printf("cancelled %d stage instance(s) still running at shutdown (their underlying processes are now orphaned, untracked)", n)
+				}
 				// Wait for any snapshot write still in flight to actually land on
 				// disk before tearing anything down — a real bug found in practice:
 				// a mutation (e.g. a deploy claim) made moments before shutdown could

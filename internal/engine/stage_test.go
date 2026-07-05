@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,6 +13,95 @@ func registerReleasePipeline(t *testing.T, e *Engine) {
 	p := examplePipeline()
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
+	}
+}
+
+// TestCancelRunningStages is a regression test for a real bug reported live: a
+// daemon shutdown (restart's self-re-exec, or a plain stop) while a stage was
+// mid-execution left it stuck "running" forever, since nothing was ever going to
+// call cmd.Wait/update the instance again — the goroutine that would have done so
+// was destroyed. This directly exercises CancelRunningStages, the fix wired into
+// runDaemon's shutdown path (daemon.go), by manually inserting a Running instance
+// (bypassing the need for a real long-lived command process) and confirming it's
+// transitioned to a terminal, actionable Failed state, notified, and audited.
+func TestCancelRunningStages(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	var mu sync.Mutex
+	var gotAudit []AuditEvent
+	e.SetAuditFn(func(ev AuditEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotAudit = append(gotAudit, ev)
+	})
+
+	key := StageKey{Commit: "abc123"}
+	stuck := &StageInstance{Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci", StartedAt: time.Now()}
+	e.instances[instanceKey("release", "build", key)] = stuck
+
+	n := e.CancelRunningStages("daemon shut down while this stage was running")
+	if n != 1 {
+		t.Fatalf("expected exactly 1 stage cancelled, got %d", n)
+	}
+
+	inst := e.getInstance("release", "build", key)
+	if inst == nil {
+		t.Fatalf("expected the instance to still exist")
+	}
+	if inst.Status != StageFailed {
+		t.Fatalf("expected the stuck instance to become Failed (terminal, retryable), got %s", inst.Status)
+	}
+	if inst.Error == "" {
+		t.Fatalf("expected a non-empty reason explaining the cancellation")
+	}
+	if inst.FinishedAt.IsZero() {
+		t.Fatalf("expected FinishedAt to be set")
+	}
+
+	// A fresh `stage start` for the same key must now be possible again (this is
+	// exactly what was broken: the stuck "running" instance blocked any retry).
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("expected the same key to be retriggerable after cancellation, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, ev := range gotAudit {
+		if ev.Kind == "stage.cancelled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a stage.cancelled audit event, got %+v", gotAudit)
+	}
+}
+
+// TestCancelRunningStagesIgnoresNonRunning confirms only Running instances are
+// touched — an Awaiting (approval) or already-terminal instance is left alone,
+// since only Running has the orphaned-external-process risk a restart/stop
+// creates.
+func TestCancelRunningStagesIgnoresNonRunning(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	awaitingKey := StageKey{Commit: "abc123"}
+	awaiting := &StageInstance{Pipeline: "release", Stage: "review", Key: awaitingKey, Status: StageAwaiting}
+	e.instances[instanceKey("release", "review", awaitingKey)] = awaiting
+
+	succeededKey := StageKey{Commit: "def456"}
+	succeeded := &StageInstance{Pipeline: "release", Stage: "build", Key: succeededKey, Status: StageSucceeded}
+	e.instances[instanceKey("release", "build", succeededKey)] = succeeded
+
+	if n := e.CancelRunningStages("reason"); n != 0 {
+		t.Fatalf("expected 0 stages cancelled (none are Running), got %d", n)
+	}
+	if inst := e.getInstance("release", "review", awaitingKey); inst.Status != StageAwaiting {
+		t.Fatalf("expected the awaiting instance untouched, got %s", inst.Status)
+	}
+	if inst := e.getInstance("release", "build", succeededKey); inst.Status != StageSucceeded {
+		t.Fatalf("expected the succeeded instance untouched, got %s", inst.Status)
 	}
 }
 

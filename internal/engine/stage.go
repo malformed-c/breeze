@@ -506,6 +506,54 @@ func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string
 	return &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageReady}, nil
 }
 
+// CancelRunningStages transitions every currently-Running stage instance (across
+// every pipeline) to Failed with reason — called right when the daemon is about
+// to shut down (stop or restart) and can no longer track any in-flight hook.Run
+// execution. A real bug this fixes: an in-place restart's self-re-exec
+// (syscall.Exec) instantly destroys the goroutine that was blocked waiting on
+// that stage's child process, permanently orphaning it (the child keeps
+// running; nothing will ever call cmd.Wait or update the instance) — and the
+// "Running" record was already persisted to state.json before hook.Run even
+// started, so without this it stays stuck "running" forever, surviving even a
+// fresh daemon start afterward. The same gap exists for a plain `breeze stop`,
+// not just restart — neither path waits for in-flight command executions today,
+// only for pending snapshot writes (see runDaemon's shutdown sequence). Returns
+// the count cancelled.
+func (e *Engine) CancelRunningStages(reason string) int {
+	e.mu.Lock()
+	type resolved struct {
+		pipeline, stage string
+		cp              StageInstance
+		briefsDir       string
+	}
+	var toNotify []resolved
+	for _, inst := range e.instances {
+		if inst.Status != StageRunning {
+			continue
+		}
+		inst.Status = StageFailed
+		inst.Error = reason
+		inst.FinishedAt = e.now()
+		e.audit("stage.cancelled", "system", fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", inst.Pipeline, inst.Stage, inst.Key, reason))
+		e.notifyStageLocked(inst.Pipeline, inst.Stage, inst.Key)
+		briefsDir := ""
+		if p, ok := e.pipelines[inst.Pipeline]; ok {
+			briefsDir = p.BriefsDir
+		}
+		toNotify = append(toNotify, resolved{pipeline: inst.Pipeline, stage: inst.Stage, cp: *inst, briefsDir: briefsDir})
+	}
+	if len(toNotify) > 0 {
+		e.changed()
+	}
+	e.mu.Unlock()
+
+	for _, r := range toNotify {
+		e.notifyResolution(r.pipeline, r.stage, &r.cp)
+		e.recordBrief(r.briefsDir, &r.cp)
+	}
+	return len(toNotify)
+}
+
 // PipelineStatus returns every materialized stage instance for a given commit, across
 // every stage and (if fanned out) every environment.
 func (e *Engine) PipelineStatus(pipelineName, commit string) ([]StageInstance, error) {
