@@ -48,6 +48,14 @@ func resolvePaths() (paths, error) {
 		}
 		dir = filepath.Join(gitDir, "breeze")
 	}
+	return pathsForDir(dir), nil
+}
+
+// pathsForDir derives every well-known file path from a state directory alone —
+// factored out of resolvePaths so the registry (registry.go) can reconstruct a full
+// paths value for a discovered daemon directory without needing $BREEZE_DIR set or
+// a git repo detectable from the current cwd.
+func pathsForDir(dir string) paths {
 	return paths{
 		dir:       dir,
 		sock:      filepath.Join(dir, "breeze.sock"),
@@ -56,7 +64,7 @@ func resolvePaths() (paths, error) {
 		audit:     filepath.Join(dir, "audit.jsonl"),
 		daemonLog: filepath.Join(dir, "daemon.log"),
 		identDir:  filepath.Join(dir, "ident"),
-	}, nil
+	}
 }
 
 // detectGitCommonDir returns the absolute path to the current repo's SHARED .git

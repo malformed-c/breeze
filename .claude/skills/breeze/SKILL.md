@@ -265,8 +265,8 @@ breeze operator [--json]
 
 Cross-pipeline, cross-commit "what needs attention right now": every approval
 stage still short of its threshold (who's approved so far, what role is still
-needed), every stage currently running, recent failures, and every lock (file and
-resource) currently held. Check this before assuming nothing's in flight.
+needed), every stage currently running, recent failures/successes, and every lock
+(file and resource) currently held. Check this before assuming nothing's in flight.
 
 ```sh
 breeze operator notify [--interval 3s]
@@ -283,6 +283,10 @@ The first surface a freshly started watcher sees is a silent baseline, not news 
 whatever's already outstanding when it starts does NOT notify (a real bug, fixed:
 it used to replay everything pre-existing as an immediate burst). Only something
 appearing in a later surface notifies, once per process lifetime.
+
+`breeze operator update-all` restarts every breeze daemon on the machine (not just
+one directory) via a self-registering discovery registry — for after you rebuild
+breeze and want every repo's daemon on the new binary at once.
 
 ## 5. Defining a pipeline (HCL via `breeze apply`)
 

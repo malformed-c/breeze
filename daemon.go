@@ -101,10 +101,15 @@ func runDaemon(p paths, args []string) error {
 				os.Remove(p.sock)
 				if d.restarting.Load() {
 					// Re-exec in place (same PID) so a restart picks up whatever
-					// binary is currently on disk — never returns on success.
+					// binary is currently on disk — never returns on success. The
+					// registry entry stays as-is: same dir, same pid, coming right
+					// back up.
 					err := execSelfAsDaemon()
 					log.Printf("restart: failed to re-exec, exiting instead: %v", err)
 					os.Exit(1)
+				}
+				if err := deregisterSelf(p); err != nil {
+					log.Printf("warning: failed to remove this daemon from the discovery registry: %v", err)
 				}
 				return nil
 			default:

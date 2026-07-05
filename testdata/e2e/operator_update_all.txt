@@ -1,0 +1,31 @@
+# breeze operator update-all restarts every daemon this machine's discovery
+# registry knows about, fanned out across repos — not just the one directory a
+# single `daemon restart` targets. XDG_CACHE_HOME is shared across this whole
+# script so both daemons register into the same registry.json.
+env XDG_CACHE_HOME=$WORK/cache
+
+env BREEZE_DIR=$WORK/repo1/state
+exec breeze ping
+stdout 'pong'
+exec breeze lock acquire canary-file --as alice --ttl 30m
+cp stdout repo1-lock-id.txt
+
+env BREEZE_DIR=$WORK/repo2/state
+exec breeze ping
+stdout 'pong'
+
+# update-all doesn't care which BREEZE_DIR the invoking process resolves to —
+# its targets come entirely from the registry, not the caller's own directory.
+exec breeze operator update-all
+stdout 'restarted in place \(dir \S+/repo1/state\)'
+stdout 'restarted in place \(dir \S+/repo2/state\)'
+
+# State survived the fan-out restart for repo1, same as a single `daemon restart`.
+env BREEZE_DIR=$WORK/repo1/state
+exec breeze lock list --json
+stdout '"holder":\s*"alice"'
+
+env BREEZE_DIR=$WORK/repo2/state
+exec breeze stop
+env BREEZE_DIR=$WORK/repo1/state
+exec breeze stop

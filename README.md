@@ -518,9 +518,9 @@ Unlike `pipeline status` (scoped to one pipeline+commit) or `deploy history`
 (scoped to one pipeline+stage), `breeze operator` is the cross-pipeline,
 cross-commit "what needs *me* right now" view for a human: every approval stage
 still short of its threshold (with who's approved so far and what role is still
-needed), every stage currently running, the most recent failures (capped, newest
-first — full history is `deploy history`/the audit log's job), and every lock
-(file and resource) currently held.
+needed), every stage currently running, the most recent failures and successes
+(each capped, newest first — full history is `deploy history`/the audit log's
+job), and every lock (file and resource) currently held.
 
 ```sh
 breeze operator notify [--interval 3s]
@@ -546,6 +546,28 @@ burst). Only something appearing in a *later* surface that wasn't in that baseli
 fires — each distinct pending-approval key and each distinct failure (keyed through
 its finish time, so a retry that fails again notifies again) fires exactly once per
 process lifetime.
+
+```sh
+breeze operator update-all
+```
+
+Fans `daemon restart`'s in-place self-re-exec out across **every** breeze daemon on
+this machine, not just the one directory the caller happens to be in — for when
+you've rebuilt breeze and want every repo's daemon to pick up the new binary
+without hunting down each one by hand. Discovery has no maintained list to go
+stale: every daemon upserts an entry (directory, pid, socket) into a small shared
+registry (`~/.cache/breeze/registry.json`, respecting `$XDG_CACHE_HOME`) on
+startup and removes it on a graceful stop. `update-all` treats each entry as a
+lead to dial-probe, not a source of truth — an entry whose socket doesn't answer
+is silently pruned (that daemon already stopped some other way), never treated as
+a failure. It never rebuilds or redeploys anything itself (breeze has zero
+git/CI knowledge by design, per "Why" above) — it only picks up whatever binary is
+already on disk wherever each daemon's own executable path resolves to; the
+actual rebuild is each repo's own CI pipeline's job (see `ci/deploy.sh`). This
+registry is purely a discovery aid, not coordination state — unrelated in kind to
+the old `~/.breeze` machine-wide fallback removed earlier (see "Per-repo by
+default" above): there is still exactly one daemon per repo, this just indexes
+where they are.
 
 ## Worked example
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"slices"
@@ -85,10 +86,16 @@ commands:
   status [--json]                       one-shot overview: liveness, identity/lock/
                                          resource/pipeline counts
   operator [--json]                     human-operator view: pending approvals,
-                                         running stages, recent failures, locks held
+                                         running stages, recent failures/successes, locks held
   operator notify [--interval D]        event-driven desktop notification (notify-send)
-                                         the instant an approval/failure needs attention;
-                                         Tier-1, runs until interrupted; D = reconnect delay
+                                         the instant an approval/failure/success needs
+                                         attention; Tier-1, runs until interrupted;
+                                         D = reconnect delay
+  operator update-all                   restart every breeze daemon this machine's
+                                         discovery registry knows about (in-place
+                                         self-re-exec, same as "daemon restart" per
+                                         directory) — picks up whatever binary is
+                                         already on disk, never rebuilds anything
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
 
@@ -410,6 +417,9 @@ func cmdOperator(p paths, args []string) error {
 	if len(args) > 0 && args[0] == "notify" {
 		return cmdOperatorNotify(p, args[1:])
 	}
+	if len(args) > 0 && args[0] == "update-all" {
+		return cmdOperatorUpdateAll()
+	}
 	f := parseFlags(args)
 	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
 	if err != nil {
@@ -449,9 +459,91 @@ func cmdOperator(p paths, args []string) error {
 			fl.Pipeline, fl.Stage, fl.Commit, envOrDash(fl.Environment), fl.Status, fl.Error)
 	}
 
+	fmt.Printf("Recent successes (%d):\n", len(out.RecentSuccesses))
+	for _, s := range out.RecentSuccesses {
+		fmt.Printf("  %-15s %-10s %-10s %-8s %s\n",
+			s.Pipeline, s.Stage, s.Commit, envOrDash(s.Environment), s.FinishedAt.Format("15:04:05"))
+	}
+
 	fmt.Printf("Locks held (%d):\n", len(out.Locks))
 	for _, l := range out.Locks {
 		fmt.Printf("  %-6s %-8s %-8s %-10s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
+	}
+	return nil
+}
+
+// cmdOperatorUpdateAll restarts every breeze daemon this machine's discovery
+// registry (registry.go) knows about — the same in-place self-re-exec `daemon
+// restart` uses for one directory, just fanned out to every one it can find. It
+// never rebuilds or redeploys anything itself (breeze has zero git/CI knowledge by
+// design); it only picks up whatever binary is already on disk wherever each
+// daemon's `os.Executable()` resolves to — the actual rebuild is each repo's own
+// CI pipeline's job (see ci/deploy.sh). Registry entries are leads to dial-probe,
+// not a source of truth: an entry whose socket doesn't answer is silently dropped
+// (pruned) rather than treated as a failure — it just means that daemon already
+// stopped some other way. Ignores p (breeze operator update-all's targets come
+// entirely from the registry, not the caller's own resolved directory) but keeps
+// the same signature shape as other operator subcommands for consistency.
+func cmdOperatorUpdateAll() error {
+	regPath, err := registryPath()
+	if err != nil {
+		return err
+	}
+	entries, err := loadRegistryFile(regPath)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("no known breeze daemons in the registry")
+		return nil
+	}
+
+	dead := make(map[string]bool)  // dirs confirmed not running — prune
+	fresh := make(map[string]bool) // dirs successfully restarted — refresh LastSeen
+	failures := 0
+	for _, e := range entries {
+		ep := pathsForDir(e.Dir)
+		conn, dialErr := net.DialTimeout("unix", ep.sock, 300*time.Millisecond)
+		if dialErr != nil {
+			fmt.Printf("%s: not running, pruning from registry\n", e.Dir)
+			dead[e.Dir] = true
+			continue
+		}
+		err := restartViaConn(ep, conn)
+		conn.Close()
+		if err != nil {
+			fmt.Printf("%s: restart failed: %v\n", e.Dir, err)
+			failures++
+			continue
+		}
+		fresh[e.Dir] = true
+	}
+
+	// Merge those decisions against whatever's in the registry file NOW (re-read
+	// under the lock), not the stale snapshot from the top of this function — a
+	// daemon that registered or deregistered itself while update-all was busy
+	// restarting others must not have that change silently clobbered.
+	if err := withRegistryLock(func(path string) error {
+		current, err := loadRegistryFile(path)
+		if err != nil {
+			return err
+		}
+		kept := current[:0]
+		for _, e := range current {
+			if dead[e.Dir] {
+				continue
+			}
+			if fresh[e.Dir] {
+				e.LastSeen = time.Now()
+			}
+			kept = append(kept, e)
+		}
+		return saveRegistryFile(path, kept)
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "breeze: warning: failed to save the pruned registry: %v\n", err)
+	}
+	if failures > 0 {
+		return fmt.Errorf("%d of %d daemon(s) failed to restart", failures, len(entries))
 	}
 	return nil
 }

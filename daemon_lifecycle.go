@@ -79,6 +79,15 @@ func restartDaemon(p paths) error {
 		return startDaemonDetached(p) // nothing running; closest equivalent is a fresh detached start
 	}
 	defer conn.Close()
+	return restartViaConn(p, conn)
+}
+
+// restartViaConn asks an ALREADY-DIALED live daemon to restart in place — factored
+// out of restartDaemon so `breeze operator update-all` can reuse the exact same
+// ask-and-wait logic for each daemon it discovers via the registry, without ever
+// falling through to starting a brand-new one for an entry that's actually dead
+// (that's update-all's job to skip, not start).
+func restartViaConn(p paths, conn net.Conn) error {
 	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart}); err != nil {
 		return fmt.Errorf("asking the existing daemon to restart: %w", err)
 	}
@@ -150,6 +159,10 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	logFile, err := os.OpenFile(p.daemonLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err == nil {
 		log.SetOutput(logFile)
+	}
+
+	if err := registerSelf(p); err != nil {
+		log.Printf("warning: failed to register in the discovery registry (breeze operator update-all won't find this daemon): %v", err)
 	}
 
 	eng := engine.New()
