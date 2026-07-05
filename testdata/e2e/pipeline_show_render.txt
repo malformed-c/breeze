@@ -1,0 +1,62 @@
+# `pipeline show` renders the stage-prerequisite chain explicitly by default —
+# two independent agents this session hit an unanticipated (but correct)
+# rejection because ordering was only inferable from HCL declaration order.
+# --json is unchanged (still the raw wire.Pipeline), plain-text is the new
+# human-readable default.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+exec breeze pipeline show release
+stdout 'fan-out at: deploy \(environments: \[staging prod\]\)'
+stdout 'build\s+command\s+requires: \(none, first stage\)'
+stdout 'review\s+approval\s+requires: build'
+stdout 'deploy\s+deploy\s+requires: review'
+stdout 'env deps: prod requires staging'
+stdout 'test\s+command\s+requires: deploy \(same environment\)'
+stdout 'hotfix\s+command\s+requires: \(none — debug stage, skips ordering\)'
+
+# --json is untouched: still the raw wire.Pipeline, no "requires" field grafted on.
+exec breeze pipeline show release --json
+stdout '"name":\s*"release"'
+! stdout 'requires'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  environments = ["staging", "prod"]
+  environment_deps {
+    prod = ["staging"]
+  }
+
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+  stage "deploy" {
+    type     = "deploy"
+    fans_out = true
+    timeout  = "5m"
+    command  = ["/bin/true"]
+  }
+  stage "test" {
+    type    = "command"
+    timeout = "3m"
+    command = ["/bin/true"]
+  }
+  stage "hotfix" {
+    type    = "command"
+    debug   = true
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+}

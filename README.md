@@ -177,6 +177,12 @@ allowed to start (e.g. `prod` waits for all of `staging`'s stages to finish — 
 just `staging`'s own deploy step). Two environments with no dependency relation
 between them proceed fully concurrently.
 
+`breeze pipeline show <name>` (plain text, without `--json`) renders this whole
+chain explicitly — each stage's `requires: <predecessor>` (Gate 1), and any
+`env deps: <env> requires <deps>` (Gate 2) at the fan-out stage — rather than
+leaving ordering to be inferred from HCL declaration order. `--json` is unchanged
+(the raw pipeline definition, for tooling).
+
 An environment can also declare an `environment_owners` entry — a plain identity
 name ("who's responsible for `engix99`"), surfaced via `pipeline show`/`--json`.
 Declaring it is purely documentation — it isn't itself checked by any gate — but it

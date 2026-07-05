@@ -173,7 +173,11 @@ unsure whether a given stage needs one.
 **Before triggering any stage, check its prerequisites make sense** —
 `breeze pipeline status <pipeline> <commit>` shows every stage/environment's current
 state for that commit in one call, so you can see what's actually eligible before
-you try (a rejected attempt is harmless, just noisy).
+you try (a rejected attempt is harmless, just noisy). To see the *shape* of the
+chain itself (which stage requires which, and any environment dependencies) rather
+than one commit's live state, `breeze pipeline show <name>` (plain text, no
+`--json`) renders each stage's `requires:` predecessor and `env deps:` explicitly
+— don't infer ordering from HCL declaration order alone.
 
 A stage stuck `running`/`awaiting` forever (e.g. orphaned by a daemon restart —
 now handled automatically, but not every stuck-forever cause is) can be forced to

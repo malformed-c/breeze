@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -1232,7 +1233,11 @@ func cmdPipeline(p paths, args []string) error {
 		if err != nil {
 			return err
 		}
-		printJSON(out.Pipeline)
+		if f.jsonOut {
+			printJSON(out.Pipeline)
+			return nil
+		}
+		printPipelineHuman(out.Pipeline)
 		return nil
 	case "list":
 		resp, err := call(p, wire.Request{Op: wire.OpPipelineList})
@@ -1279,6 +1284,64 @@ func cmdPipeline(p paths, args []string) error {
 	default:
 		return fmt.Errorf("unknown pipeline subcommand %q", sub)
 	}
+}
+
+// printPipelineHuman renders a pipeline's stage-prerequisite chain explicitly —
+// two independent users hit the same confusion this session: ordering (Gate 1,
+// "requires: <predecessor>") and environment fan-out dependencies (Gate 2, "env
+// deps: ...") were only inferable from HCL declaration order, so a stage attempt
+// that was correctly rejected still felt unanticipated. --json still returns the
+// raw wire.Pipeline (unchanged) for tooling; this is the plain-text default.
+func printPipelineHuman(pl wire.Pipeline) {
+	fmt.Printf("pipeline %q\n", pl.Name)
+	if pl.FanOutAt < len(pl.Stages) {
+		fmt.Printf("  fan-out at: %s (environments: %v)\n", pl.Stages[pl.FanOutAt].Name, pl.Environments)
+		if len(pl.DebugEnvironments) > 0 {
+			fmt.Printf("  debug environments (exempt from gate 2 + monotonic ordering): %v\n", pl.DebugEnvironments)
+		}
+	}
+	fmt.Println()
+	for i, s := range pl.Stages {
+		fmt.Printf("  %-12s  %-9s  requires: %s\n", s.Name, s.Type, stageRequiresText(pl, i))
+		if i == pl.FanOutAt {
+			for _, env := range sortedKeys(pl.EnvironmentDeps) {
+				deps := pl.EnvironmentDeps[env]
+				if len(deps) == 0 {
+					continue
+				}
+				fmt.Printf("  %-12s  %-9s  env deps: %s requires %s\n", "", "", env, strings.Join(deps, ", "))
+			}
+		}
+	}
+}
+
+// stageRequiresText names stage i's Gate 1 predecessor exactly as
+// checkPrerequisite/predecessorKey (internal/engine/stage.go) actually evaluate
+// it — a Debug stage skips Gate 1 entirely, the fan-out entry stage's predecessor
+// is the single shared commit-only instance (no "same environment" — it hasn't
+// fanned out yet), and anything past that point continues within its own
+// environment.
+func stageRequiresText(pl wire.Pipeline, i int) string {
+	if pl.Stages[i].Debug {
+		return "(none — debug stage, skips ordering)"
+	}
+	if i == 0 {
+		return "(none, first stage)"
+	}
+	prev := pl.Stages[i-1].Name
+	if i > pl.FanOutAt {
+		return prev + " (same environment)"
+	}
+	return prev
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cmdStage(p paths, args []string) error {
