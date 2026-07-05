@@ -122,6 +122,22 @@ kept apart from real file paths shown by `lock list` by default. `breeze lock li
 *and* a deploy claim at once) without cross-referencing two commands, or reaching
 for the broader `breeze operator` dashboard just to see your own holds.
 
+### Resource mutexes — a lock on a named concept, not a file
+
+```sh
+breeze lock acquire --resource gpu-0 --as alice --ttl 30m [--shared] [--wait] [--timeout D]
+breeze lock release <lock-id> --as alice
+breeze lock list --all [--json]   # resource-kind locks only ever show up under --all
+```
+
+Same acquire/release/renew/wait/TTL machinery as a file lock, just keyed by an
+opaque name (`"gpu-0"`, `"ci-runner-1"`, `"shared-test-db"`, ...) instead of a
+filesystem path — for coordinating on something that isn't a real file (a GPU
+slot, a shared external resource, a build runner). This is the exact mechanism
+breeze already uses internally for a deploy stage's `(target, environment)`
+exclusivity, now exposed directly. `--resource` and a file path are mutually
+exclusive in one `lock acquire` call.
+
 **Paths are resolved client-side, relative to your git worktree's toplevel when
 you're in one.** A relative path like `src/main.go` doesn't get resolved against the
 daemon's own (arbitrary, long-lived) working directory — it's resolved against

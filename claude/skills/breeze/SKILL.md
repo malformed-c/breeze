@@ -124,6 +124,12 @@ two agents in two different worktree checkouts of the same repo actually contend
 one lock. Outside a repo, or for a path outside the current worktree, it's just a
 plain absolute path, same as always.
 
+**Not a real file?** `breeze lock acquire --resource <name> [--shared] --as <name>`
+holds a mutex over any named concept ("gpu-0", "ci-runner-1", ...) using the exact
+same acquire/release/wait/TTL machinery — mutually exclusive with a file path in
+one call. Only shows up in `lock list` under `--all` (or `breeze inventory`), same
+as any other resource-kind lock.
+
 ## 4. Pipelines — the main feature
 
 A pipeline is an admin-defined ordered list of stages, keyed by commit hash:

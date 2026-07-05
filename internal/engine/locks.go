@@ -150,6 +150,22 @@ func (e *Engine) WaitChannelsForPaths(rawPaths []string) (<-chan struct{}, error
 	return ch, nil
 }
 
+// WaitChannelsForResourceKeys is WaitChannelsForPaths' counterpart for resource
+// keys — sorted only, deliberately NOT filepath.Clean'd, matching
+// TryAcquireResourceLock's own handling of an opaque (non-filesystem) key.
+func (e *Engine) WaitChannelsForResourceKeys(keys []string) (<-chan struct{}, error) {
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	ch := make(chan struct{})
+	e.mu.Lock()
+	for _, k := range sorted {
+		key := "lock:" + k
+		e.waiters[key] = append(e.waiters[key], ch)
+	}
+	e.mu.Unlock()
+	return ch, nil
+}
+
 // notifyPaths must be called with e.mu held; wakes and clears every waiter registered
 // on any of the given canonical paths.
 func (e *Engine) notifyPathsLocked(paths []string) {

@@ -109,6 +109,45 @@ func TestWaitChannelWakesOnRelease(t *testing.T) {
 	}
 }
 
+// TestWaitChannelWakesOnReleaseForResourceKey is TestWaitChannelWakesOnRelease's
+// counterpart for a user-facing resource mutex (e.g. "gpu-0") — the same
+// wait/wake machinery must work identically for an opaque key as it does for a
+// real file path.
+func TestWaitChannelWakesOnReleaseForResourceKey(t *testing.T) {
+	e := New()
+	lock, ok, err := e.TryAcquireResourceLock("alice", []string{"gpu-0"}, LockExclusive, 0)
+	if err != nil || !ok {
+		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
+	}
+
+	wait, err := e.WaitChannelsForResourceKeys([]string{"gpu-0"})
+	if err != nil {
+		t.Fatalf("WaitChannelsForResourceKeys: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		<-wait
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatalf("waiter woke before release")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := e.ReleaseLock(lock.ID, "alice", false); err != nil {
+		t.Fatalf("release failed: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("waiter did not wake within 1s of release")
+	}
+}
+
 func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	e := New()
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {

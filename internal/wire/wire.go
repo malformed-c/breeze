@@ -157,12 +157,19 @@ type LockInfo struct {
 	Attached   bool      `json:"attached"`
 }
 
+// LockAcquireRequest's Resources is the user-facing counterpart to the resource
+// locks breeze already creates internally for deploy-claim exclusivity (e.g.
+// "deploy/target/env") — an opaque, non-filesystem name (e.g. "gpu-0",
+// "ci-runner-1") an agent can hold like a mutex over any shared concept, not just
+// a real file. Mutually exclusive with Paths in one request: a single acquire is
+// either a file-lock request or a resource-lock request, never both.
 type LockAcquireRequest struct {
-	Paths   []string `json:"paths"`
-	Shared  bool     `json:"shared,omitempty"`
-	TTL     string   `json:"ttl,omitempty"`
-	Wait    bool     `json:"wait,omitempty"`
-	Timeout string   `json:"timeout,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	Resources []string `json:"resources,omitempty"`
+	Shared    bool     `json:"shared,omitempty"`
+	TTL       string   `json:"ttl,omitempty"`
+	Wait      bool     `json:"wait,omitempty"`
+	Timeout   string   `json:"timeout,omitempty"`
 }
 type LockAcquireResponse struct {
 	Lock LockInfo `json:"lock"`

@@ -736,6 +736,9 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		return errResponse(err)
 	}
+	if len(p.Paths) > 0 && len(p.Resources) > 0 {
+		return errResponse(fmt.Errorf("lock acquire: paths and resources are mutually exclusive in one request"))
+	}
 	mode := engine.LockShared
 	if !p.Shared {
 		mode = engine.LockExclusive
@@ -756,9 +759,23 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		}
 	}
 
+	// Resource-kind acquire (a user-facing mutex over an arbitrary named concept,
+	// e.g. "gpu-0") reuses the exact same acquire/wait machinery as file locks —
+	// only which engine calls get made differs, not the retry/wait loop itself.
+	tryAcquire := func() (*engine.FileLock, bool, error) {
+		return d.eng.TryAcquireLock(req.As, p.Paths, mode, ttl, false)
+	}
+	waitChannels := func() (<-chan struct{}, error) { return d.eng.WaitChannelsForPaths(p.Paths) }
+	if len(p.Resources) > 0 {
+		tryAcquire = func() (*engine.FileLock, bool, error) {
+			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl)
+		}
+		waitChannels = func() (<-chan struct{}, error) { return d.eng.WaitChannelsForResourceKeys(p.Resources) }
+	}
+
 	deadline := time.Now().Add(timeout)
 	for {
-		lock, ok, err := d.eng.TryAcquireLock(req.As, p.Paths, mode, ttl, false)
+		lock, ok, err := tryAcquire()
 		if err != nil {
 			return errResponse(err)
 		}
@@ -768,7 +785,7 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		if !p.Wait {
 			return errResponse(engine.ErrLockConflict)
 		}
-		wait, err := d.eng.WaitChannelsForPaths(p.Paths)
+		wait, err := waitChannels()
 		if err != nil {
 			return errResponse(err)
 		}

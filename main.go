@@ -116,6 +116,8 @@ commands:
   role list [--json]
 
   lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
+  lock acquire --resource <name>... [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
+                                               # a mutex over a named concept, not a real file
   lock exec <path...> [--shared] --as NAME -- <command...>
   lock release <lock-id> --as NAME [--force]
   lock renew <lock-id> [--ttl D] --as NAME
@@ -166,6 +168,7 @@ type flagSet struct {
 	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason string
 	shared, wait, force, jsonOut, dryRun, prune, all                                             bool
 	targets                                                                                      []string // repeated --target NAME
+	resources                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
 	rest                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 }
@@ -230,6 +233,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.targets = append(f.targets, args[i])
+			}
+		case "--resource":
+			i++
+			if i < len(args) {
+				f.resources = append(f.resources, args[i])
 			}
 		case "--brief":
 			i++
@@ -946,16 +954,23 @@ func cmdLock(p paths, args []string) error {
 	as := resolveIdentity(p, f)
 	switch sub {
 	case "acquire":
-		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME")
+		if len(f.resources) > 0 && len(f.rest) > 0 {
+			return fmt.Errorf("cannot mix file paths and --resource in one lock acquire")
 		}
-		lockPaths, err := canonicalLockPaths(f.rest)
-		if err != nil {
-			return err
+		if len(f.resources) == 0 && len(f.rest) < 1 {
+			return fmt.Errorf("usage: breeze lock acquire <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--wait] [--timeout D]")
 		}
-		payload, _ := json.Marshal(wire.LockAcquireRequest{
-			Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout,
-		})
+		var req wire.LockAcquireRequest
+		if len(f.resources) > 0 {
+			req = wire.LockAcquireRequest{Resources: f.resources, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout}
+		} else {
+			lockPaths, err := canonicalLockPaths(f.rest)
+			if err != nil {
+				return err
+			}
+			req = wire.LockAcquireRequest{Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout}
+		}
+		payload, _ := json.Marshal(req)
 		resp, err := call(p, wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
 		if err != nil {
 			return err
