@@ -43,6 +43,7 @@ const (
 	OpStageStatus  Op = "stage.status"
 	OpStageWait    Op = "stage.wait" // streaming
 	OpStageCancel  Op = "stage.cancel"
+	OpStageClaim   Op = "stage.claim"
 
 	OpDeployHistory   Op = "deploy.history"
 	OpDeployRollback  Op = "deploy.rollback"
@@ -416,6 +417,23 @@ type DeployClaimRequest struct {
 type DeployClaimResponse struct {
 	LockID    string    `json:"lockId"`
 	Target    string    `json:"target"`
+	ExpiresAt time.Time `json:"expiresAt,omitzero"`
+}
+
+// StageClaimRequest reserves a command stage instance's execution slot ahead of
+// actually running it — see engine.ClaimStage. Generalizes DeployClaimRequest
+// (target/environment-scoped, commit-agnostic, deploy-only) to any command stage,
+// scoped by the exact commit[/environment] it will run against instead. TTL
+// defaults to the stage's own configured Timeout if omitted.
+type StageClaimRequest struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	TTL         string `json:"ttl,omitempty"`
+}
+type StageClaimResponse struct {
+	LockID    string    `json:"lockId"`
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
 }
 

@@ -479,6 +479,26 @@ the actual current holder and its expiry (`"deploy/engix99" is already locked by
 "alice" (since ..., expires ...) — check breeze inventory, wait for it via stage
 wait, or ask alice directly`), not just "someone else has it."
 
+### Claiming a command stage instance ahead of time
+
+```sh
+breeze stage claim release build abc123 [--env NAME] [--ttl D] --as alice --token T
+```
+
+The same idea as `deploy claim`, generalized to command stages: reserve one
+specific stage instance's execution slot — `(pipeline, stage, commit[,
+environment])`, not a `(target, environment)` pair (a command stage has no
+target/environment identity of its own until fanned out) — before actually
+running it. Same RBAC as a real `stage start` on that stage
+(`CommandPolicy.RequiredRole`, if set). Visible via `breeze inventory`/`operator`
+immediately, same as a deploy claim. A DIFFERENT actor's `stage start` on that
+exact instance is rejected while the claim holds; your own `stage start`
+recognizes and consumes it instead of failing a self-conflict. If you never get
+around to the real run, the claim just expires at `--ttl` (default: the stage's
+own configured `timeout`). Approval stages aren't claimable (multiple distinct
+approvers is the point, not exclusivity); deploy stages keep using `deploy claim`
+instead (see above) — `stage claim` rejects both outright.
+
 ### Granting temporary deploy access
 
 ```sh

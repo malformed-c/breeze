@@ -143,6 +143,12 @@ commands:
                                          Failed (e.g. after a daemon restart orphaned
                                          it) so it can be retried; same RBAC as
                                          triggering that stage would need, or admin
+  stage claim   <pipeline> <stage> <commit> [--env NAME] [--ttl D] --as WHO [--token T]
+                                         # reserve a COMMAND stage instance's execution slot
+                                         # ahead of time — a real actor start recognizes and
+                                         # consumes its own claim; a DIFFERENT actor's start
+                                         # on the same instance is rejected while claimed;
+                                         # same RBAC as triggering that stage would need
 
   deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
   deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
@@ -1361,7 +1367,7 @@ func sortedKeys(m map[string][]string) []string {
 
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze stage start|approve|status|wait|cancel ...")
+		return fmt.Errorf("usage: breeze stage start|approve|status|wait|cancel|claim ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
@@ -1457,6 +1463,30 @@ func cmdStage(p paths, args []string) error {
 			return nil
 		}
 		fmt.Printf("%s: %s (cancelled)\n", out.Instance.Stage, out.Instance.Status)
+		return nil
+	case "claim":
+		token, err := resolveTokenAuto(p, f, as)
+		if err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(wire.StageClaimRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, TTL: f.ttl})
+		resp, err := call(p, wire.Request{Op: wire.OpStageClaim, As: as, Token: token, Payload: payload})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.StageClaimResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		fmt.Printf("claimed %s/%s (%s) as %s (lock %s", pipeline, stage, shortCommitForDisplay(commit), as, out.LockID)
+		if !out.ExpiresAt.IsZero() {
+			fmt.Printf(", expires %s", out.ExpiresAt.Format(time.RFC3339))
+		}
+		fmt.Println(")")
 		return nil
 	default:
 		return fmt.Errorf("unknown stage subcommand %q", sub)

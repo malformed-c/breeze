@@ -497,6 +497,37 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		}
 		return okResponse(wire.DeployClaimResponse{LockID: lock.ID, Target: target, ExpiresAt: lock.ExpiresAt})
 
+	case wire.OpStageClaim:
+		var p wire.StageClaimRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		pipeline, ok := d.eng.Pipeline(p.Pipeline)
+		if !ok {
+			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
+		}
+		i := pipeline.StageIndex(p.Stage)
+		if i < 0 {
+			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
+		}
+		if pipeline.Stages[i].Type != engine.StageCommand {
+			return errResponse(fmt.Errorf("stage %q is not a command stage (deploy stages use `deploy claim` instead)", p.Stage))
+		}
+		// Same Tier-2 gate as a normal `stage start` on this stage — claiming ahead
+		// of time is authorization-equivalent to triggering it, not a lesser-privileged operation.
+		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
+			return errResponse(err)
+		}
+		ttl, err := parseOptionalDuration(p.TTL)
+		if err != nil {
+			return errResponse(err)
+		}
+		lock, err := d.eng.ClaimStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, ttl)
+		if err != nil {
+			return errResponse(err)
+		}
+		return okResponse(wire.StageClaimResponse{LockID: lock.ID, ExpiresAt: lock.ExpiresAt})
+
 	case wire.OpDeployGrant:
 		var p wire.DeployGrantRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {

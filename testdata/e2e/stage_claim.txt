@@ -1,0 +1,52 @@
+# `breeze stage claim` generalizes `deploy claim` to command stages: alice
+# reserves a stage instance's execution slot ahead of time, bob's stage start on
+# that exact instance is rejected while the claim holds, and alice's own stage
+# start recognizes and consumes it instead of erroring.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register alice
+cp stdout alice.token
+exec breeze role assign builder alice --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+exec breeze stage claim release build abc123 --ttl 10m --as alice --token-file alice.token
+stdout 'claimed release/build \(abc123\) as alice'
+
+# bob (no claim, no role needed since build has no required_role) is rejected
+# while alice's claim is active.
+! exec breeze stage start release build abc123 --as bob
+stderr 'already claimed by "alice"'
+
+# alice's own stage start recognizes and consumes the claim.
+exec breeze stage start release build abc123 --as alice
+stdout 'build: succeeded'
+
+# The claim is gone now — inventory is empty.
+exec breeze inventory
+stdout '\(no resources held\)'
+
+# bob can start a DIFFERENT commit with no interference.
+exec breeze stage start release build def456 --as bob
+stdout 'build: succeeded'
+
+# Claiming a non-command stage (approval or deploy) is rejected outright.
+! exec breeze stage claim release review abc123 --as alice --token-file alice.token
+stderr 'not a command stage'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+}

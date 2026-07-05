@@ -93,6 +93,11 @@ func (e *Engine) lockHeldBy(holder, key string) *FileLock {
 func (e *Engine) lockOnKey(key string) *FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.lockOnKeyLocked(key)
+}
+
+// lockOnKeyLocked is lockOnKey for a caller that already holds e.mu.
+func (e *Engine) lockOnKeyLocked(key string) *FileLock {
 	for _, l := range e.locks {
 		if l.Kind == LockKindResource && slices.Contains(l.Paths, key) {
 			return l

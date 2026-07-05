@@ -313,6 +313,22 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		return nil, gateErr("stage %q is at its concurrency limit (%d)", stageName, max)
 	}
 
+	// A `stage claim` reservation on this exact stage instance blocks any OTHER
+	// actor from starting it — the same actor's own claim is recognized and
+	// consumed below (after unlocking, since ReleaseLock takes e.mu itself) rather
+	// than treated as a self-conflict. No claim ever existing (the common case) is
+	// a no-op here — this never changes behavior for a pipeline that doesn't use
+	// `stage claim`.
+	claimKey := stageLockKey(pipelineName, stageName, key)
+	var myClaimID string
+	if held := e.lockOnKeyLocked(claimKey); held != nil {
+		if held.Holder != actor {
+			e.mu.Unlock()
+			return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, held).Error())
+		}
+		myClaimID = held.ID
+	}
+
 	e.touchCommitSeq(pipelineName, commit)
 
 	// The instance occupies its "Running" concurrency slot for the FULL duration
@@ -330,6 +346,12 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	preGate := stage.PreGate
 	postAction := stage.PostAction
 	e.mu.Unlock()
+
+	if myClaimID != "" {
+		// The real run is starting now — release the claim rather than let it
+		// linger for its full TTL after it's already served its purpose.
+		e.ReleaseLock(myClaimID, actor, true)
+	}
 
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 
@@ -683,6 +705,90 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	e.notifyResolution(pipelineName, stageName, &cp)
 	e.recordBrief(briefsDir, &cp)
 	return &cp, nil
+}
+
+// stageLockKey names the resource lock a `stage claim` reserves — distinct from
+// deployLockKey (target/environment-scoped, commit-agnostic, deploy-only): a stage
+// claim is scoped to one specific stage instance, (pipeline, stage, commit[,
+// environment]), the same granularity StageKey already uses everywhere else.
+func stageLockKey(pipelineName, stageName string, key StageKey) string {
+	return "stage/" + pipelineName + "/" + stageName + "/" + key.String()
+}
+
+func stageClaimConflictErr(pipelineName, stageName string, key StageKey, held *FileLock) error {
+	if held == nil {
+		return fmt.Errorf("%s/%s (%s) is already claimed by another actor", pipelineName, stageName, key.ShortString())
+	}
+	expiry := "never"
+	if !held.ExpiresAt.IsZero() {
+		expiry = held.ExpiresAt.Format(time.RFC3339)
+	}
+	return fmt.Errorf("%s/%s (%s) is already claimed by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
+		pipelineName, stageName, key.ShortString(), held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
+}
+
+// ClaimStage lets actor reserve a command stage instance's execution slot ahead of
+// actually running it — generalizes ClaimDeployLock (deploy-only, scoped to a
+// (target, environment) pair with no commit yet known) to any command stage,
+// scoped instead by the exact (pipeline, stage, commit[, environment]) it will run
+// against. `breeze inventory`/`operator` shows the claim's Holder immediately, and
+// StartCommandStage recognizes and consumes a claim held by the SAME actor rather
+// than treating it as a self-conflict — but rejects a DIFFERENT actor's attempt to
+// start that same stage instance while the claim is active. Approval stages aren't
+// claimable (multiple distinct approvers are the point, not exclusivity); deploy
+// stages keep their own dedicated `deploy claim` instead.
+func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor string, ttl time.Duration) (*FileLock, error) {
+	e.mu.Lock()
+	p, ok := e.pipelines[pipelineName]
+	if !ok {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
+	}
+	i := p.StageIndex(stageName)
+	if i < 0 {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
+	}
+	stage := p.Stages[i]
+	if stage.Type != StageCommand {
+		e.mu.Unlock()
+		return nil, fmt.Errorf("stage %q is not a command stage (deploy stages use `deploy claim` instead)", stageName)
+	}
+	key, err := keyFor(p, i, commit, environment)
+	if err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	if stage.CommandPolicy.RequiredRole != "" {
+		id, ok := e.identities[actor]
+		if !ok || !id.HasRole(stage.CommandPolicy.RequiredRole) {
+			e.mu.Unlock()
+			return nil, gateErr("actor %q lacks required role %q", actor, stage.CommandPolicy.RequiredRole)
+		}
+	}
+	timeout := stage.Timeout
+	e.mu.Unlock()
+
+	if ttl <= 0 {
+		ttl = timeout
+	}
+	lockKey := stageLockKey(pipelineName, stageName, key)
+
+	// Idempotent: a repeat claim by the same actor re-reports their existing hold
+	// rather than erroring — mirrors ClaimDeployLock's own idempotency.
+	if existing := e.lockHeldBy(actor, lockKey); existing != nil {
+		return existing, nil
+	}
+
+	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl)
+	if err != nil {
+		return nil, err
+	}
+	if !gotLock {
+		return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, e.lockOnKey(lockKey)).Error())
+	}
+	e.audit("stage.claimed", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s", pipelineName, stageName, key))
+	return lock, nil
 }
 
 // PipelineStatus returns every materialized stage instance for a given commit, across

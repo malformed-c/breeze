@@ -245,6 +245,13 @@ its own at `--ttl` if you never get to it. Check `breeze inventory`/`operator`
 before assuming a target/environment is free — a claim looks identical to an
 in-flight deploy there, which is the point.
 
+`breeze stage claim <pipeline> <stage> <commit> [--env NAME] [--ttl D] --as <who>
+--token T` is the same idea generalized to command stages — reserves one exact
+`(pipeline, stage, commit[, environment])` instance instead of a `(target,
+environment)` pair. A different actor's `stage start` on that instance is
+rejected while claimed; your own recognizes and consumes it. Approval and deploy
+stages aren't claimable this way (deploy keeps its own `deploy claim` above).
+
 ### Granting temporary deploy access
 
 ```sh
