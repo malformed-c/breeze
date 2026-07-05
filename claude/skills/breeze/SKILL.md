@@ -251,6 +251,13 @@ in-flight deploy there, which is the point.
 environment)` pair. A different actor's `stage start` on that instance is
 rejected while claimed; your own recognizes and consumes it. Approval and deploy
 stages aren't claimable this way (deploy keeps its own `deploy claim` above).
+**Not opt-in**: every command-stage run auto-holds this same lock for its full
+duration whether or not it was pre-claimed — `inventory`/`operator` shows a
+Holder for any running claimable stage. Cancelling (`stage cancel`, or the
+automatic recovery on daemon restart/stop) releases an unclaimed run's lock
+immediately (no waiting on TTL) — but if you manually claimed it first, your
+claim survives the cancellation instead, still blocking others until you
+release it, retry it to a normal finish, or its TTL expires.
 
 ### Granting temporary deploy access
 

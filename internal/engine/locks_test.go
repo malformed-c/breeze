@@ -115,7 +115,7 @@ func TestWaitChannelWakesOnRelease(t *testing.T) {
 // real file path.
 func TestWaitChannelWakesOnReleaseForResourceKey(t *testing.T) {
 	e := New()
-	lock, ok, err := e.TryAcquireResourceLock("alice", []string{"gpu-0"}, LockExclusive, 0)
+	lock, ok, err := e.TryAcquireResourceLock("alice", []string{"gpu-0"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
@@ -153,7 +153,7 @@ func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("file lock acquire failed: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour); err != nil || !ok {
+	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("resource lock acquire failed: ok=%v err=%v", ok, err)
 	}
 
@@ -176,7 +176,7 @@ func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	// since they're tracked as distinct locks — acquiring the same resource key again
 	// under the file-lock path should still be governed by normal conflict rules
 	// (proving kind tagging doesn't accidentally bypass conflict checks within a kind).
-	if _, ok, err := e.TryAcquireResourceLock("bob", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour); err != nil {
+	if _, ok, err := e.TryAcquireResourceLock("bob", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	} else if ok {
 		t.Fatalf("expected conflicting resource-lock re-acquire to fail")
@@ -188,7 +188,7 @@ func TestListAllLocksUnionsFileAndResourceKinds(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("file lock acquire failed: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour); err != nil || !ok {
+	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("resource lock acquire failed: ok=%v err=%v", ok, err)
 	}
 

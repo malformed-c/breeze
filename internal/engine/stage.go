@@ -313,24 +313,33 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		return nil, gateErr("stage %q is at its concurrency limit (%d)", stageName, max)
 	}
 
-	// A `stage claim` reservation on this exact stage instance blocks any OTHER
-	// actor from starting it — the same actor's own claim is recognized and
-	// consumed below (after unlocking, since ReleaseLock takes e.mu itself) rather
-	// than treated as a self-conflict. No claim ever existing (the common case) is
-	// a no-op here — this never changes behavior for a pipeline that doesn't use
-	// `stage claim`.
-	claimKey := stageLockKey(pipelineName, stageName, key)
-	var myClaimID string
-	if held := e.lockOnKeyLocked(claimKey); held != nil {
-		if held.Holder != actor {
-			e.mu.Unlock()
-			return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, held).Error())
-		}
-		myClaimID = held.ID
+	e.touchCommitSeq(pipelineName, commit)
+	timeout := stage.Timeout
+	tmpl := stage.Command
+	preGate := stage.PreGate
+	postAction := stage.PostAction
+	briefsDir := p.BriefsDir
+	e.mu.Unlock()
+
+	// Every run of a claimable stage instance — claimed ahead of time or not —
+	// automatically holds this exact (pipeline, stage, commit[, environment])
+	// lock for its FULL duration, mirroring runDeployStage exactly: a `stage
+	// claim` is just an early acquire of the SAME lock the real run always takes,
+	// so lockHeldBy recognizes and reuses it here instead of a fresh
+	// TryAcquireResourceLock treating the claimant's own run as a self-conflict.
+	// This also means `breeze inventory`/`operator` now shows a Holder for ANY
+	// actively-running claimable stage, not just ones someone explicitly
+	// pre-claimed — parity with how a deploy has always behaved.
+	lockKey := stageLockKey(pipelineName, stageName, key)
+	lock, gotLock, err := e.acquireOrReuseLock(actor, lockKey, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if !gotLock {
+		return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, e.lockOnKey(lockKey)).Error())
 	}
 
-	e.touchCommitSeq(pipelineName, commit)
-
+	e.mu.Lock()
 	// The instance occupies its "Running" concurrency slot for the FULL duration
 	// including PreGate execution, not just the main command — otherwise a slow gate
 	// hook would let more than MaxConcurrent requests pass the concurrency check
@@ -341,21 +350,12 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	}
 	e.instances[instanceKey(pipelineName, stageName, key)] = inst
 	e.changed()
-	timeout := stage.Timeout
-	tmpl := stage.Command
-	preGate := stage.PreGate
-	postAction := stage.PostAction
 	e.mu.Unlock()
-
-	if myClaimID != "" {
-		// The real run is starting now — release the claim rather than let it
-		// linger for its full TTL after it's already served its purpose.
-		e.ReleaseLock(myClaimID, actor, true)
-	}
 
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 
 	if err := runPreGates(preGate, params); err != nil {
+		e.ReleaseLock(lock.ID, actor, true) // the command never ran — release immediately
 		e.mu.Lock()
 		inst.Status = StageGateFailed
 		inst.Error = err.Error()
@@ -366,24 +366,11 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		gateCp := *inst
 		e.mu.Unlock()
 		e.notifyResolution(pipelineName, stageName, &gateCp)
-		e.recordBrief(p.BriefsDir, &gateCp)
+		e.recordBrief(briefsDir, &gateCp)
 		return nil, err
 	}
 
-	runKey := instanceKey(pipelineName, stageName, key)
-	runCtx, runCancel := context.WithCancel(context.Background())
-	e.registerRunningCancel(runKey, runCancel)
-	result := hook.Run(runCtx, hook.Template{
-		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
-	}, params)
-	e.unregisterRunningCancel(runKey)
-	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
-	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
-	// what calling a context's own CancelFunc does), which would make every
-	// naturally-failing command misreported as "cancelled" regardless of whether
-	// CancelStage ever actually ran.
-	wasCancelled := runCtx.Err() != nil
-	runCancel()
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
@@ -411,7 +398,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	e.mu.Unlock()
 
 	e.notifyResolution(pipelineName, stageName, &cp)
-	e.recordBrief(p.BriefsDir, &cp)
+	e.recordBrief(briefsDir, &cp)
 
 	// Post-action hooks fire after the fact, success or failure, and never block the
 	// caller — the transition has already committed by this point.
@@ -607,6 +594,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 	e.mu.Lock()
 	type resolved struct {
 		pipeline, stage string
+		key             StageKey
 		cp              StageInstance
 		briefsDir       string
 	}
@@ -624,7 +612,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		if p, ok := e.pipelines[inst.Pipeline]; ok {
 			briefsDir = p.BriefsDir
 		}
-		toNotify = append(toNotify, resolved{pipeline: inst.Pipeline, stage: inst.Stage, cp: *inst, briefsDir: briefsDir})
+		toNotify = append(toNotify, resolved{pipeline: inst.Pipeline, stage: inst.Stage, key: inst.Key, cp: *inst, briefsDir: briefsDir})
 	}
 	if len(toNotify) > 0 {
 		e.changed()
@@ -632,6 +620,10 @@ func (e *Engine) CancelRunningStages(reason string) int {
 	e.mu.Unlock()
 
 	for _, r := range toNotify {
+		// The orphaned run's own auto-acquired stage/deploy lock is now dead weight
+		// — release it immediately rather than leave a retry blocked until its TTL
+		// (up to the stage's own Timeout) expires on its own.
+		e.releaseStageInstanceLock(r.pipeline, r.stage, r.key)
 		e.notifyResolution(r.pipeline, r.stage, &r.cp)
 		e.recordBrief(r.briefsDir, &r.cp)
 	}
@@ -702,9 +694,107 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	cp := *inst
 	e.mu.Unlock()
 
+	// The cancelled run's own auto-acquired stage/deploy lock is now dead weight —
+	// release it immediately rather than leave a retry blocked until its TTL (up
+	// to the stage's own Timeout) expires on its own.
+	e.releaseStageInstanceLock(pipelineName, stageName, key)
+
 	e.notifyResolution(pipelineName, stageName, &cp)
 	e.recordBrief(briefsDir, &cp)
 	return &cp, nil
+}
+
+// releaseStageInstanceLock force-releases the resource lock (if any) a running
+// instance of pipelineName/stageName/key would be auto-holding — the same lock
+// StartCommandStage (stageLockKey) or runDeployStage (deployLockKey) acquires for
+// a run's full duration. Called by both cancellation paths (CancelRunningStages,
+// CancelStage) so a forced/orphaned cancellation doesn't leave that lock lingering
+// until its TTL expiry, which would otherwise block an immediate retry attempt for
+// no remaining reason.
+//
+// Deliberately leaves a ManualClaim lock alone: that's an actor's own deliberate
+// ahead-of-time reservation (`stage claim`/`deploy claim`), reused rather than
+// freshly acquired by the run that's now being cancelled — cancelling the RUN
+// shouldn't silently hand the actor's still-wanted reserved slot to someone else.
+// Only an ephemeral, run-scoped auto-acquired lock (never explicitly claimed) is
+// released here; the actor's manual claim survives until they release it
+// themselves or its own TTL expires.
+//
+// A no-op for stage types that never hold one (approval) or if the
+// pipeline/stage no longer exists. Must be called WITHOUT e.mu held — ReleaseLock
+// takes it itself.
+func (e *Engine) releaseStageInstanceLock(pipelineName, stageName string, key StageKey) {
+	e.mu.Lock()
+	p, ok := e.pipelines[pipelineName]
+	if !ok {
+		e.mu.Unlock()
+		return
+	}
+	i := p.StageIndex(stageName)
+	if i < 0 {
+		e.mu.Unlock()
+		return
+	}
+	stage := p.Stages[i]
+	var lockKey string
+	switch stage.Type {
+	case StageCommand:
+		lockKey = stageLockKey(pipelineName, stageName, key)
+	case StageDeploy:
+		lockKey = deployLockKey(deployTarget(stage), key.Environment)
+	default:
+		e.mu.Unlock()
+		return
+	}
+	held := e.lockOnKeyLocked(lockKey)
+	e.mu.Unlock()
+	if held != nil && !held.ManualClaim {
+		e.ReleaseLock(held.ID, held.Holder, true)
+	}
+}
+
+// acquireOrReuseLock reuses actor's own already-held lock on lockKey — a prior
+// ClaimStage/ClaimDeployLock, or (rare) a lock from an earlier attempt that
+// somehow wasn't cleaned up — if present (see lockHeldBy), otherwise freshly
+// acquires a new, non-manual-claim lock for the caller's own auto-exclusivity.
+// Shared by StartCommandStage and runDeployStage, which differ only in what they
+// do when gotLock comes back false (a plain error vs. also recording a
+// DeployHistory entry) — that part is deliberately left to each caller.
+func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*FileLock, bool, error) {
+	if lock := e.lockHeldBy(actor, lockKey); lock != nil {
+		return lock, true, nil
+	}
+	return e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl, false)
+}
+
+// runClaimedHook runs tmpl for one stage instance under a cancellable context
+// registered in e.runningCancel (so CancelStage/CancelRunningStages can kill the
+// real process), then releases lock — UNLESS the run was cancelled AND lock is a
+// ManualClaim, in which case the actor's own deliberate reservation survives the
+// cancellation rather than being silently handed to someone else (see
+// FileLock.ManualClaim). A normal completion (success or failure) always
+// releases regardless, matching the long-established behavior for both command
+// and deploy stages. Shared by StartCommandStage and runDeployStage.
+func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
+	runKey := instanceKey(pipelineName, stageName, key)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	e.registerRunningCancel(runKey, runCancel)
+	result := hook.Run(runCtx, hook.Template{
+		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
+	}, params)
+	e.unregisterRunningCancel(runKey)
+	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
+	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
+	// what calling a context's own CancelFunc does), which would make every
+	// naturally-failing run misreported as "cancelled" regardless of whether
+	// CancelStage ever actually ran.
+	wasCancelled := runCtx.Err() != nil
+	runCancel()
+
+	if !(wasCancelled && lock.ManualClaim) {
+		e.ReleaseLock(lock.ID, actor, true)
+	}
+	return result, wasCancelled
 }
 
 // stageLockKey names the resource lock a `stage claim` reserves — distinct from
@@ -780,7 +870,7 @@ func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor 
 		return existing, nil
 	}
 
-	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl)
+	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl, true)
 	if err != nil {
 		return nil, err
 	}

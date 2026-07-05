@@ -469,15 +469,21 @@ still finishing prep work. Same RBAC as a normal deploy (`DeployPolicy.RequiredR
 — claiming is authorization-equivalent to deploying, not a lesser-privileged peek.
 When you do run the real `stage start ... deploy`, it recognizes your own held claim
 and reuses it rather than rejecting itself as a conflicting concurrent deploy; the
-lock releases once that real deploy finishes, same as an unclaimed one would. If you
-never get around to the real deploy, it just expires at `--ttl` (default: the
-stage's own configured `timeout`) — nothing to explicitly release, though `breeze
-lock release <id> --as WHO` works too if you want to free it early. Calling `deploy
-claim` again while your own earlier claim is still active just re-reports it (not an
-error — a repeat claim isn't a conflict against yourself). A genuine conflict names
-the actual current holder and its expiry (`"deploy/engix99" is already locked by
-"alice" (since ..., expires ...) — check breeze inventory, wait for it via stage
-wait, or ask alice directly`), not just "someone else has it."
+lock releases once that real deploy finishes (success or failure), same as an
+unclaimed one would. If instead that deploy gets cancelled (`breeze stage cancel`,
+or the automatic recovery on daemon restart/stop) rather than finishing normally,
+your claim survives — cancelling the run doesn't hand your reserved environment
+to someone else just because this particular attempt got interrupted; you keep
+blocking other actors until you retry (and let it resolve normally), release it
+yourself, or its `--ttl` expires. If you never get around to the real deploy at
+all, it just expires at `--ttl` (default: the stage's own configured `timeout`) —
+nothing to explicitly release, though `breeze lock release <id> --as WHO` works
+too if you want to free it early. Calling `deploy claim` again while your own
+earlier claim is still active just re-reports it (not an error — a repeat claim
+isn't a conflict against yourself). A genuine conflict names the actual current
+holder and its expiry (`"deploy/engix99" is already locked by "alice" (since ...,
+expires ...) — check breeze inventory, wait for it via stage wait, or ask alice
+directly`), not just "someone else has it."
 
 ### Claiming a command stage instance ahead of time
 
@@ -498,6 +504,27 @@ around to the real run, the claim just expires at `--ttl` (default: the stage's
 own configured `timeout`). Approval stages aren't claimable (multiple distinct
 approvers is the point, not exclusivity); deploy stages keep using `deploy claim`
 instead (see above) — `stage claim` rejects both outright.
+
+**This mutex isn't opt-in.** Every command-stage run — whether or not anyone ever
+calls `stage claim` first — automatically holds this exact same lock for its full
+duration, exactly like a deploy always has: `breeze inventory`/`operator` shows a
+`Holder` for any actively-running claimable stage, and a different actor's
+`stage start` on the identical instance is rejected while it's running. A `stage
+claim` made ahead of time is just an early acquire of that same lock — your own
+subsequent `stage start` reuses it rather than acquiring a second one.
+
+**Cancelling a run's effect on the lock depends on whether it was ever manually
+claimed.** If the run never had a `stage claim` (or `deploy claim`) behind it —
+the common case — `breeze stage cancel` (or the automatic recovery on daemon
+restart/stop) releases its lock immediately, so a retry is never blocked waiting
+on the lock's own TTL to expire. But if the lock IS a manual claim you made
+yourself, cancelling the run that reused it does **not** release your claim —
+your reservation survives (still blocking other actors, still visible in
+`inventory`) so a stranger can't slip into the slot you deliberately reserved
+just because this particular attempt got interrupted. You keep it until you
+explicitly `breeze lock release` it, its own `--ttl` expires, or you retry and
+let it resolve normally (success or failure both release it then, same as an
+unclaimed run always has).
 
 ### Granting temporary deploy access
 

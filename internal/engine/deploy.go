@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -105,7 +104,7 @@ func (e *Engine) ClaimDeployLock(pipelineName, stageName, environment, actor str
 		return existing, target, nil
 	}
 
-	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl)
+	lock, gotLock, err := e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl, true)
 	if err != nil {
 		return nil, "", err
 	}
@@ -203,14 +202,9 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	e.mu.Unlock()
 	lockKey := deployLockKey(target, environment)
-	lock := e.lockHeldBy(actor, lockKey)
-	gotLock := lock != nil
-	if !gotLock {
-		var lockErr error
-		lock, gotLock, lockErr = e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, stage.Timeout)
-		if lockErr != nil {
-			return nil, lockErr
-		}
+	lock, gotLock, err := e.acquireOrReuseLock(actor, lockKey, stage.Timeout)
+	if err != nil {
+		return nil, err
 	}
 	if !gotLock {
 		lockErrMsg := lockConflictErr(target, environment, e.lockOnKey(lockKey)).Error()
@@ -277,23 +271,9 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		return nil, gateErr
 	}
 
-	runKey := instanceKey(pipelineName, stageName, key)
-	runCtx, runCancel := context.WithCancel(context.Background())
-	e.registerRunningCancel(runKey, runCancel)
-	result := hook.Run(runCtx, hook.Template{
-		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
-	}, params)
-	e.unregisterRunningCancel(runKey)
-	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
-	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
-	// what calling a context's own CancelFunc does), which would make every
-	// naturally-failing deploy misreported as "cancelled" regardless of whether
-	// CancelStage ever actually ran.
-	wasCancelled := runCtx.Err() != nil
-	runCancel()
-
-	// Release unconditionally — a failed deploy must not wedge the environment.
-	e.ReleaseLock(lock.ID, actor, true)
+	// runClaimedHook releases the lock afterward — unless the run was cancelled
+	// and it's a ManualClaim (see FileLock.ManualClaim's doc comment).
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()

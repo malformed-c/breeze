@@ -1,0 +1,54 @@
+# Every command-stage run automatically holds this exact stage instance's
+# exclusivity lock for its full duration -- claimed ahead of time or not --
+# mirroring how a deploy stage has always behaved. This means:
+#  1. `breeze inventory` shows a Holder for ANY actively-running claimable stage,
+#     not just ones someone bothered to `stage claim` first.
+#  2. A DIFFERENT actor's own start attempt on the identical instance is rejected
+#     while it's running.
+#  3. Cancelling (`stage cancel`, or CancelRunningStages on daemon restart/stop)
+#     releases that lock immediately -- a retry isn't blocked by a stale lock
+#     left over from a dead run, waiting on its TTL to expire.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# Start a slow build in the background -- no `stage claim` was ever made.
+exec breeze stage start release build abc123 --as ci &build&
+exec sleep 0.3
+exec breeze stage status release build abc123 --json
+stdout '"status":\s*"running"'
+
+# The lock shows up automatically, without anyone claiming it first.
+exec breeze inventory --json
+stdout '"key":\s*"stage/release/build/abc123"'
+stdout '"holder":\s*"ci"'
+
+# A different actor's own start on the SAME instance is rejected while it runs.
+! exec breeze stage start release build abc123 --as bob
+stderr 'already in progress|already claimed'
+
+exec breeze stage cancel release build abc123 --as ci --reason stuck-cancelling
+stdout 'build: failed \(cancelled\)'
+wait build
+
+# The lock is gone immediately -- not left dangling until its TTL expires.
+exec breeze inventory
+stdout '\(no resources held\)'
+
+# A fresh start on the SAME commit right after cancellation succeeds -- not
+# blocked by a stale lock the dead run left behind.
+exec breeze stage start release build newcommit --as bob
+stdout 'build: succeeded'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "30s"
+    command = ["/bin/sh", "-c", "case \"$0\" in abc123) sleep 300 ;; *) exit 0 ;; esac", "{commit}"]
+  }
+}

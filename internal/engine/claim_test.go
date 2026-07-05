@@ -3,6 +3,7 @@ package engine
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestClaimDeployLockThenDeployReusesIt covers the "reserve ahead of time" flow: an
@@ -319,5 +320,263 @@ func TestClaimStageConflictErrorNamesTheHolder(t *testing.T) {
 		t.Fatalf("expected bob's stage start to be rejected while alice's claim is held")
 	} else if !strings.Contains(err.Error(), `"alice"`) {
 		t.Fatalf("expected the stage-start conflict error to name the current holder (alice), got: %v", err)
+	}
+}
+
+// TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim confirms a run that
+// was never pre-claimed still automatically holds this exact stage instance's
+// lock for its full duration — parity with how a deploy has always behaved,
+// rather than only having any lock/visibility when someone bothered to call
+// `stage claim` first. A DIFFERENT actor's own start attempt on the identical
+// instance is rejected while it's running, and the lock is gone once it finishes.
+func TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+	p.Stages[0].Timeout = 5 * time.Minute
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"ci", "mallory"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	done := make(chan *StageInstance, 1)
+	go func() {
+		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+		if err != nil {
+			t.Errorf("StartCommandStage: %v", err)
+			return
+		}
+		done <- inst
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		held := false
+		for _, r := range e.ListResourceLocks() {
+			if r.Holder == "ci" && strings.Contains(r.Paths[0], "release/build") {
+				held = true
+			}
+		}
+		if held {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected an auto-acquired lock to appear before deadline, without any explicit claim ever made")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "mallory", ""); err == nil {
+		t.Fatalf("expected a different actor's start to be rejected while ci's auto-acquired lock is held")
+	}
+
+	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cleanup"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	<-done
+
+	for _, r := range e.ListResourceLocks() {
+		if strings.Contains(r.Paths[0], "release/build") {
+			t.Fatalf("expected the auto-acquired lock to be released once the run ended, still held: %+v", r)
+		}
+	}
+}
+
+// TestCancelRunningStagesReleasesStageLock is CancelRunningStages' counterpart to
+// the CancelStage lock-release assertion above: an orphaned Running instance
+// (e.g. left behind by a daemon restart) whose auto-acquired lock is still held
+// must have that lock released too, not just the instance itself marked Failed —
+// otherwise a retry after the daemon comes back up would be wrongly rejected as a
+// lock conflict against a run that no longer exists.
+func TestCancelRunningStagesReleasesStageLock(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	key := StageKey{Commit: "abc123"}
+	stuck := &StageInstance{Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci", StartedAt: time.Now()}
+	e.instances[instanceKey("release", "build", key)] = stuck
+
+	lockKey := stageLockKey("release", "build", key)
+	lock, ok, err := e.TryAcquireResourceLock("ci", []string{lockKey}, LockExclusive, time.Hour, false)
+	if err != nil || !ok {
+		t.Fatalf("simulating the orphaned run's auto-acquired lock: ok=%v err=%v", ok, err)
+	}
+
+	if n := e.CancelRunningStages("daemon shut down while this stage was running"); n != 1 {
+		t.Fatalf("expected exactly 1 stage cancelled, got %d", n)
+	}
+
+	for _, r := range e.ListResourceLocks() {
+		if r.ID == lock.ID {
+			t.Fatalf("expected the orphaned run's lock to be released by CancelRunningStages, still held: %+v", r)
+		}
+	}
+
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("expected a fresh start after CancelRunningStages to succeed (no stale lock blocking it): %v", err)
+	}
+}
+
+// TestCancelStagePreservesManualClaim confirms cancelling a RUN doesn't destroy
+// the actor's own deliberate ahead-of-time reservation: ci explicitly claims
+// build/abc123, starts (and thus reuses/holds) that exact claim for the run, then
+// cancels it — the claim must still be held by ci afterward (unreleased), so a
+// stranger can't slip in and grab the slot before ci gets to retry themselves.
+// Contrast with TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim, where
+// NO claim was ever made and cancellation DOES release the run's ephemeral lock.
+func TestCancelStagePreservesManualClaim(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+	p.Stages[0].Timeout = 5 * time.Minute
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"ci", "mallory"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+	}
+
+	claim, err := e.ClaimStage("release", "build", "abc123", "", "ci", time.Hour)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	done := make(chan *StageInstance, 1)
+	go func() {
+		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+		if err != nil {
+			t.Errorf("StartCommandStage: %v", err)
+			return
+		}
+		done <- inst
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		insts, err := e.PipelineStatus("release", "abc123")
+		if err == nil {
+			for _, i := range insts {
+				if i.Stage == "build" && i.Status == StageRunning {
+					goto running
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stage never reached Running before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+running:
+
+	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	<-done
+
+	// The claim must still be held by ci — cancelling the run must not release it.
+	found := false
+	for _, r := range e.ListResourceLocks() {
+		if r.ID == claim.ID && r.Holder == "ci" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected ci's manual claim to survive cancellation of the run that reused it")
+	}
+
+	// A DIFFERENT actor still can't start it — the claim is still blocking them.
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "mallory", ""); err == nil {
+		t.Fatalf("expected mallory's start to still be rejected — ci's claim is still held")
+	}
+
+	// ci themselves can still retry, reusing their own still-held claim. Swap the
+	// registered command to something fast first — avoids another 300s sleep for
+	// this retry (direct field mutation is fine here: no concurrent access is
+	// happening at this exact point in the test).
+	e.pipelines["release"].Stages[0].Command = CommandTemplate{Path: "/bin/true"}
+	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+		t.Fatalf("expected ci's own retry to succeed, reusing their still-held claim: %v", err)
+	}
+}
+
+// TestCancelStagePreservesManualDeployClaim is TestCancelStagePreservesManualClaim's
+// deploy-side counterpart: a `deploy claim` reused by the real deploy must survive
+// `stage cancel` of that deploy — the actor's own reservation isn't destroyed just
+// because this particular attempt got interrupted.
+func TestCancelStagePreservesManualDeployClaim(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[2].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+	p.Stages[2].Timeout = 5 * time.Minute
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"alice", "bob", "mallory"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+		if name != "mallory" {
+			if err := e.AssignRole(name, "reviewer"); err != nil {
+				t.Fatalf("assign: %v", err)
+			}
+		}
+	}
+	approvedCommit(t, e, "abc123")
+
+	claim, _, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", time.Hour)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	done := make(chan *StageInstance, 1)
+	go func() {
+		inst, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "ci", "")
+		if err != nil {
+			t.Errorf("StartDeployStage: %v", err)
+			return
+		}
+		done <- inst
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		insts, err := e.PipelineStatus("release", "abc123")
+		if err == nil {
+			for _, i := range insts {
+				if i.Stage == "deploy" && i.Status == StageRunning {
+					goto running
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stage never reached Running before deadline")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+running:
+
+	if _, err := e.CancelStage("release", "deploy", "abc123", "staging", "ci", "test cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	<-done
+
+	found := false
+	for _, r := range e.ListResourceLocks() {
+		if r.ID == claim.ID && r.Holder == "ci" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected ci's manual deploy claim to survive cancellation of the deploy that reused it")
+	}
+
+	if _, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "mallory", ""); err == nil {
+		t.Fatalf("expected mallory's deploy to still be rejected — ci's claim is still held")
 	}
 }

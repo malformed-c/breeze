@@ -69,6 +69,14 @@ type FileLock struct {
 	TTL        time.Duration
 	ExpiresAt  time.Time
 	Attached   bool
+	// ManualClaim is true only for a resource lock created by an explicit
+	// ClaimStage/ClaimDeployLock call — an actor's deliberate ahead-of-time
+	// reservation — as opposed to a stage run's own ephemeral auto-acquired lock
+	// (see StartCommandStage/runDeployStage). CancelStage/CancelRunningStages
+	// force-release the latter (its purpose ends when the run does) but leave a
+	// ManualClaim alone: cancelling a run the actor was about to retry shouldn't
+	// silently hand their reserved slot to someone else.
+	ManualClaim bool
 }
 
 // --- Pipelines / stages ---

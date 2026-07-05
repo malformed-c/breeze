@@ -55,18 +55,21 @@ func locksConflict(paths []string, mode LockMode, existing *FileLock) bool {
 // (breeze lock acquire/exec). ok=false means conflict (caller may retry after waiting
 // on WaitChannelsForPaths). No RBAC check — locks carry no policy by design.
 func (e *Engine) TryAcquireLock(holder string, rawPaths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, error) {
-	return e.tryAcquire(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached)
+	return e.tryAcquire(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached, false)
 }
 
 // TryAcquireResourceLock is the internal-use counterpart for non-filesystem
 // exclusivity (e.g. a deploy stage's "deploy/"+target+"/"+environment key) — shown
 // separately from file locks via `breeze inventory`. Keys are opaque strings, NOT
 // filesystem paths, so they are sorted/deduped but never passed through filepath.Abs
-// (which would incorrectly mangle them relative to the daemon's cwd).
-func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockMode, ttl time.Duration) (*FileLock, bool, error) {
+// (which would incorrectly mangle them relative to the daemon's cwd). manualClaim
+// should be true only when this call originates from an explicit ClaimStage/
+// ClaimDeployLock request — see FileLock.ManualClaim — and false for a stage run's
+// own ephemeral auto-acquire (or a user's plain `lock acquire --resource`).
+func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockMode, ttl time.Duration, manualClaim bool) (*FileLock, bool, error) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
-	return e.tryAcquire(LockKindResource, holder, sorted, mode, ttl, false)
+	return e.tryAcquire(LockKindResource, holder, sorted, mode, ttl, false, manualClaim)
 }
 
 // lockHeldBy returns an existing resource lock on key already held by holder, if
@@ -106,7 +109,7 @@ func (e *Engine) lockOnKeyLocked(key string) *FileLock {
 	return nil
 }
 
-func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, error) {
+func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached, manualClaim bool) (*FileLock, bool, error) {
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")
 	}
@@ -122,14 +125,15 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 
 	e.lockSeq++
 	lock := &FileLock{
-		ID:         "l" + strconv.Itoa(e.lockSeq),
-		Kind:       kind,
-		Paths:      paths,
-		Mode:       mode,
-		Holder:     holder,
-		AcquiredAt: e.now(),
-		TTL:        ttl,
-		Attached:   attached,
+		ID:          "l" + strconv.Itoa(e.lockSeq),
+		Kind:        kind,
+		Paths:       paths,
+		Mode:        mode,
+		Holder:      holder,
+		AcquiredAt:  e.now(),
+		TTL:         ttl,
+		Attached:    attached,
+		ManualClaim: manualClaim,
 	}
 	if ttl > 0 {
 		lock.ExpiresAt = lock.AcquiredAt.Add(ttl)

@@ -226,6 +226,16 @@ running:
 		t.Fatalf("cancel: %v", err)
 	}
 
+	// CancelStage must release the run's auto-acquired stage lock immediately,
+	// not leave it to expire on its own TTL — otherwise a retry attempt right
+	// after cancelling would be wrongly rejected as a lock conflict against a
+	// run that's already dead.
+	for _, r := range e.ListResourceLocks() {
+		if strings.Contains(r.Paths[0], "release/build") {
+			t.Fatalf("expected the cancelled run's stage lock to be released immediately, still held: %+v", r)
+		}
+	}
+
 	select {
 	case inst := <-done:
 		if elapsed := time.Since(start); elapsed > 3*time.Second {

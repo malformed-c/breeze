@@ -799,7 +799,7 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 	waitChannels := func() (<-chan struct{}, error) { return d.eng.WaitChannelsForPaths(p.Paths) }
 	if len(p.Resources) > 0 {
 		tryAcquire = func() (*engine.FileLock, bool, error) {
-			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl)
+			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl, false)
 		}
 		waitChannels = func() (<-chan struct{}, error) { return d.eng.WaitChannelsForResourceKeys(p.Resources) }
 	}
