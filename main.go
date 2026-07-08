@@ -21,6 +21,10 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+	if os.Args[1] == "--help" || os.Args[1] == "-h" {
+		usage()
+		return
+	}
 	p, err := resolvePaths()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
@@ -29,6 +33,8 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Grouped to match usage()'s section order: daemon lifecycle, identity/RBAC,
+	// locks, pipelines, stages, deploy, then operator (cross-cutting monitoring).
 	switch cmd {
 	case "daemon":
 		err = cmdDaemon(p, args)
@@ -38,8 +44,6 @@ func main() {
 		err = cmdPing(p)
 	case "status":
 		err = cmdStatus(p, args)
-	case "operator":
-		err = cmdOperator(p, args)
 	case "whoami":
 		err = cmdWhoAmI(p, args)
 	case "ps":
@@ -52,14 +56,16 @@ func main() {
 		err = cmdLock(p, args)
 	case "inventory":
 		err = cmdInventory(p, args)
+	case "apply":
+		err = cmdApply(p, args)
 	case "pipeline":
 		err = cmdPipeline(p, args)
 	case "stage":
 		err = cmdStage(p, args)
 	case "deploy":
 		err = cmdDeploy(p, args)
-	case "apply":
-		err = cmdApply(p, args)
+	case "operator":
+		err = cmdOperator(p, args)
 	default:
 		usage()
 		os.Exit(1)
@@ -73,7 +79,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: breeze <command> [args]
 
-commands:
+-- daemon lifecycle --
   daemon                                run the daemon in the foreground for THIS
                                          directory; explicit start displaces whatever's
                                          already running here (auto-start never does)
@@ -86,20 +92,10 @@ commands:
   ping                                  check daemon liveness (auto-starts it)
   status [--json]                       one-shot overview: liveness, identity/lock/
                                          resource/pipeline counts
-  operator [--json]                     human-operator view: pending approvals,
-                                         running stages, recent failures/successes, locks held
-  operator notify [--interval D]        event-driven desktop notification (notify-send)
-                                         the instant an approval/failure/success needs
-                                         attention; Tier-1, runs until interrupted;
-                                         D = reconnect delay
-  operator update-all                   restart every breeze daemon this machine's
-                                         discovery registry knows about (in-place
-                                         self-re-exec, same as "daemon restart" per
-                                         directory) — picks up whatever binary is
-                                         already on disk, never rebuilds anything
+
+-- identity & RBAC --
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
-
   identity register <name> [--mess-agent NAME]
                                          mint a token, print it once (fresh name: no
                                          auth needed; existing name: rotate with its
@@ -110,11 +106,11 @@ commands:
   identity revoke <name> --as ADMIN --token T
   identity notify on|off --as NAME      opt in/out of breeze's mess notifications
                                          (self-service, no token needed)
-
   role assign <role> <identity> --as ADMIN --token T
   role revoke <role> <identity> --as ADMIN --token T
   role list [--json]
 
+-- locks --
   lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
   lock acquire --resource <name>... [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
                                                # a mutex over a named concept, not a real file
@@ -123,15 +119,21 @@ commands:
   lock renew <lock-id> [--ttl D] --as NAME
   lock list [--all] [--json]                  # --all also includes resource locks (deploy claims)
   lock check <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
-
   inventory [--json]                    list non-file resources (e.g. deploy-env
                                          exclusivity) and their current holder
 
+-- pipelines --
+  apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
+                                         # HCL-authored pipeline config, client-side
+                                         # only; upserts via pipeline.register — the
+                                         # normal way to register/update a pipeline
   pipeline register <file.json|-> --as ADMIN --token T
+                                         # lower-level: register from a raw JSON payload
   pipeline show <name> [--json]
   pipeline list [--json]
   pipeline status <name> <commit> [--json]
 
+-- stages --
   stage start   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
   stage approve <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
   stage status  <pipeline> <stage> <commit> [--env NAME] [--json]
@@ -150,6 +152,7 @@ commands:
                                          # on the same instance is rejected while claimed;
                                          # same RBAC as triggering that stage would need
 
+-- deploy --
   deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
   deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
                                          # bypasses ordering/staleness gates; same RBAC as a normal deploy
@@ -162,9 +165,18 @@ commands:
   deploy grants   [<pipeline>] [--env NAME] [--json]
                                          # list currently-known grants (Tier-1 read)
 
-  apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
-                                         # HCL-authored pipeline config, client-side
-                                         # only; upserts via pipeline.register`)
+-- operator (cross-pipeline monitoring) --
+  operator [--json]                     human-operator view: pending approvals,
+                                         running stages, recent failures/successes, locks held
+  operator notify [--interval D]        event-driven desktop notification (notify-send)
+                                         the instant an approval/failure/success needs
+                                         attention; Tier-1, runs until interrupted;
+                                         D = reconnect delay
+  operator update-all                   restart every breeze daemon this machine's
+                                         discovery registry knows about (in-place
+                                         self-re-exec, same as "daemon restart" per
+                                         directory) — picks up whatever binary is
+                                         already on disk, never rebuilds anything`)
 }
 
 // --- flag helpers (small, ad hoc — breeze payloads are structured, not free text,

@@ -7,6 +7,13 @@
 # subcommand, not just the ones originally reported.
 env BREEZE_DIR=$WORK/state
 
+# Bare top-level --help/-h exits cleanly (0), same as any subcommand's. usage()
+# prints to stderr (it doubles as the no-args/unknown-command error path).
+exec breeze --help
+stderr 'usage: breeze <command>'
+exec breeze -h
+stderr 'usage: breeze <command>'
+
 # --help exits cleanly (0) and just prints usage — no mutation.
 exec breeze identity register --help
 stdout 'usage: breeze identity register'

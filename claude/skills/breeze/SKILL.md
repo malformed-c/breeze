@@ -40,6 +40,19 @@ meant, or set `$BREEZE_DIR` explicitly.
 
 ## 2. Identity — check before doing anything authorization-bearing
 
+**Two hard rules, not just caveats:**
+1. **Never use a token that wasn't explicitly handed to you** for the task at
+   hand — not one you found lying around (`admin.token` in a repo, a prior
+   session's leftover file), not one you can technically read. "I found it" is
+   not "I was given it."
+2. **A subagent must never use its parent's bound breeze identity/token without
+   the parent deliberately delegating it** for that specific subagent's task. The
+   auto-bind-on-register convenience (below) inherits automatically across a
+   parent/subagent boundary purely by accident of shared session id — that's a
+   leak, not permission. If you're spawning a subagent that needs to act as some
+   identity, hand it `--as`/`--token` explicitly in its own prompt; don't let it
+   fall through to your own bound credentials.
+
 ```sh
 breeze whoami --as <name>     # resolves/prints an identity; empty if unregistered
 ```
