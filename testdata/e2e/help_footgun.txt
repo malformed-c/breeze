@@ -1,0 +1,28 @@
+# Regression test for two real incidents: an unrecognized `--flag`-shaped token
+# (most commonly a bare --help/-h) used to silently land in a required
+# positional slot instead of being rejected -- `breeze identity register --help`
+# registered a real identity literally named "--help" (leaking its token to
+# stdout), and `breeze lock acquire --help` silently acquired a real exclusive
+# lock on the literal path "--help". Neither must ever happen again, for any
+# subcommand, not just the ones originally reported.
+env BREEZE_DIR=$WORK/state
+
+# --help exits cleanly (0) and just prints usage — no mutation.
+exec breeze identity register --help
+stdout 'usage: breeze identity register'
+exec breeze ps --json
+stdout '\{\}'
+
+exec breeze lock acquire --help
+stdout 'usage: breeze lock acquire'
+exec breeze lock list --json
+stdout '"locks":\s*\[\]'
+
+# A genuine typo'd flag must error clearly too, not silently register/acquire
+# using the flag text as the intended value.
+! exec breeze identity register alice --tokne foo
+stderr 'unrecognized flag "--tokne"'
+exec breeze ps --json
+stdout '\{\}'
+
+exec breeze stop

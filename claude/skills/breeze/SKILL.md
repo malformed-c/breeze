@@ -394,3 +394,14 @@ never-race/never-go-backwards protection.
   a live daemon it had to separately find and kill). Auto-start (breeze's normal
   transparent first-use behavior) never displaces or restarts anything — only a
   deliberate `breeze daemon` invocation (bare, `-d`, or `restart`) does.
+- `--help`/`-h` (and any unrecognized `--flag`-shaped token) is safe on EVERY
+  subcommand, not just `daemon` — it prints usage and exits cleanly, never falls
+  through into a required positional slot. This closes a real incident:
+  `breeze identity register --help` used to silently register a real identity
+  literally named `--help` and print its (now-junk, leaked-looking) token, and
+  `breeze lock acquire --help` used to silently acquire a real lock on the literal
+  path `--help` — both with zero error or usage text.
+- Re-acquiring a lock/claim you already hold (same holder, path/key, and mode) is
+  idempotent — see "File locks" above — so a session that lost track of its own
+  hold doesn't get an unhelpful conflict indistinguishable from "someone else has
+  it."

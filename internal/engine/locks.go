@@ -58,6 +58,30 @@ func (e *Engine) TryAcquireLock(holder string, rawPaths []string, mode LockMode,
 	return e.tryAcquire(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached, false)
 }
 
+// FindConflictingFileLock/FindConflictingResourceLock look up the SAME conflict
+// tryAcquire's own internal check would have found (locksConflict, using the
+// identical canonicalization each acquire path uses) — so a caller that just got
+// ok=false can report WHO holds the conflicting lock instead of the bare generic
+// ErrLockConflict ("someone else has it" vs. no information at all).
+func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) *FileLock {
+	return e.findConflicting(canonicalPaths(rawPaths), mode)
+}
+func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) *FileLock {
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	return e.findConflicting(sorted, mode)
+}
+func (e *Engine) findConflicting(paths []string, mode LockMode) *FileLock {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, existing := range e.locks {
+		if locksConflict(paths, mode, existing) {
+			return existing
+		}
+	}
+	return nil
+}
+
 // TryAcquireResourceLock is the internal-use counterpart for non-filesystem
 // exclusivity (e.g. a deploy stage's "deploy/"+target+"/"+environment key) — shown
 // separately from file locks via `breeze inventory`. Keys are opaque strings, NOT
@@ -73,11 +97,10 @@ func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockM
 }
 
 // lockHeldBy returns an existing resource lock on key already held by holder, if
-// any. Locks are not reentrant — tryAcquire's conflict check doesn't special-case
-// the same holder re-acquiring a key it already holds, so a deploy stage that wants
-// to reuse a lock the same actor pre-claimed (see ClaimDeployLock) must check for
-// this explicitly rather than calling TryAcquireResourceLock again, which would
-// otherwise see its own prior claim as a conflict and reject the deploy.
+// any — used where a caller needs to check a SINGLE key in isolation rather than
+// an exact whole-path-set match (tryAcquire's own reentrancy check requires the
+// full requested path/key set to match exactly; a deploy/stage claim's lookup
+// here only needs to know "do I hold something on this one key").
 func (e *Engine) lockHeldBy(holder, key string) *FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -116,6 +139,24 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Reentrant for the SAME holder re-acquiring the exact same path/key set in
+	// the exact same mode (detached only — an attached `lock exec` lock is tied
+	// to one specific connection's lifetime and must never be silently adopted by
+	// an unrelated later request). Without this, a session-resumed agent
+	// re-running `lock acquire` on a path it already holds got a plain conflict
+	// error indistinguishable from "someone else has it." Re-reports the existing
+	// lock rather than erroring — mirrors ClaimStage/ClaimDeployLock's own
+	// established idempotency (no TTL renewal here either; use `lock renew`
+	// explicitly for that).
+	if !attached {
+		for _, existing := range e.locks {
+			if existing.Kind == kind && existing.Holder == holder && existing.Mode == mode &&
+				!existing.Attached && slices.Equal(existing.Paths, paths) {
+				return existing, true, nil
+			}
+		}
+	}
 
 	for _, existing := range e.locks {
 		if locksConflict(paths, mode, existing) {

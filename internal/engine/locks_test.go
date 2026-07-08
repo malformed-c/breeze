@@ -1,11 +1,17 @@
 package engine
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
+// TestConcurrentLockRaces asserts the invariant that actually matters for mutual
+// exclusion: N DISTINCT actors racing for the same exclusive path, exactly one
+// wins. Each goroutine uses its own holder name — see
+// TestConcurrentReacquireBySameHolderIsIdempotent for the deliberately different
+// invariant when multiple concurrent requests share ONE holder name.
 func TestConcurrentLockRaces(t *testing.T) {
 	e := New()
 	const n = 50
@@ -15,7 +21,7 @@ func TestConcurrentLockRaces(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, ok, err := e.TryAcquireLock("holder", []string{"/repo/file"}, LockExclusive, time.Hour, false)
+			_, ok, err := e.TryAcquireLock(fmt.Sprintf("holder-%d", i), []string{"/repo/file"}, LockExclusive, time.Hour, false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -35,6 +41,49 @@ func TestConcurrentLockRaces(t *testing.T) {
 	}
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected exactly 1 lock in engine state, got %d", len(e.ListLocks()))
+	}
+}
+
+// TestConcurrentReacquireBySameHolderIsIdempotent is TestConcurrentLockRaces'
+// counterpart for ONE holder issuing many concurrent acquire requests for the
+// exact same path/mode — e.g. several shell invocations under the same --as
+// NAME racing, or a session-resumed agent that lost track of its own held lock.
+// Reentrancy (see tryAcquire) means every one of them succeeds and reports the
+// SAME lock, rather than only the first winning and the rest getting a conflict
+// error indistinguishable from "someone else has it."
+func TestConcurrentReacquireBySameHolderIsIdempotent(t *testing.T) {
+	e := New()
+	const n = 50
+	var wg sync.WaitGroup
+	results := make([]bool, n)
+	ids := make([]string, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			lock, ok, err := e.TryAcquireLock("holder", []string{"/repo/file"}, LockExclusive, time.Hour, false)
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			results[i] = ok
+			if lock != nil {
+				ids[i] = lock.ID
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, ok := range results {
+		if !ok {
+			t.Fatalf("expected every same-holder re-acquire to succeed (idempotent), goroutine %d got a conflict", i)
+		}
+		if ids[i] != ids[0] {
+			t.Fatalf("expected every re-acquire to report the SAME lock ID, goroutine %d got %q vs goroutine 0's %q", i, ids[i], ids[0])
+		}
+	}
+	if len(e.ListLocks()) != 1 {
+		t.Fatalf("expected exactly 1 lock in engine state (no duplicates), got %d", len(e.ListLocks()))
 	}
 }
 
@@ -71,6 +120,72 @@ func TestReleaseRequiresHolderUnlessForced(t *testing.T) {
 	}
 	if len(e.ListLocks()) != 0 {
 		t.Fatalf("expected lock to be gone after release")
+	}
+}
+
+// TestReacquireBySameHolderIsIdempotent is a regression test for a real gap: a
+// session-resumed agent re-running `breeze lock acquire <path>` on a path it
+// already holds used to get a plain conflict error indistinguishable from
+// "someone else has it." A repeat acquire with the same holder/paths/mode now
+// re-reports the existing lock instead.
+func TestReacquireBySameHolderIsIdempotent(t *testing.T) {
+	e := New()
+	first, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false)
+	if err != nil || !ok {
+		t.Fatalf("first acquire failed: ok=%v err=%v", ok, err)
+	}
+	second, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false)
+	if err != nil || !ok {
+		t.Fatalf("expected re-acquire by the same holder to succeed, not conflict: ok=%v err=%v", ok, err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected the same lock to be re-reported, got a new one: first=%s second=%s", first.ID, second.ID)
+	}
+	if len(e.ListLocks()) != 1 {
+		t.Fatalf("expected exactly 1 lock (no duplicate), got %d", len(e.ListLocks()))
+	}
+
+	// A DIFFERENT holder is still a genuine conflict.
+	if _, ok, err := e.TryAcquireLock("bob", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || ok {
+		t.Fatalf("expected a different holder to still conflict: ok=%v err=%v", ok, err)
+	}
+
+	// A DIFFERENT mode from the same holder (shared vs exclusive) is not treated
+	// as the same request — it must NOT be silently idempotent, only an exact
+	// mode match reuses the existing lock.
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockShared, time.Hour, false); err != nil || ok {
+		t.Fatalf("expected a different mode from the same holder to still conflict, not silently reuse the exclusive lock: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestReacquireByAttachedLockIsNotIdempotent confirms reentrancy is scoped to
+// detached acquires only — an attached (`lock exec`) lock is tied to one
+// specific connection's lifetime and must never be silently adopted by an
+// unrelated later request, detached or attached.
+func TestReacquireByAttachedLockIsNotIdempotent(t *testing.T) {
+	e := New()
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, true); err != nil || !ok {
+		t.Fatalf("attached acquire failed: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || ok {
+		t.Fatalf("expected a detached request to conflict with an existing attached lock, not adopt it: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestFindConflictingFileLockNamesTheHolder is a regression test for an
+// unhelpful bare "lock conflict" error with no information about who holds it
+// or how to proceed.
+func TestFindConflictingFileLockNamesTheHolder(t *testing.T) {
+	e := New()
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
+		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
+	}
+	held := e.FindConflictingFileLock([]string{"/repo/file"}, LockExclusive)
+	if held == nil || held.Holder != "alice" {
+		t.Fatalf("expected FindConflictingFileLock to find alice's lock, got %+v", held)
+	}
+	if held := e.FindConflictingFileLock([]string{"/repo/other-file"}, LockExclusive); held != nil {
+		t.Fatalf("expected no conflict for an unrelated path, got %+v", held)
 	}
 }
 

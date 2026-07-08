@@ -1,0 +1,22 @@
+# A repeat `lock acquire` by the SAME holder on a path/mode it already holds is
+# idempotent (regression: used to error with a plain conflict indistinguishable
+# from "someone else has it" -- e.g. a session-resumed agent that lost track of
+# its own held lock). A different holder still genuinely conflicts, and that
+# conflict error now names who holds it.
+env BREEZE_DIR=$WORK/state
+
+exec breeze lock acquire src/main.go --as alice --ttl 30m --json
+stdout '"id":\s*"l1"'
+
+# Re-acquire by the SAME holder: succeeds, same lock ID, no duplicate.
+exec breeze lock acquire src/main.go --as alice --ttl 30m --json
+stdout '"id":\s*"l1"'
+exec breeze lock list --json
+stdout '"id":\s*"l1"'
+! stdout '"id":\s*"l2"'
+
+# A DIFFERENT holder still conflicts -- and the error now names alice.
+! exec breeze lock acquire src/main.go --as bob --ttl 30m
+stderr 'already held by "alice"'
+
+exec breeze stop

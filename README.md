@@ -106,6 +106,15 @@ breeze lock check /path/to/file [--as alice] [--json]   # read-only: is this loc
 Locks carry no RBAC — `--as` here is plain attribution (who holds it, so only the
 holder or `--force` can release), not a permission check.
 
+**Re-acquiring a lock you already hold is idempotent** (detached mode only) —
+`breeze lock acquire <path> --as alice` again, same path and mode, just re-reports
+your existing lock (same ID, no TTL renewal — use `lock renew` for that) rather
+than erroring with a conflict indistinguishable from "someone else has it." A
+DIFFERENT holder, or a different mode from you (e.g. shared vs. exclusive on the
+same path), is still a genuine conflict, and that error now names the current
+holder and its expiry. An *attached* lock (`lock exec`) is never treated as
+reentrant, since it's tied to one specific connection's lifetime.
+
 `lock check` never acquires or releases anything — it just reports whether a path is
 currently held by an identity other than `--as` (own locks are never a conflict). No
 lifecycle to manage makes it a natural fit for gating an external action rather than
