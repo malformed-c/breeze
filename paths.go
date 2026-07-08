@@ -67,6 +67,22 @@ func pathsForDir(dir string) paths {
 	}
 }
 
+// gitOutput runs `git <args...>` and returns its trimmed stdout, or ok=false on
+// any error or empty output — the shared shellout body of detectGitCommonDir,
+// detectGitToplevel, and expandCommit, which differ only in which git subcommand
+// they run and (for the first two) an extra filepath.Abs step afterward.
+func gitOutput(args ...string) (string, bool) {
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return "", false
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}
+
 // detectGitCommonDir returns the absolute path to the current repo's SHARED .git
 // directory. "--git-common-dir" (not "--git-dir") is what makes this work correctly
 // across `git worktree` checkouts of the same repo: a linked worktree's --git-dir
@@ -78,12 +94,8 @@ func pathsForDir(dir string) paths {
 // path from a linked worktree; filepath.Abs handles both correctly since it resolves
 // relative to the same cwd the git subprocess just used.
 func detectGitCommonDir() (string, bool) {
-	out, err := exec.Command("git", "rev-parse", "--git-common-dir").Output()
-	if err != nil {
-		return "", false
-	}
-	dir := strings.TrimSpace(string(out))
-	if dir == "" {
+	dir, ok := gitOutput("rev-parse", "--git-common-dir")
+	if !ok {
 		return "", false
 	}
 	abs, err := filepath.Abs(dir)
@@ -101,12 +113,8 @@ func (p paths) ensureDir() error {
 // directory (NOT the shared --git-common-dir — every linked worktree of a repo has
 // its own distinct toplevel directory on disk, even though they share one .git).
 func detectGitToplevel() (string, bool) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
-	if err != nil {
-		return "", false
-	}
-	dir := strings.TrimSpace(string(out))
-	if dir == "" {
+	dir, ok := gitOutput("rev-parse", "--show-toplevel")
+	if !ok {
 		return "", false
 	}
 	abs, err := filepath.Abs(dir)
@@ -135,20 +143,11 @@ func looksLikeAbbreviatedSHA(s string) bool {
 	return true
 }
 
-// expandCommit resolves ref to its full commit SHA via `git rev-parse`, mirroring
-// detectGitCommonDir/detectGitToplevel's shellout style. "^{commit}" rejects
-// non-commit objects (e.g. an abbreviated tag/tree hash) rather than silently
-// resolving to the wrong kind of thing.
+// expandCommit resolves ref to its full commit SHA via `git rev-parse`. "^{commit}"
+// rejects non-commit objects (e.g. an abbreviated tag/tree hash) rather than
+// silently resolving to the wrong kind of thing.
 func expandCommit(ref string) (string, bool) {
-	out, err := exec.Command("git", "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
-	if err != nil {
-		return "", false
-	}
-	full := strings.TrimSpace(string(out))
-	if full == "" {
-		return "", false
-	}
-	return full, true
+	return gitOutput("rev-parse", "--verify", "--quiet", ref+"^{commit}")
 }
 
 // resolveCommit normalizes a CLI-supplied <commit> argument so a short and full

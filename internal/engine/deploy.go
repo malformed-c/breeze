@@ -123,12 +123,21 @@ func lockConflictErr(target, environment string, held *FileLock) error {
 	if held == nil {
 		return fmt.Errorf("%s/%s is already locked by another deploy", target, environment)
 	}
+	return conflictErr(fmt.Sprintf("%s/%s", target, environment), "locked", held)
+}
+
+// conflictErr builds the "known holder" half of a lock/claim conflict message —
+// shared by lockConflictErr (deploy locks) and stageClaimConflictErr (stage
+// claims, stage.go), which differ only in how they describe the subject and
+// which verb they use ("locked" vs "claimed"); each keeps its own wording for
+// the held == nil case, where that distinction actually matters.
+func conflictErr(subject, verb string, held *FileLock) error {
 	expiry := "never"
 	if !held.ExpiresAt.IsZero() {
 		expiry = held.ExpiresAt.Format(time.RFC3339)
 	}
-	return fmt.Errorf("%s/%s is already locked by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
-		target, environment, held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
+	return fmt.Errorf("%s is already %s by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
+		subject, verb, held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
 }
 
 func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, isRollback bool) (*StageInstance, error) {

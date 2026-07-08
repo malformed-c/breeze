@@ -189,15 +189,7 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 // single channel that closes when ANY of them is signaled (release/expire touching
 // that path) — mirrors mess's per-key Broker.waitChan pattern applied per contested path.
 func (e *Engine) WaitChannelsForPaths(rawPaths []string) (<-chan struct{}, error) {
-	paths := canonicalPaths(rawPaths)
-	ch := make(chan struct{})
-	e.mu.Lock()
-	for _, p := range paths {
-		key := "lock:" + p
-		e.waiters[key] = append(e.waiters[key], ch)
-	}
-	e.mu.Unlock()
-	return ch, nil
+	return e.registerWaiters(canonicalPaths(rawPaths)), nil
 }
 
 // WaitChannelsForResourceKeys is WaitChannelsForPaths' counterpart for resource
@@ -206,14 +198,24 @@ func (e *Engine) WaitChannelsForPaths(rawPaths []string) (<-chan struct{}, error
 func (e *Engine) WaitChannelsForResourceKeys(keys []string) (<-chan struct{}, error) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
+	return e.registerWaiters(sorted), nil
+}
+
+// registerWaiters registers one waiter channel per already-canonicalized key and
+// returns a single channel that closes when ANY of them is signaled — the shared
+// body of WaitChannelsForPaths/WaitChannelsForResourceKeys, which differ only in
+// how they canonicalize their input before reaching this point. The (<-chan
+// struct{}, error) signature on both public wrappers is kept even though this
+// never actually errors — existing callers already expect two return values.
+func (e *Engine) registerWaiters(keys []string) <-chan struct{} {
 	ch := make(chan struct{})
 	e.mu.Lock()
-	for _, k := range sorted {
+	for _, k := range keys {
 		key := "lock:" + k
 		e.waiters[key] = append(e.waiters[key], ch)
 	}
 	e.mu.Unlock()
-	return ch, nil
+	return ch
 }
 
 // notifyPaths must be called with e.mu held; wakes and clears every waiter registered

@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+// runMessBestEffort shells out `mess <args...>` with a short timeout, swallowing
+// any error (unknown agent, mess not running, timeout) — a latency optimization,
+// not a guarantee; breeze's correctness never depends on a mess call actually
+// landing. Shared by notifyViaMess, notifyViaMessTopic, and mess_listener.go's
+// chat-command reply — every fire-and-forget `mess` shellout in breeze.
+func runMessBestEffort(messPath string, args ...string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exec.CommandContext(ctx, messPath, args...).Run()
+}
+
 // notifyViaMess is the daemon's wake-integration wiring: best-effort `mess send` for
 // each identity, fired in a goroutine per identity so a slow/hung mess invocation
 // never blocks the stage resolution that triggered it. Soft dependency — if `mess`
@@ -22,16 +33,11 @@ func notifyViaMess(identities []string, message, thread string) {
 	}
 	for _, identity := range identities {
 		go func(identity string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
 			args := []string{"send", identity, message}
 			if thread != "" {
 				args = append(args, "--thread", thread)
 			}
-			// Best-effort: errors (unknown agent, mess not running, timeout) are
-			// deliberately swallowed — this is a latency optimization, not a
-			// guarantee, and breeze has its own poll/wait fallback regardless.
-			exec.CommandContext(ctx, messPath, args...).Run()
+			runMessBestEffort(messPath, args...)
 		}(identity)
 	}
 }
@@ -45,12 +51,10 @@ func notifyViaMessTopic(topic, message, thread string) {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
 		args := []string{"pub", topic, message}
 		if thread != "" {
 			args = append(args, "--thread", thread)
 		}
-		exec.CommandContext(ctx, messPath, args...).Run()
+		runMessBestEffort(messPath, args...)
 	}()
 }

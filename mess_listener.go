@@ -157,9 +157,7 @@ func handleMessCommand(eng *engine.Engine, messPath, identity string, m messInbo
 	}
 	reply := func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		exec.CommandContext(ctx, messPath, "pub", m.Topic, msg, "--thread", m.ID, "--as", identity).Run()
+		runMessBestEffort(messPath, "pub", m.Topic, msg, "--thread", m.ID, "--as", identity)
 	}
 
 	pipelineName, stageName, commit, environment, brief, err := parseApproveCommand(m.Body)

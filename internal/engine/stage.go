@@ -805,16 +805,13 @@ func stageLockKey(pipelineName, stageName string, key StageKey) string {
 	return "stage/" + pipelineName + "/" + stageName + "/" + key.String()
 }
 
+// stageClaimConflictErr shares its "known holder" formatting with deploy.go's
+// lockConflictErr via conflictErr — see that function's doc comment.
 func stageClaimConflictErr(pipelineName, stageName string, key StageKey, held *FileLock) error {
 	if held == nil {
 		return fmt.Errorf("%s/%s (%s) is already claimed by another actor", pipelineName, stageName, key.ShortString())
 	}
-	expiry := "never"
-	if !held.ExpiresAt.IsZero() {
-		expiry = held.ExpiresAt.Format(time.RFC3339)
-	}
-	return fmt.Errorf("%s/%s (%s) is already claimed by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
-		pipelineName, stageName, key.ShortString(), held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
+	return conflictErr(fmt.Sprintf("%s/%s (%s)", pipelineName, stageName, key.ShortString()), "claimed", held)
 }
 
 // ClaimStage lets actor reserve a command stage instance's execution slot ahead of
