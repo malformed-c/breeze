@@ -227,6 +227,18 @@ Prefer backgrounding `stage wait` (via your shell `&` or Claude Code's backgroun
 Bash execution) over hand-rolled polling loops — it's a real blocking primitive, not
 a sleep loop, and resolves the instant the stage finishes.
 
+### Chat-triggered approvals
+
+A pipeline with `command_topic = "#some-topic"` set lets a mess message
+`@breeze approve <pipeline>/<stage> <commit> [--env NAME] [--brief "..."]` in
+that topic actually approve a review stage — no CLI call needed. RBAC is NOT
+bypassed: the sender is mapped back to a breeze identity (reverse of
+`--mess-agent`) and must hold the stage's `RequiredRole`, same as a CLI
+`stage approve` would need; a rejection replies in the topic explaining why. Only
+`approve` — never deploy/rollback/cancel via chat. Subscriptions are established
+once at daemon startup, so a newly added `command_topic` needs a
+`breeze daemon restart` to take effect.
+
 ### Rolling back a bad deploy
 
 ```sh

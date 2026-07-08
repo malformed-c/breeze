@@ -1,0 +1,72 @@
+# A pipeline with command_topic set lets a mess chat command approve a review
+# stage: the daemon subscribes to the topic and listens (using its own dedicated
+# mess identity, never an ambient/inherited one — see daemonMessIdentity), maps
+# the sender to a breeze identity via MessTarget, enforces the approval stage's
+# normal RBAC, and replies in the topic. Hermetic here via a fake `mess` script
+# on PATH, like notify_mess*.txt.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+chmod 0755 bin/mess
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register alice --mess-agent alice-on-mess
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+exec breeze stage start release build abc123 --as ci
+stdout 'build: succeeded'
+
+# command_topic subscriptions are established once, at daemon startup (see
+# Pipeline.CommandTopic's doc comment) -- the pipeline was registered AFTER the
+# daemon auto-started, so restart to pick it up.
+exec breeze daemon restart
+exec sleep 1
+
+exists mess-calls.log
+# the daemon subscribed using its OWN dedicated identity (a hash of its state
+# dir), never an ambient/inherited one.
+grep 'sub #release-approvals --as breeze-daemon-[0-9a-f]{8}' mess-calls.log
+
+# The fake `mess listen` emits one canned "@breeze approve ..." message from
+# alice-on-mess -- the daemon should map her to breeze identity alice (who holds
+# the reviewer role), approve, and reply in the topic. The reply uses the
+# inbound message's own Topic value verbatim (never "#"-prefixed -- that's how
+# mess actually delivers it, see normalizeMessTopic), not the "#name" form
+# CommandTopic itself is authored with.
+grep 'pub release-approvals breeze: release/review \(abc123\) approved by alice -> succeeded --thread m1 --as breeze-daemon-[0-9a-f]{8}' mess-calls.log
+
+exec breeze pipeline status release abc123 --json
+stdout '"stage":\s*"review"[\s\S]*"status":\s*"succeeded"'
+stdout '"identity":\s*"alice"'
+stdout '"brief":\s*"\(via mess from alice-on-mess\) lgtm via chat"'
+
+exec breeze stop
+
+-- bin/mess --
+#!/bin/sh
+case "$1" in
+  listen)
+    echo '{"id":"m1","from":"alice-on-mess","topic":"release-approvals","kind":"topic","body":"@breeze approve release/review abc123 --brief lgtm via chat"}'
+    sleep 300
+    ;;
+  *)
+    echo "$@" >> mess-calls.log
+    ;;
+esac
+
+-- pipeline.hcl --
+pipeline "release" {
+  command_topic = "#release-approvals"
+
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+}

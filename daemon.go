@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,8 +78,12 @@ func runDaemon(p paths, args []string) error {
 	go d.sweepLoop()
 	log.Printf("breeze daemon listening on %s (pid %d)", p.sock, os.Getpid())
 
+	messCtx, messCancel := context.WithCancel(context.Background())
+	go runMessCommandListener(messCtx, d.eng, p.dir)
+
 	go func() {
 		<-d.stop
+		messCancel()
 		d.listener.Close()
 	}()
 

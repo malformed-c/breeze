@@ -162,8 +162,22 @@ type Pipeline struct {
 	// just role holders, can follow a pipeline's activity without needing an
 	// individual role assignment.
 	NotifyTopic string
-	CreatedBy   string
-	CreatedAt   time.Time
+	// CommandTopic, if non-empty, opts this pipeline into chat-triggered approvals:
+	// the daemon subscribes to this mess topic and treats a message of the exact
+	// form "@breeze approve <pipeline>/<stage> <commit> [--env NAME] [--brief
+	// \"...\"]" as an approval request. Authorization is NOT bypassed — the
+	// message's mess sender is mapped back to a breeze identity (the reverse of
+	// MessAgent/MessTarget: whichever identity's MessTarget() equals the
+	// sender), and that identity must hold the stage's own ApprovalPolicy.
+	// RequiredRole exactly as a CLI-issued `stage approve` would require. A
+	// sender with no matching breeze identity, or one lacking the role, is
+	// rejected with a reply in the topic — never silently ignored. See
+	// mess_listener.go. Subscriptions are established at daemon startup only —
+	// changing or adding a pipeline's CommandTopic requires a daemon restart to
+	// take effect.
+	CommandTopic string
+	CreatedBy    string
+	CreatedAt    time.Time
 }
 
 // EnvironmentGrant is a time-bounded delegation of deploy authority: the identity

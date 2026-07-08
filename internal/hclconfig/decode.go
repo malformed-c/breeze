@@ -37,6 +37,7 @@ type PipelineHCL struct {
 	EnvOwners         *EnvOwnersBlock `hcl:"environment_owners,block"`
 	BriefsDir         string          `hcl:"briefs_dir,optional"`
 	NotifyTopic       string          `hcl:"notify_topic,optional"`
+	CommandTopic      string          `hcl:"command_topic,optional"`
 	Stages            []StageHCL      `hcl:"stage,block"`
 }
 
@@ -176,7 +177,7 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 		Name: ph.Name, Stages: stages, FanOutAt: fanOutAt,
 		Environments: ph.Environments, EnvironmentDeps: envDeps,
 		DebugEnvironments: ph.DebugEnvironments, EnvironmentOwners: envOwners,
-		BriefsDir: ph.BriefsDir, NotifyTopic: ph.NotifyTopic,
+		BriefsDir: ph.BriefsDir, NotifyTopic: ph.NotifyTopic, CommandTopic: ph.CommandTopic,
 	}, nil
 }
 

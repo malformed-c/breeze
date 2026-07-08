@@ -272,7 +272,8 @@ type Pipeline struct {
 	DebugEnvironments []string            `json:"debugEnvironments,omitempty"` // exempt from Gate 2 + monotonic ordering
 	EnvironmentOwners map[string]string   `json:"environmentOwners,omitempty"` // informational only, never enforced
 	BriefsDir         string              `json:"briefsDir,omitempty"`
-	NotifyTopic       string              `json:"notifyTopic,omitempty"` // publish every resolution to this mess topic
+	NotifyTopic       string              `json:"notifyTopic,omitempty"`  // publish every resolution to this mess topic
+	CommandTopic      string              `json:"commandTopic,omitempty"` // opt in to chat-triggered approvals — see mess_listener.go
 	CreatedBy         string              `json:"createdBy,omitempty"`
 	CreatedAt         time.Time           `json:"createdAt,omitzero"`
 }

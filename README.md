@@ -347,9 +347,12 @@ pipeline "release" {
     prod    = "bob"
   }
   briefs_dir = "/home/you/myrepo/docs/changelog"   # optional; see "Briefs" below
-  notify_topic = "#release-activity"               # optional; mess topic every resolution
+  notify_topic  = "#release-activity"              # optional; mess topic every resolution
                                                     # publishes to (see "Waiting instead of
                                                     # polling" above)
+  command_topic = "#release-approvals"             # optional; opts in to chat-triggered
+                                                    # approvals (see "Chat-triggered
+                                                    # approvals" below)
 
   stage "build" {
     type              = "command"
@@ -635,6 +638,46 @@ touches (build, review, deploy, ...) — carries the same `--thread` id
 staging/prod branches of one commit are still the same logical run). A reviewer's
 inbox, or a busy topic mixing many concurrent runs, reads as one thread per run
 instead of an interleaved stream of unrelated-looking messages.
+
+### Chat-triggered approvals
+
+```hcl
+pipeline "release" {
+  command_topic = "#release-approvals"   # opt-in; empty/unset = feature off (default)
+  ...
+}
+```
+
+A pipeline with `command_topic` set lets a message in that mess topic actually
+**approve** a review stage — no CLI needed:
+
+```
+@breeze approve release/review abc123 [--env staging] [--brief "looks good"]
+```
+
+The prefix is exact and deliberate (`@breeze approve `, matching mess's own
+@-mention syntax) — ordinary chat in the same topic is never mistaken for a
+command. **Authorization is not bypassed**: the message's mess sender is mapped
+back to a breeze identity (the reverse of `--mess-agent`'s own mapping — whichever
+identity's mapped mess-agent name, or raw identity name if unmapped, equals the
+sender), and that identity must hold the stage's own `ApprovalPolicy.RequiredRole`
+exactly as a CLI-issued `stage approve` would require — a sender with no matching
+identity, or one lacking the role, is rejected with a reply in the topic
+explaining why, never silently ignored. The recorded `Approval.Brief` is annotated
+with `(via mess from <sender>)` so it's visible in `pipeline status` and any
+work-unit brief, distinguishing a chat-triggered approval from a CLI one without
+any new audit-log plumbing. The daemon also replies in the topic (threaded off
+the triggering message) once the approval resolves, success or rejection alike.
+
+Only `approve` is supported — never `deploy`/`rollback`/`cancel` via chat, by
+design (this is the lowest-risk, most reversible action). The daemon subscribes
+to every registered pipeline's `command_topic` **once, at startup** — adding or
+changing a pipeline's `command_topic` while the daemon is already running
+requires a `breeze daemon restart` to take effect. The daemon listens under its
+own dedicated mess identity (derived from its state directory, never an ambient
+one inherited from whatever session happened to start it) — this closes a real
+class of bug where an ambient identity could collide with an unrelated
+interactive session's own mess listener.
 
 ### Briefs
 
