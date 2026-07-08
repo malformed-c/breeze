@@ -217,7 +217,10 @@ breeze stage wait  release build abc123 --timeout 30m &     # background this
 # pings the actor that triggered the resolution itself (stage start/approve are
 # synchronous, so it already has the answer) or an identity with `identity notify
 # off` set. A pipeline with `notify_topic` set also `mess pub`s every resolution to
-# that topic, independent of the per-identity targets above.
+# that topic, independent of the per-identity targets above. Every notification
+# about one (pipeline, commit) run — sends and topic pubs alike, across every
+# stage that run touches — shares one mess --thread id, so it reads as one
+# conversation per run instead of an interleaved stream.
 ```
 
 Prefer backgrounding `stage wait` (via your shell `&` or Claude Code's background
@@ -319,13 +322,17 @@ a convenience artifact only, never load-bearing.
 ### The operator view
 
 ```sh
-breeze operator [--json]
+breeze operator [--pipeline NAME] [--env NAME] [--json]
 ```
 
 Cross-pipeline, cross-commit "what needs attention right now": every approval
 stage still short of its threshold (who's approved so far, what role is still
-needed), every stage currently running, recent failures/successes, and every lock
-(file and resource) currently held. Check this before assuming nothing's in flight.
+needed, how long it's been waiting), every stage currently running (how long it's
+been running), recent failures/successes, and every lock (file and resource)
+currently held. Check this before assuming nothing's in flight. Output is grouped
+by pipeline (sub-headers); `--pipeline`/`--env` scope the whole surface —
+including `--json` — down to one pipeline/environment (locks aren't filtered,
+they have no clean Pipeline field of their own).
 
 ```sh
 breeze operator notify [--interval 3s]

@@ -628,6 +628,14 @@ publishes to that mess topic (`mess pub <topic> "..."`), so anyone subscribed vi
 `mess sub <topic>` can follow a pipeline's activity without needing an individual
 role assignment.
 
+Every notification about one `(pipeline, commit)` run — both the per-identity
+`mess send`s and the topic `mess pub`s, across however many stages that run
+touches (build, review, deploy, ...) — carries the same `--thread` id
+(`breeze-<pipeline>-<commit>`, environment-independent: a fanned-out pipeline's
+staging/prod branches of one commit are still the same logical run). A reviewer's
+inbox, or a busy topic mixing many concurrent runs, reads as one thread per run
+instead of an interleaved stream of unrelated-looking messages.
+
 ### Briefs
 
 If a pipeline sets `briefs_dir`, every stage resolution appends a section to a
@@ -646,16 +654,26 @@ result even if writing it fails.
 ### The operator view
 
 ```sh
-breeze operator [--json]
+breeze operator [--pipeline NAME] [--env NAME] [--json]
 ```
 
 Unlike `pipeline status` (scoped to one pipeline+commit) or `deploy history`
 (scoped to one pipeline+stage), `breeze operator` is the cross-pipeline,
 cross-commit "what needs *me* right now" view for a human: every approval stage
-still short of its threshold (with who's approved so far and what role is still
-needed), every stage currently running, the most recent failures and successes
-(each capped, newest first — full history is `deploy history`/the audit log's
-job), and every lock (file and resource) currently held.
+still short of its threshold (with who's approved so far, what role is still
+needed, and how long it's been waiting), every stage currently running (with how
+long it's been running), the most recent failures and successes (each capped,
+newest first — full history is `deploy history`/the audit log's job), and every
+lock (file and resource) currently held.
+
+Each category is **grouped by pipeline** — a sub-header per pipeline (sorted
+alphabetically), not one flat cross-pipeline list — since a real "what needs
+attention" view usually spans several unrelated pipelines. `--pipeline`/`--env`
+scope the whole surface (including `--json`) down to one pipeline and/or
+environment, for when you only care about part of the picture; locks aren't
+filtered by either (a lock/claim has no clean `Pipeline` field of its own — a
+resource key like `deploy/target/env` only incidentally resembles a pipeline
+name).
 
 ```sh
 breeze operator notify [--interval 3s]

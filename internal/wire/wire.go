@@ -477,13 +477,14 @@ type DeployGrantListResponse struct {
 // --- Operator surface ---
 
 type PendingApproval struct {
-	Pipeline          string `json:"pipeline"`
-	Stage             string `json:"stage"`
-	Commit            string `json:"commit"`
-	Environment       string `json:"environment,omitempty"`
-	ApprovalsGiven    int    `json:"approvalsGiven"`
-	ApprovalsRequired int    `json:"approvalsRequired"`
-	ApproverRole      string `json:"approverRole,omitempty"`
+	Pipeline          string    `json:"pipeline"`
+	Stage             string    `json:"stage"`
+	Commit            string    `json:"commit"`
+	Environment       string    `json:"environment,omitempty"`
+	ApprovalsGiven    int       `json:"approvalsGiven"`
+	ApprovalsRequired int       `json:"approvalsRequired"`
+	ApproverRole      string    `json:"approverRole,omitempty"`
+	StartedAt         time.Time `json:"startedAt,omitzero"`
 }
 
 type RunningStage struct {

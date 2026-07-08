@@ -15,7 +15,7 @@ stdout 'build: failed'
 
 exec sleep 0.5
 exists mess-calls.log
-grep '^send user breeze: release/build \(abc123\) -> failed$' mess-calls.log
+grep '^send user breeze: release/build \(abc123\) -> failed --thread breeze-release-abc123$' mess-calls.log
 
 exec breeze stop
 

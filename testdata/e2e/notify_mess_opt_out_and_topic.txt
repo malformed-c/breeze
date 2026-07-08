@@ -33,13 +33,15 @@ exec sleep 0.5
 
 exists mess-calls.log
 # alice is notified via her MAPPED mess-agent name, not her raw identity name.
-grep '^send alice-on-mess breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+# --thread groups every notification about this (pipeline, commit) run together.
+grep '^send alice-on-mess breeze: release/build \(abc123\) -> succeeded --thread breeze-release-abc123$' mess-calls.log
 ! grep 'send alice ' mess-calls.log
 # carol opted out entirely.
 ! grep 'carol' mess-calls.log
 # the pipeline's notify_topic gets the same resolution published to it regardless
-# of the per-identity targets above.
-grep '^pub #release-activity breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+# of the per-identity targets above — same thread, so a topic mixing many runs
+# still reads as one thread per run.
+grep '^pub #release-activity breeze: release/build \(abc123\) -> succeeded --thread breeze-release-abc123$' mess-calls.log
 
 exec breeze stop
 

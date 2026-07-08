@@ -183,13 +183,13 @@ func usage() {
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason string
-	shared, wait, force, jsonOut, dryRun, prune, all, help                                       bool
-	targets                                                                                      []string // repeated --target NAME
-	resources                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
-	rest                                                                                         []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
-	unknownFlag                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline string
+	shared, wait, force, jsonOut, dryRun, prune, all, help                                                 bool
+	targets                                                                                                []string // repeated --target NAME
+	resources                                                                                              []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
+	rest                                                                                                   []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                                                                []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	unknownFlag                                                                                            string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
 }
 
 func parseFlags(args []string) flagSet {
@@ -222,6 +222,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.timeout = args[i]
+			}
+		case "--pipeline":
+			i++
+			if i < len(args) {
+				f.pipeline = args[i]
 			}
 		case "--env":
 			i++
@@ -550,7 +555,7 @@ func cmdOperator(p paths, args []string) error {
 		return cmdOperatorUpdateAll()
 	}
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze operator [--json] | notify | update-all"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze operator [--pipeline NAME] [--env NAME] [--json] | notify | update-all"); handled {
 		return err
 	}
 	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
@@ -561,47 +566,125 @@ func cmdOperator(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+	// --pipeline/--env scope the FULL cross-pipeline surface down to what you
+	// actually care about — applies to --json too (a caller scripting against one
+	// pipeline shouldn't have to filter the raw response itself). Locks are
+	// deliberately left unfiltered: a lock/claim has no clean Pipeline field of
+	// its own to filter by (a resource key like "deploy/target/env" only
+	// incidentally resembles a pipeline name).
+	out.PendingApprovals = filterByPipelineEnv(out.PendingApprovals, f.pipeline, f.env, func(a wire.PendingApproval) (string, string) { return a.Pipeline, a.Environment })
+	out.Running = filterByPipelineEnv(out.Running, f.pipeline, f.env, func(r wire.RunningStage) (string, string) { return r.Pipeline, r.Environment })
+	out.RecentFailures = filterByPipelineEnv(out.RecentFailures, f.pipeline, f.env, func(fl wire.RecentFailure) (string, string) { return fl.Pipeline, fl.Environment })
+	out.RecentSuccesses = filterByPipelineEnv(out.RecentSuccesses, f.pipeline, f.env, func(s wire.RecentSuccess) (string, string) { return s.Pipeline, s.Environment })
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+	printOperatorSurfaceHuman(out)
+	return nil
+}
 
+// filterByPipelineEnv keeps only items matching pipeline/env (each optional —
+// empty means "don't filter on this dimension"). fields projects an item to its
+// (Pipeline, Environment) pair, since the four operator-surface item types share
+// no common interface to read those fields generically.
+func filterByPipelineEnv[T any](items []T, pipeline, env string, fields func(T) (string, string)) []T {
+	if pipeline == "" && env == "" {
+		return items
+	}
+	out := items[:0]
+	for _, it := range items {
+		p, e := fields(it)
+		if pipeline != "" && p != pipeline {
+			continue
+		}
+		if env != "" && e != env {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// printOperatorSurfaceHuman renders the operator surface grouped by pipeline
+// (a sub-header per pipeline, sorted alphabetically) rather than one long
+// flat list per category — cross-pipeline output used to interleave unrelated
+// pipelines' entries with no visual separation. Needs-review/Running also show
+// how long they've been in that state, oldest first (the ones most likely to
+// need attention surface at the top of their group).
+func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 	envOrDash := func(env string) string {
 		if env == "" {
 			return "-"
 		}
 		return env
 	}
+	since := func(t time.Time) string {
+		if t.IsZero() {
+			return "-"
+		}
+		return time.Since(t).Round(time.Second).String()
+	}
+
+	sort.SliceStable(out.PendingApprovals, func(i, j int) bool {
+		if out.PendingApprovals[i].Pipeline != out.PendingApprovals[j].Pipeline {
+			return out.PendingApprovals[i].Pipeline < out.PendingApprovals[j].Pipeline
+		}
+		return out.PendingApprovals[i].StartedAt.Before(out.PendingApprovals[j].StartedAt)
+	})
+	sort.SliceStable(out.Running, func(i, j int) bool {
+		if out.Running[i].Pipeline != out.Running[j].Pipeline {
+			return out.Running[i].Pipeline < out.Running[j].Pipeline
+		}
+		return out.Running[i].StartedAt.Before(out.Running[j].StartedAt)
+	})
+	sort.SliceStable(out.RecentFailures, func(i, j int) bool { return out.RecentFailures[i].Pipeline < out.RecentFailures[j].Pipeline })
+	sort.SliceStable(out.RecentSuccesses, func(i, j int) bool { return out.RecentSuccesses[i].Pipeline < out.RecentSuccesses[j].Pipeline })
 
 	fmt.Printf("Needs review (%d):\n", len(out.PendingApprovals))
-	for _, a := range out.PendingApprovals {
-		fmt.Printf("  %-15s %-10s %-10s %-8s %d/%d approvals (role: %s)\n",
-			a.Pipeline, a.Stage, shortCommitForDisplay(a.Commit), envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole)
-	}
+	printGroupedByPipeline(out.PendingApprovals, func(a wire.PendingApproval) string { return a.Pipeline }, func(a wire.PendingApproval) {
+		fmt.Printf("    %-10s %-10s %-8s %d/%d approvals (role: %s) waiting %s\n",
+			a.Stage, shortCommitForDisplay(a.Commit), envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole, since(a.StartedAt))
+	})
 
 	fmt.Printf("Running now (%d):\n", len(out.Running))
-	for _, r := range out.Running {
-		fmt.Printf("  %-15s %-10s %-10s %-8s actor=%-10s started=%s\n",
-			r.Pipeline, r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, r.StartedAt.Format("15:04:05"))
-	}
+	printGroupedByPipeline(out.Running, func(r wire.RunningStage) string { return r.Pipeline }, func(r wire.RunningStage) {
+		fmt.Printf("    %-10s %-10s %-8s actor=%-10s running %s\n",
+			r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, since(r.StartedAt))
+	})
 
 	fmt.Printf("Recent failures (%d):\n", len(out.RecentFailures))
-	for _, fl := range out.RecentFailures {
-		fmt.Printf("  %-15s %-10s %-10s %-8s %-12s %s\n",
-			fl.Pipeline, fl.Stage, shortCommitForDisplay(fl.Commit), envOrDash(fl.Environment), fl.Status, fl.Error)
-	}
+	printGroupedByPipeline(out.RecentFailures, func(fl wire.RecentFailure) string { return fl.Pipeline }, func(fl wire.RecentFailure) {
+		fmt.Printf("    %-10s %-10s %-8s %-12s %s\n",
+			fl.Stage, shortCommitForDisplay(fl.Commit), envOrDash(fl.Environment), fl.Status, fl.Error)
+	})
 
 	fmt.Printf("Recent successes (%d):\n", len(out.RecentSuccesses))
-	for _, s := range out.RecentSuccesses {
-		fmt.Printf("  %-15s %-10s %-10s %-8s %s\n",
-			s.Pipeline, s.Stage, shortCommitForDisplay(s.Commit), envOrDash(s.Environment), s.FinishedAt.Format("15:04:05"))
-	}
+	printGroupedByPipeline(out.RecentSuccesses, func(s wire.RecentSuccess) string { return s.Pipeline }, func(s wire.RecentSuccess) {
+		fmt.Printf("    %-10s %-10s %-8s %s\n",
+			s.Stage, shortCommitForDisplay(s.Commit), envOrDash(s.Environment), s.FinishedAt.Format("15:04:05"))
+	})
 
 	fmt.Printf("Locks held (%d):\n", len(out.Locks))
 	for _, l := range out.Locks {
 		fmt.Printf("  %-6s %-8s %-8s %-10s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
 	}
-	return nil
+}
+
+// printGroupedByPipeline prints one "  <pipeline>:" sub-header each time
+// pipelineOf's value changes, then printItem for that item — items must already
+// be sorted/stable-grouped by pipeline (see printOperatorSurfaceHuman).
+func printGroupedByPipeline[T any](items []T, pipelineOf func(T) string, printItem func(T)) {
+	last := ""
+	first := true
+	for _, it := range items {
+		if pl := pipelineOf(it); first || pl != last {
+			fmt.Printf("  %s:\n", pl)
+			last = pl
+			first = false
+		}
+		printItem(it)
+	}
 }
 
 // cmdOperatorUpdateAll restarts every breeze daemon this machine's discovery

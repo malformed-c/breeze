@@ -921,6 +921,7 @@ func operatorSurfaceToWire(surface engine.OperatorSurface) wire.OperatorSurfaceR
 		out.PendingApprovals = append(out.PendingApprovals, wire.PendingApproval{
 			Pipeline: pa.Pipeline, Stage: pa.Stage, Commit: pa.Key.Commit, Environment: pa.Key.Environment,
 			ApprovalsGiven: pa.ApprovalsGiven, ApprovalsRequired: pa.ApprovalsRequired, ApproverRole: string(pa.ApproverRole),
+			StartedAt: pa.StartedAt,
 		})
 	}
 	for _, r := range surface.Running {

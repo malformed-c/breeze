@@ -23,7 +23,10 @@ exec breeze stage start release build abc123 --as ci
 # a moment before checking what the fake mess script recorded.
 exec sleep 0.5
 exists mess-calls.log
-grep '^send alice breeze: release/build \(abc123\) -> succeeded$' mess-calls.log
+# --thread groups every notification about this (pipeline, commit) run together
+# (see engine.messThreadID) — a reviewer's inbox reads as one conversation per
+# run instead of scattered unrelated messages.
+grep '^send alice breeze: release/build \(abc123\) -> succeeded --thread breeze-release-abc123$' mess-calls.log
 ! grep '^send ci ' mess-calls.log
 
 exec breeze stop

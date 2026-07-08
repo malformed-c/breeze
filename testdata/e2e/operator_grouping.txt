@@ -1,0 +1,46 @@
+# `breeze operator` groups each category by pipeline (sub-headers, sorted
+# alphabetically) instead of one flat cross-pipeline list, and --pipeline/--env
+# scope the whole surface (including --json) down to one pipeline/environment.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze apply -f release.hcl --as admin --token-file admin.token
+exec breeze apply -f other.hcl --as admin --token-file admin.token
+
+exec breeze stage start release build abc123 --as ci
+exec breeze stage start other build def456 --as ci
+
+# Grouped by pipeline, alphabetically: "other" before "release".
+exec breeze operator
+stdout 'other:\n\s+build\s+def456'
+stdout 'release:\n\s+build\s+abc123'
+
+# --pipeline scopes the whole surface, including --json.
+exec breeze operator --pipeline release
+stdout 'release:'
+! stdout 'other:'
+
+exec breeze operator --pipeline release --json
+stdout '"pipeline":\s*"release"'
+! stdout '"pipeline":\s*"other"'
+
+exec breeze stop
+
+-- release.hcl --
+pipeline "release" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+}
+
+-- other.hcl --
+pipeline "other" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+}

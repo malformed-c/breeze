@@ -12,8 +12,10 @@ import (
 // isn't installed, this silently no-ops (checked once via exec.LookPath), mirroring
 // mess's own desktopNotify graceful-degradation pattern. breeze's correctness never
 // depends on this: stage.wait and status polling always see the true current state
-// regardless of whether the notification actually reaches anyone.
-func notifyViaMess(identities []string, message string) {
+// regardless of whether the notification actually reaches anyone. thread (see
+// engine.messThreadID), when non-empty, is passed as `--thread` so every
+// notification about one (pipeline, commit) run lands in the same mess thread.
+func notifyViaMess(identities []string, message, thread string) {
 	messPath, err := exec.LookPath("mess")
 	if err != nil {
 		return
@@ -22,18 +24,22 @@ func notifyViaMess(identities []string, message string) {
 		go func(identity string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
+			args := []string{"send", identity, message}
+			if thread != "" {
+				args = append(args, "--thread", thread)
+			}
 			// Best-effort: errors (unknown agent, mess not running, timeout) are
 			// deliberately swallowed — this is a latency optimization, not a
 			// guarantee, and breeze has its own poll/wait fallback regardless.
-			exec.CommandContext(ctx, messPath, "send", identity, message).Run()
+			exec.CommandContext(ctx, messPath, args...).Run()
 		}(identity)
 	}
 }
 
 // notifyViaMessTopic is notifyViaMess's counterpart for Pipeline.NotifyTopic —
 // `mess pub <topic> "..."` instead of a per-identity send, same best-effort,
-// soft-dependency, never-blocks-the-caller semantics.
-func notifyViaMessTopic(topic, message string) {
+// soft-dependency, never-blocks-the-caller, thread-aware semantics.
+func notifyViaMessTopic(topic, message, thread string) {
 	messPath, err := exec.LookPath("mess")
 	if err != nil {
 		return
@@ -41,6 +47,10 @@ func notifyViaMessTopic(topic, message string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		exec.CommandContext(ctx, messPath, "pub", topic, message).Run()
+		args := []string{"pub", topic, message}
+		if thread != "" {
+			args = append(args, "--thread", thread)
+		}
+		exec.CommandContext(ctx, messPath, args...).Run()
 	}()
 }

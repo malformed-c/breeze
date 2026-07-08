@@ -7,7 +7,11 @@ import "fmt"
 // returned identity. This is a pure latency optimization: never required for
 // correctness (a stage.wait or status poll always sees the true current state
 // regardless of whether this fires), so if unset, notifyResolution is simply a no-op.
-func (e *Engine) SetNotifyFn(fn func(identities []string, message string)) {
+// thread (see messThreadID) is the same value passed to `mess send --thread` for
+// every notification about one (pipeline, commit) run, so a reviewer's inbox
+// groups a run's build/review/deploy pings into one conversation instead of
+// scattering them as unrelated messages.
+func (e *Engine) SetNotifyFn(fn func(identities []string, message, thread string)) {
 	e.mu.Lock()
 	e.notifyFn = fn
 	e.mu.Unlock()
@@ -17,11 +21,23 @@ func (e *Engine) SetNotifyFn(fn func(identities []string, message string)) {
 // notifyFn whenever a stage instance resolves for a pipeline with NotifyTopic set —
 // the daemon uses this to shell out to `mess pub <topic> "..."`, letting anyone
 // subscribed follow a pipeline's activity without needing an individual role
-// assignment.
-func (e *Engine) SetNotifyTopicFn(fn func(topic, message string)) {
+// assignment. thread (see messThreadID) groups one (pipeline, commit) run's
+// messages together within the topic, so a busy topic mixing many concurrent runs
+// still reads as one thread per run rather than an interleaved stream.
+func (e *Engine) SetNotifyTopicFn(fn func(topic, message, thread string)) {
 	e.mu.Lock()
 	e.notifyTopicFn = fn
 	e.mu.Unlock()
+}
+
+// messThreadID derives a stable mess thread identifier for one (pipeline, commit)
+// run — every stage transition for that run (build, review, deploy, ...) shares
+// the same thread, so `mess thread list`/a subscriber's client groups them
+// together instead of showing an unrelated flat stream. Deliberately excludes
+// environment: a fanned-out pipeline's staging/prod branches are still the same
+// logical run of one commit, just diverging partway through.
+func messThreadID(pipelineName, commit string) string {
+	return "breeze-" + pipelineName + "-" + commit
 }
 
 // requiredRoleFor returns the role gating s, regardless of stage type — "" if s has
@@ -139,10 +155,11 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 		return
 	}
 	message := fmt.Sprintf("breeze: %s/%s (%s) -> %s", pipelineName, stageName, inst.Key.ShortString(), inst.Status)
+	thread := messThreadID(pipelineName, inst.Key.Commit)
 	if len(targets) > 0 && fn != nil {
-		fn(targets, message)
+		fn(targets, message, thread)
 	}
 	if topicFn != nil && topic != "" {
-		topicFn(topic, message)
+		topicFn(topic, message, thread)
 	}
 }

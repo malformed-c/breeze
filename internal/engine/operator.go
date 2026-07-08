@@ -13,6 +13,7 @@ type PendingApproval struct {
 	ApprovalsGiven    int
 	ApprovalsRequired int
 	ApproverRole      Role
+	StartedAt         time.Time // when the instance first entered StageAwaiting
 }
 
 // RunningStage is one stage instance currently executing.
@@ -80,6 +81,7 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 			out.PendingApprovals = append(out.PendingApprovals, PendingApproval{
 				Pipeline: inst.Pipeline, Stage: inst.Stage, Key: inst.Key,
 				ApprovalsGiven: len(inst.Approvals), ApprovalsRequired: required, ApproverRole: role,
+				StartedAt: inst.StartedAt,
 			})
 		case StageRunning:
 			out.Running = append(out.Running, RunningStage{

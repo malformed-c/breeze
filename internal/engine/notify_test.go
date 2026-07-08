@@ -35,7 +35,7 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	var mu sync.Mutex
 	var gotIdentities []string
 	var gotMessage string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -90,7 +90,7 @@ func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotIdentities []string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -126,7 +126,7 @@ func TestNotifyResolutionNotifiesUserOnFailure(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotIdentities []string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -183,7 +183,7 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotIdentities []string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -227,7 +227,7 @@ func TestNotifyResolutionSkipsOptedOutIdentities(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotIdentities []string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -258,7 +258,7 @@ func TestNotifyResolutionUsesMessAgentMapping(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotIdentities []string
-	e.SetNotifyFn(func(identities []string, message string) {
+	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotIdentities = identities
@@ -289,11 +289,11 @@ func TestNotifyResolutionPublishesToTopic(t *testing.T) {
 	// success, but the topic publish must still fire.
 
 	var mu sync.Mutex
-	var gotTopic, gotMessage string
-	e.SetNotifyTopicFn(func(topic, message string) {
+	var gotTopic, gotMessage, gotThread string
+	e.SetNotifyTopicFn(func(topic, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
-		gotTopic, gotMessage = topic, message
+		gotTopic, gotMessage, gotThread = topic, message, thread
 	})
 
 	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
@@ -307,6 +307,57 @@ func TestNotifyResolutionPublishesToTopic(t *testing.T) {
 	}
 	if gotMessage == "" {
 		t.Fatalf("expected a non-empty message")
+	}
+	if gotThread != messThreadID("release", "abc123") {
+		t.Fatalf("expected the thread to be messThreadID(release, abc123), got %q", gotThread)
+	}
+}
+
+// TestMessThreadIDIsStableAcrossEnvironments confirms a fanned-out pipeline's
+// staging/prod branches of ONE commit still share a single thread — they're the
+// same logical run diverging partway through, not unrelated runs.
+func TestMessThreadIDIsStableAcrossEnvironments(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	// deploy's success notifies whoever holds the NEXT stage's required role
+	// (see notifyResolution) — "test" has none by default, so give it one here
+	// to get an actual notification to assert on.
+	p.Stages[3].CommandPolicy.RequiredRole = "reviewer"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	for _, name := range []string{"alice", "bob"} {
+		if _, err := e.RegisterIdentity(name, ""); err != nil {
+			t.Fatalf("register %s: %v", name, err)
+		}
+		if err := e.AssignRole(name, "reviewer"); err != nil {
+			t.Fatalf("assign: %v", err)
+		}
+	}
+	approvedCommit(t, e, "abc123")
+
+	var mu sync.Mutex
+	var threads []string
+	e.SetNotifyFn(func(identities []string, message, thread string) {
+		mu.Lock()
+		defer mu.Unlock()
+		threads = append(threads, thread)
+	})
+
+	if _, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "ci", ""); err != nil {
+		t.Fatalf("deploy staging: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(threads) == 0 {
+		t.Fatalf("expected at least one notification")
+	}
+	want := messThreadID("release", "abc123")
+	for _, th := range threads {
+		if th != want {
+			t.Fatalf("expected every notification for this commit to share thread %q regardless of environment, got %q", want, th)
+		}
 	}
 }
 
