@@ -40,6 +40,23 @@ meant, or set `$BREEZE_DIR` explicitly.
 
 ## 2. Identity — check before doing anything authorization-bearing
 
+**The main way to register: use your existing mess identity name.** If you talk
+to other agents via `mess` (most Claude Code sessions on this machine do), check
+`mess whoami` first and register breeze under that SAME name:
+
+```sh
+mess whoami                              # e.g. "peri-sonnet-5"
+breeze identity register peri-sonnet-5   # same name -> mess integration just works, zero extra config
+```
+
+Registering under your mess name means your breeze identity's mess target
+defaults to itself (see `MessTarget` below) — outbound notifications, thread
+grouping, and chat-triggered approvals (`command_topic`, further down) all work
+immediately with no `--mess-agent` mapping to remember. Only pass
+`--mess-agent <different-name>` when your breeze identity genuinely needs a name
+that diverges from your mess one; otherwise treat plain `breeze identity
+register <name>` (no mess name behind it) as the exception, not the default.
+
 **Two hard rules, not just caveats:**
 1. **Never use a token that wasn't explicitly handed to you** for the task at
    hand — not one you found lying around (`admin.token` in a repo, a prior
@@ -100,9 +117,8 @@ breeze role assign <role> <identity> --as admin --token-file <admin-token>
 breeze role list [--json]
 ```
 
-`identity register --mess-agent <name>` maps this identity to a different mess
-agent name for notifications (default: same name). `identity notify on|off --as
-<name>` self-service opts in/out of breeze's mess pings.
+`identity notify on|off --as <name>` self-service opts in/out of breeze's mess
+pings.
 
 ## 3. File locks — ad hoc, no policy, no auth needed beyond attribution
 

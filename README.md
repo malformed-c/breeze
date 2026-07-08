@@ -301,9 +301,21 @@ breeze role assign deployer admin  --as admin --token-file .git/breeze/admin.tok
 breeze role list [--json]
 ```
 
-**Mapping to a mess agent, and opting out of notifications**: breeze's identity
-names and mess agent names are separate namespaces that typically coincide by
-convention — `--mess-agent` formalizes that mapping instead of just assuming it:
+**The recommended way to register: use your existing mess identity name.**
+breeze's identity names and mess agent names are separate namespaces, but if you
+already talk to other agents via `mess`, register breeze under that *same* name:
+
+```sh
+mess whoami                              # e.g. "alice"
+breeze identity register alice           # same name -> MessTarget() defaults to itself
+```
+
+This makes outbound notifications, mess-thread grouping (see "Waiting instead of
+polling" below), and chat-triggered approvals (`command_topic`, further down) all
+work immediately with zero extra configuration — there's no separate mapping to
+remember or keep in sync. Only reach for `--mess-agent` when your breeze identity
+genuinely needs a name that diverges from your mess one (e.g. a shared
+CI/service identity with no mess presence of its own, or a deliberate alias):
 
 ```sh
 breeze identity register alice --mess-agent alice-on-mess   # notify.go's mess sends
