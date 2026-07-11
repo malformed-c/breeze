@@ -127,6 +127,8 @@ breeze lock acquire <path...> [--shared] [--ttl 30m] [--wait] [--timeout 10s] --
 breeze lock exec <path...> [--shared] --as <name> -- <command...>   # crash-safe: held for the
                                                                      # command's whole life, released
                                                                      # instantly if the process dies
+breeze lock exec <path...> [--cpu-quota 200%] [--memory-max 1G] [--tasks-max N] [--io-weight N] \
+  --as <name> -- <command...>   # same, wrapped in a systemd-run --scope cgroup limit
 breeze lock release <lock-id> --as <name> [--force]
 breeze lock release-all --as <name>   # release everything <name> holds, any kind, no ID needed
 breeze lock list [--all] [--json]   # --all also includes resource locks (e.g. deploy claims)
@@ -390,6 +392,11 @@ structured payload `pipeline.register` always accepted. `{name}` placeholders
 (`commit`, `environment`, `pipeline`, `stage`, `target`, `actor`) get substituted as
 literal argv/env values, **never** through a shell — a commit sha containing shell
 metacharacters is always inert.
+
+Any stage `command` or `pre_gate`/`post_action` hook can carry a `resource_limits`
+block (`cpu_quota`, `memory_max`, `tasks_max`, `io_weight`) bounding that command via
+a transient `systemd-run --scope` wrapper — see README.md's "Resource limits" for
+syntax and the matching `breeze lock exec --cpu-quota/--memory-max/...` flags.
 
 ```sh
 breeze apply -f pipeline.hcl --as admin --token-file <admin-token> --dry-run   # preview only

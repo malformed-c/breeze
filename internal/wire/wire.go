@@ -234,10 +234,20 @@ type InventoryResponse struct {
 // --- Pipelines / stages ---
 
 type CommandTemplate struct {
-	Path string   `json:"path"`
-	Args []string `json:"args,omitempty"`
-	Env  []string `json:"env,omitempty"`
-	Dir  string   `json:"dir,omitempty"`
+	Path           string          `json:"path"`
+	Args           []string        `json:"args,omitempty"`
+	Env            []string        `json:"env,omitempty"`
+	Dir            string          `json:"dir,omitempty"`
+	ResourceLimits *ResourceLimits `json:"resourceLimits,omitempty"`
+}
+
+// ResourceLimits mirrors hook.ResourceLimits over the wire — see its doc
+// comment for what each field controls.
+type ResourceLimits struct {
+	CPUQuota  string `json:"cpuQuota,omitempty"`
+	MemoryMax string `json:"memoryMax,omitempty"`
+	TasksMax  int    `json:"tasksMax,omitempty"`
+	IOWeight  int    `json:"ioWeight,omitempty"`
 }
 
 type Hook struct {

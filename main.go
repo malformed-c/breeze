@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"breeze/internal/hclconfig"
+	"breeze/internal/hook"
 	"breeze/internal/wire"
 )
 
@@ -115,6 +117,10 @@ func usage() {
   lock acquire --resource <name>... [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
                                                # a mutex over a named concept, not a real file
   lock exec <path...> [--shared] --as NAME -- <command...>
+  lock exec <path...> [--cpu-quota 200%] [--memory-max 1G] [--tasks-max N] [--io-weight N]
+                                         --as NAME -- <command...>
+                                         # bounds the command's cgroup footprint via a
+                                         # transient systemd-run --scope wrapper
   lock release <lock-id> --as NAME [--force]
   lock release-all --as NAME            # release every lock (any kind) NAME holds
   lock renew <lock-id> [--ttl D] --as NAME
@@ -185,6 +191,7 @@ func usage() {
 
 type flagSet struct {
 	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline string
+	cpuQuota, memoryMax, tasksMax, ioWeight                                                                string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
 	shared, wait, force, jsonOut, dryRun, prune, all, help                                                 bool
 	targets                                                                                                []string // repeated --target NAME
 	resources                                                                                              []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
@@ -264,6 +271,26 @@ func parseFlags(args []string) flagSet {
 			if i < len(args) {
 				f.resources = append(f.resources, args[i])
 			}
+		case "--cpu-quota":
+			i++
+			if i < len(args) {
+				f.cpuQuota = args[i]
+			}
+		case "--memory-max":
+			i++
+			if i < len(args) {
+				f.memoryMax = args[i]
+			}
+		case "--tasks-max":
+			i++
+			if i < len(args) {
+				f.tasksMax = args[i]
+			}
+		case "--io-weight":
+			i++
+			if i < len(args) {
+				f.ioWeight = args[i]
+			}
 		case "--brief":
 			i++
 			if i < len(args) {
@@ -335,6 +362,31 @@ func (f flagSet) rejectUnknownFlags(usage string) (bool, error) {
 		return true, fmt.Errorf("unrecognized flag %q\nusage: %s", f.unknownFlag, usage)
 	}
 	return false, nil
+}
+
+// resourceLimits builds a *hook.ResourceLimits from --cpu-quota/--memory-max/
+// --tasks-max/--io-weight, or nil if none were given (no systemd-run wrapping
+// at all — the common case). Used by `breeze lock exec`.
+func (f flagSet) resourceLimits() (*hook.ResourceLimits, error) {
+	if f.cpuQuota == "" && f.memoryMax == "" && f.tasksMax == "" && f.ioWeight == "" {
+		return nil, nil
+	}
+	rl := &hook.ResourceLimits{CPUQuota: f.cpuQuota, MemoryMax: f.memoryMax}
+	if f.tasksMax != "" {
+		n, err := strconv.Atoi(f.tasksMax)
+		if err != nil {
+			return nil, fmt.Errorf("--tasks-max: %w", err)
+		}
+		rl.TasksMax = n
+	}
+	if f.ioWeight != "" {
+		n, err := strconv.Atoi(f.ioWeight)
+		if err != nil {
+			return nil, fmt.Errorf("--io-weight: %w", err)
+		}
+		rl.IOWeight = n
+	}
+	return rl, nil
 }
 
 // resolveToken returns the explicit token, reading --token-file if --token wasn't given.
@@ -1985,7 +2037,11 @@ func cmdLockCheck(p paths, as string, f flagSet) error {
 
 func cmdLockExec(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 || len(f.cmdArgs) < 1 {
-		return fmt.Errorf("usage: breeze lock exec <path...> [--shared] --as NAME -- <command...>")
+		return fmt.Errorf("usage: breeze lock exec <path...> [--shared] [--cpu-quota P] [--memory-max SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>")
+	}
+	rl, err := f.resourceLimits()
+	if err != nil {
+		return err
 	}
 	lockPaths, err := canonicalLockPaths(f.rest)
 	if err != nil {
@@ -2008,7 +2064,11 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 	}
 	fmt.Fprintf(os.Stderr, "breeze: acquired %s (%s), running command...\n", out.Lock.ID, out.Lock.Mode)
 
-	cmd := exec.Command(f.cmdArgs[0], f.cmdArgs[1:]...)
+	cmdPath, cmdArgs := f.cmdArgs[0], f.cmdArgs[1:]
+	if rl != nil {
+		cmdPath, cmdArgs = hook.WrapWithSystemdRun(cmdPath, cmdArgs, rl)
+	}
+	cmd := exec.Command(cmdPath, cmdArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := cmd.Run()
 	// Closing conn (via defer) signals the daemon to release the lock. We keep the

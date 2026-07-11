@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"breeze/internal/hook"
 )
 
 // registerReleasePipeline registers the canonical build->review->deploy->test example
@@ -14,6 +17,38 @@ func registerReleasePipeline(t *testing.T, e *Engine) {
 	p := examplePipeline()
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
+	}
+}
+
+// TestStartCommandStageAppliesResourceLimits is an end-to-end regression test
+// that a stage's Command.ResourceLimits actually reaches the real process:
+// runClaimedHook (internal/engine/stage.go) must thread CommandTemplate.
+// ResourceLimits through to hook.Run unchanged. Skips if this environment
+// can't actually run `systemd-run --user --scope` (e.g. sandboxed CI with no
+// user session bus) — this is a live-behavior check, not just plumbing.
+func TestStartCommandStageAppliesResourceLimits(t *testing.T) {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		t.Skip("systemd-run not on PATH")
+	}
+	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
+		t.Skipf("systemd-run --user --scope not usable in this environment: %v", err)
+	}
+
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{
+		Path: "/bin/sh", Args: []string{"-c", "exit 0"},
+		ResourceLimits: &hook.ResourceLimits{MemoryMax: "256M"},
+	}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register pipeline: %v", err)
+	}
+	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	if err != nil {
+		t.Fatalf("StartCommandStage: %v", err)
+	}
+	if inst.Status != StageSucceeded {
+		t.Fatalf("expected the resource-limited command to succeed, got status=%s error=%q", inst.Status, inst.Error)
 	}
 }
 

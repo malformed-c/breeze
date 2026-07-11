@@ -239,6 +239,63 @@ pipeline "bad" {
 	}
 }
 
+func TestParseFileTranslatesResourceLimits(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "limited" {
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    resource_limits {
+      cpu_quota  = "200%"
+      memory_max = "1G"
+      tasks_max  = 32
+      io_weight  = 500
+    }
+    pre_gate {
+      command = ["/bin/true", "gate"]
+      timeout = "10s"
+      resource_limits {
+        memory_max = "128M"
+      }
+    }
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	build := pipelines[0].Stages[0]
+	rl := build.Command.ResourceLimits
+	if rl == nil || rl.CPUQuota != "200%" || rl.MemoryMax != "1G" || rl.TasksMax != 32 || rl.IOWeight != 500 {
+		t.Fatalf("unexpected stage resource_limits: %+v", rl)
+	}
+	gateRL := build.PreGate[0].Command.ResourceLimits
+	if gateRL == nil || gateRL.MemoryMax != "128M" || gateRL.CPUQuota != "" {
+		t.Fatalf("unexpected pre_gate resource_limits: %+v", gateRL)
+	}
+}
+
+func TestParseFileOmitsResourceLimitsWhenAbsent(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "unlimited" {
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if rl := pipelines[0].Stages[0].Command.ResourceLimits; rl != nil {
+		t.Fatalf("expected nil ResourceLimits when no block is given, got %+v", rl)
+	}
+}
+
 func TestParseFileNoFanOut(t *testing.T) {
 	path := writeFixture(t, `
 pipeline "simple" {

@@ -23,6 +23,59 @@ type Template struct {
 	Env     []string
 	Dir     string
 	Timeout time.Duration
+	// ResourceLimits, when set, wraps this command's execution in a transient
+	// systemd scope so a runaway build/test/deploy can't starve the host or
+	// other concurrent work. See ResourceLimits and WrapWithSystemdRun.
+	ResourceLimits *ResourceLimits
+}
+
+// ResourceLimits bounds a command's cgroup footprint via systemd-run --scope.
+// All fields are optional; only limits actually set are passed through as
+// systemd unit properties. CPUQuota/MemoryMax follow systemd's own syntax
+// (e.g. "200%", "512M", "2G", "infinity") — breeze does not reinterpret them,
+// so a malformed value surfaces as a systemd-run error captured in the
+// command's own output, not a breeze-side validation error.
+type ResourceLimits struct {
+	CPUQuota  string // systemd CPUQuota=, e.g. "200%" for 2 cores
+	MemoryMax string // systemd MemoryMax=, e.g. "512M", "2G"
+	TasksMax  int    // systemd TasksMax=; 0 = unset
+	IOWeight  int    // systemd IOWeight=, 1-10000; 0 = unset
+}
+
+// WrapWithSystemdRun rewrites (path, args) into a systemd-run invocation that
+// runs the original command inside a new transient scope unit with rl's
+// properties applied — still zero shell involvement, since systemd-run's own
+// argv is one literal element per slice entry, exec'd directly like the
+// unwrapped case. "--scope" execve()s directly into the target command in
+// place (confirmed live: the PID systemd-run starts as IS the target's own
+// PID, never a supervisor process still holding that PID), so Run's existing
+// process-group timeout-kill and exit-code handling below work unchanged
+// through the wrapper. "--quiet" suppresses systemd-run's own "Running as
+// unit ..." notice so it never pollutes captured stdout/stderr; "--collect"
+// unloads the transient unit once it exits so a long-running daemon doesn't
+// accumulate one unit per run. A non-root caller needs "--user" (talks to the
+// per-user systemd instance) — an unprivileged caller is denied a system-bus
+// scope outright; root callers go straight to the system manager.
+func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string, []string) {
+	sdArgs := []string{"--scope", "--quiet", "--collect"}
+	if os.Geteuid() != 0 {
+		sdArgs = append(sdArgs, "--user")
+	}
+	if rl.CPUQuota != "" {
+		sdArgs = append(sdArgs, "--property=CPUQuota="+rl.CPUQuota)
+	}
+	if rl.MemoryMax != "" {
+		sdArgs = append(sdArgs, "--property=MemoryMax="+rl.MemoryMax)
+	}
+	if rl.TasksMax > 0 {
+		sdArgs = append(sdArgs, fmt.Sprintf("--property=TasksMax=%d", rl.TasksMax))
+	}
+	if rl.IOWeight > 0 {
+		sdArgs = append(sdArgs, fmt.Sprintf("--property=IOWeight=%d", rl.IOWeight))
+	}
+	sdArgs = append(sdArgs, "--", path)
+	sdArgs = append(sdArgs, args...)
+	return "systemd-run", sdArgs
 }
 
 // Params are substituted into argv/env placeholders. Values are attacker/agent
@@ -84,7 +137,12 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		args[i] = Substitute(a, params)
 	}
 
-	cmd := exec.CommandContext(ctx, tmpl.Path, args...)
+	path := tmpl.Path
+	if tmpl.ResourceLimits != nil {
+		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
+	}
+
+	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = Substitute(tmpl.Dir, params)
 	cmd.Env = os.Environ()
 	for _, e := range tmpl.Env {

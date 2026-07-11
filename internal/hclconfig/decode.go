@@ -57,25 +57,37 @@ type EnvOwnersBlock struct {
 }
 
 type StageHCL struct {
-	Name                  string    `hcl:"name,label"`
-	Type                  string    `hcl:"type"`
-	FansOut               bool      `hcl:"fans_out,optional"`
-	Debug                 bool      `hcl:"debug,optional"`
-	RequiredRole          string    `hcl:"required_role,optional"`
-	ConcurrencyLimit      int       `hcl:"concurrency_limit,optional"`
-	RequiredApprovals     int       `hcl:"required_approvals,optional"`
-	ApproverRole          string    `hcl:"approver_role,optional"`
-	BlockPredecessorActor bool      `hcl:"block_predecessor_actor,optional"`
-	Target                string    `hcl:"target,optional"`
-	Command               []string  `hcl:"command,optional"`
-	Timeout               string    `hcl:"timeout,optional"`
-	PreGate               []HookHCL `hcl:"pre_gate,block"`
-	PostAction            []HookHCL `hcl:"post_action,block"`
+	Name                  string             `hcl:"name,label"`
+	Type                  string             `hcl:"type"`
+	FansOut               bool               `hcl:"fans_out,optional"`
+	Debug                 bool               `hcl:"debug,optional"`
+	RequiredRole          string             `hcl:"required_role,optional"`
+	ConcurrencyLimit      int                `hcl:"concurrency_limit,optional"`
+	RequiredApprovals     int                `hcl:"required_approvals,optional"`
+	ApproverRole          string             `hcl:"approver_role,optional"`
+	BlockPredecessorActor bool               `hcl:"block_predecessor_actor,optional"`
+	Target                string             `hcl:"target,optional"`
+	Command               []string           `hcl:"command,optional"`
+	Timeout               string             `hcl:"timeout,optional"`
+	ResourceLimits        *ResourceLimitsHCL `hcl:"resource_limits,block"`
+	PreGate               []HookHCL          `hcl:"pre_gate,block"`
+	PostAction            []HookHCL          `hcl:"post_action,block"`
 }
 
 type HookHCL struct {
-	Command []string `hcl:"command"`
-	Timeout string   `hcl:"timeout"`
+	Command        []string           `hcl:"command"`
+	Timeout        string             `hcl:"timeout"`
+	ResourceLimits *ResourceLimitsHCL `hcl:"resource_limits,block"`
+}
+
+// ResourceLimitsHCL configures a cgroup-bounded systemd-run --scope wrapper
+// around a stage/hook's command — see hook.ResourceLimits for what each field
+// controls. All optional; an absent block means no wrapping at all.
+type ResourceLimitsHCL struct {
+	CPUQuota  string `hcl:"cpu_quota,optional"`
+	MemoryMax string `hcl:"memory_max,optional"`
+	TasksMax  int    `hcl:"tasks_max,optional"`
+	IOWeight  int    `hcl:"io_weight,optional"`
 }
 
 // RoleHCL is accepted syntactically (so a config file can document the roles a
@@ -232,7 +244,7 @@ func translateEnvOwners(block *EnvOwnersBlock) (map[string]string, error) {
 }
 
 func translateStage(sh StageHCL) (wire.StageDef, error) {
-	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command), Debug: sh.Debug}
+	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command, sh.ResourceLimits), Debug: sh.Debug}
 	switch sh.Type {
 	case "command":
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
@@ -253,14 +265,22 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 }
 
 func translateHook(h HookHCL) wire.Hook {
-	return wire.Hook{Command: commandFromList(h.Command), Timeout: h.Timeout}
+	return wire.Hook{Command: commandFromList(h.Command, h.ResourceLimits), Timeout: h.Timeout}
 }
 
 // commandFromList implements the documented convention: a command list's first
 // element is the executable path, the rest are its arguments.
-func commandFromList(cmd []string) wire.CommandTemplate {
-	if len(cmd) == 0 {
-		return wire.CommandTemplate{}
+func commandFromList(cmd []string, rl *ResourceLimitsHCL) wire.CommandTemplate {
+	tmpl := wire.CommandTemplate{ResourceLimits: translateResourceLimits(rl)}
+	if len(cmd) > 0 {
+		tmpl.Path, tmpl.Args = cmd[0], cmd[1:]
 	}
-	return wire.CommandTemplate{Path: cmd[0], Args: cmd[1:]}
+	return tmpl
+}
+
+func translateResourceLimits(rl *ResourceLimitsHCL) *wire.ResourceLimits {
+	if rl == nil {
+		return nil
+	}
+	return &wire.ResourceLimits{CPUQuota: rl.CPUQuota, MemoryMax: rl.MemoryMax, TasksMax: rl.TasksMax, IOWeight: rl.IOWeight}
 }

@@ -137,9 +137,29 @@ func validateTemplatePlaceholders(tmpl CommandTemplate) error {
 	if tmpl.Path == "" {
 		return fmt.Errorf("command path required")
 	}
+	if err := validateResourceLimits(tmpl.ResourceLimits); err != nil {
+		return err
+	}
 	return hook.ValidateArgs(hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir,
 	}, knownParams)
+}
+
+// validateResourceLimits catches simple integer-range typos at registration
+// time (systemd's IOWeight/TasksMax bounds); CPUQuota/MemoryMax are opaque
+// systemd-syntax strings breeze doesn't reinterpret, so a malformed value
+// there surfaces as a systemd-run error at run time instead.
+func validateResourceLimits(rl *hook.ResourceLimits) error {
+	if rl == nil {
+		return nil
+	}
+	if rl.IOWeight != 0 && (rl.IOWeight < 1 || rl.IOWeight > 10000) {
+		return fmt.Errorf("resource_limits: io_weight must be between 1 and 10000")
+	}
+	if rl.TasksMax < 0 {
+		return fmt.Errorf("resource_limits: tasks_max must be >= 0")
+	}
+	return nil
 }
 
 func (e *Engine) Pipeline(name string) (*Pipeline, bool) {

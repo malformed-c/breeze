@@ -10,6 +10,7 @@ import (
 func toHookTemplate(h Hook) breezehook.Template {
 	return breezehook.Template{
 		Path: h.Command.Path, Args: h.Command.Args, Env: h.Command.Env, Dir: h.Command.Dir, Timeout: h.Timeout,
+		ResourceLimits: h.Command.ResourceLimits,
 	}
 }
 

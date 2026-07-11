@@ -781,6 +781,7 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
+		ResourceLimits: tmpl.ResourceLimits,
 	}, params)
 	e.unregisterRunningCancel(runKey)
 	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —

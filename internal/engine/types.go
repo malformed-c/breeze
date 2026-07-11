@@ -3,6 +3,8 @@ package engine
 import (
 	"slices"
 	"time"
+
+	"breeze/internal/hook"
 )
 
 // --- Identity / RBAC ---
@@ -94,6 +96,12 @@ type CommandTemplate struct {
 	Args []string
 	Env  []string
 	Dir  string
+	// ResourceLimits, when set, wraps this command's execution in a transient
+	// systemd scope (systemd-run --scope) with the given cgroup constraints —
+	// bounding a single build/test/deploy command's CPU/memory/process-count
+	// footprint so it can't starve the host or other concurrent stages. See
+	// hook.ResourceLimits.
+	ResourceLimits *hook.ResourceLimits
 }
 
 type Hook struct {

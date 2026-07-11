@@ -98,6 +98,13 @@ breeze lock acquire /path/to/file --shared --as alice             # shared (mult
 breeze lock exec /path/to/file --as alice -- ./build.sh           # attached: held for the command's
                                                                   # whole life, released the instant
                                                                   # the process dies — the crash-safe mode
+breeze lock exec /path/to/file --as alice \
+  --cpu-quota 200% --memory-max 1G --tasks-max 64 --io-weight 100 -- ./build.sh
+                                                                  # same, but wraps ./build.sh in a
+                                                                  # transient `systemd-run --scope` with
+                                                                  # these cgroup limits — see "Resource
+                                                                  # limits" under pipeline HCL for what
+                                                                  # each flag controls
 breeze lock release <lock-id> --as alice
 breeze lock release-all --as alice        # release every lock (any kind) alice holds, no ID needed
 breeze lock list [--all] [--json]
@@ -440,6 +447,37 @@ Command/hook templates use `{name}` placeholders — `commit`, `environment`,
 `exec.Command`, **never** through a shell. A commit sha or any other param value
 containing `; rm -rf /` or `$(whoami)` lands as inert bytes in one argv slot; there
 is no shell to interpret it. See `internal/hook/hook.go`.
+
+**Resource limits.** Any stage's `command` or any `pre_gate`/`post_action` hook can
+carry an optional `resource_limits` block, bounding that command's CPU/memory/
+process-count/IO footprint via a transient `systemd-run --scope` wrapper — a single
+runaway build/test/deploy can't starve the host or other concurrently-running
+stages:
+
+```hcl
+stage "build" {
+  type    = "command"
+  timeout = "10m"
+  command = ["./scripts/build.sh", "{commit}"]
+  resource_limits {
+    cpu_quota  = "200%"   # systemd CPUQuota= syntax, e.g. "200%" for 2 cores
+    memory_max = "2G"     # systemd MemoryMax= syntax, e.g. "512M", "2G", "infinity"
+    tasks_max  = 64       # max processes/threads
+    io_weight  = 100      # 1-10000, relative IO priority
+  }
+}
+```
+
+All four fields are optional; only the ones set are applied. `cpu_quota`/
+`memory_max` follow systemd's own syntax verbatim — breeze doesn't reinterpret
+them, so a malformed value surfaces as a `systemd-run` error in the stage's own
+captured output rather than a `breeze apply` validation error; `tasks_max`/
+`io_weight` are checked at registration time (simple integer bounds). Requires
+`systemd-run` on the daemon's `PATH` and a usable systemd session (the daemon runs
+as `--user` unless it's root) — with neither configured, a stage with no
+`resource_limits` block behaves exactly as before. `breeze lock exec` accepts the
+same limits as ad-hoc `--cpu-quota`/`--memory-max`/`--tasks-max`/`--io-weight` flags
+(see "File locks" below).
 
 **Relative paths** (a stage's `command`, a hook's `command`, `briefs_dir`) are
 resolved against **the directory containing the HCL file itself** — not your

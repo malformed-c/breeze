@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"breeze/internal/engine"
+	"breeze/internal/hook"
 	"breeze/internal/wire"
 )
 
@@ -21,11 +22,25 @@ func identityToWire(id engine.Identity) wire.IdentityInfo {
 }
 
 func commandTemplateFromWire(w wire.CommandTemplate) engine.CommandTemplate {
-	return engine.CommandTemplate{Path: w.Path, Args: w.Args, Env: w.Env, Dir: w.Dir}
+	return engine.CommandTemplate{Path: w.Path, Args: w.Args, Env: w.Env, Dir: w.Dir, ResourceLimits: resourceLimitsFromWire(w.ResourceLimits)}
 }
 
 func commandTemplateToWire(c engine.CommandTemplate) wire.CommandTemplate {
-	return wire.CommandTemplate{Path: c.Path, Args: c.Args, Env: c.Env, Dir: c.Dir}
+	return wire.CommandTemplate{Path: c.Path, Args: c.Args, Env: c.Env, Dir: c.Dir, ResourceLimits: resourceLimitsToWire(c.ResourceLimits)}
+}
+
+func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
+	if w == nil {
+		return nil
+	}
+	return &hook.ResourceLimits{CPUQuota: w.CPUQuota, MemoryMax: w.MemoryMax, TasksMax: w.TasksMax, IOWeight: w.IOWeight}
+}
+
+func resourceLimitsToWire(rl *hook.ResourceLimits) *wire.ResourceLimits {
+	if rl == nil {
+		return nil
+	}
+	return &wire.ResourceLimits{CPUQuota: rl.CPUQuota, MemoryMax: rl.MemoryMax, TasksMax: rl.TasksMax, IOWeight: rl.IOWeight}
 }
 
 func hookFromWire(w wire.Hook) (engine.Hook, error) {

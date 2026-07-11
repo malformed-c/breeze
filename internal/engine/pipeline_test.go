@@ -3,6 +3,8 @@ package engine
 import (
 	"testing"
 	"time"
+
+	"breeze/internal/hook"
 )
 
 const minute = time.Minute
@@ -61,6 +63,36 @@ func TestRegisterPipelineRejectsUnknownPlaceholder(t *testing.T) {
 	p.Stages[0].Command.Args = []string{"{comit}"}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected unknown placeholder to be rejected")
+	}
+}
+
+func TestRegisterPipelineAcceptsResourceLimits(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{CPUQuota: "200%", MemoryMax: "1G", TasksMax: 32, IOWeight: 500}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("expected valid resource_limits to register: %v", err)
+	}
+	stored, ok := e.Pipeline("release")
+	if !ok {
+		t.Fatalf("expected pipeline to be retrievable")
+	}
+	if got := stored.Stages[0].Command.ResourceLimits; got == nil || got.CPUQuota != "200%" || got.TasksMax != 32 {
+		t.Fatalf("expected ResourceLimits to round-trip through registration, got %+v", got)
+	}
+}
+
+func TestRegisterPipelineRejectsOutOfRangeIOWeight(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{IOWeight: 20000}
+	if err := e.RegisterPipeline(p, "admin"); err == nil {
+		t.Fatalf("expected out-of-range io_weight (>10000) to be rejected")
+	}
+	p2 := examplePipeline()
+	p2.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{TasksMax: -1}
+	if err := e.RegisterPipeline(p2, "admin"); err == nil {
+		t.Fatalf("expected negative tasks_max to be rejected")
 	}
 }
 
