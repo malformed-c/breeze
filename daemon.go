@@ -772,13 +772,13 @@ func (d *daemonServer) requireTier2(req wire.Request) (*engine.Identity, error) 
 // of just "lock conflict," so a caller can tell it's a genuine conflict with
 // someone else (reentrancy — see tryAcquire — already handles "it's my own
 // lock" before this is ever reached).
-func lockAcquireConflictErr(held *engine.FileLock) error {
+func lockAcquireConflictErr(conflictingPaths []string, held *engine.FileLock) error {
 	expiry := "never"
 	if !held.ExpiresAt.IsZero() {
 		expiry = held.ExpiresAt.Format(time.RFC3339)
 	}
 	return fmt.Errorf("lock conflict: %v is already held by %q (mode %s, since %s, expires %s)",
-		held.Paths, held.Holder, held.Mode, held.AcquiredAt.Format(time.RFC3339), expiry)
+		conflictingPaths, held.Holder, held.Mode, held.AcquiredAt.Format(time.RFC3339), expiry)
 }
 
 func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
@@ -816,13 +816,13 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		return d.eng.TryAcquireLock(req.As, p.Paths, mode, ttl, false)
 	}
 	waitChannels := func() (<-chan struct{}, error) { return d.eng.WaitChannelsForPaths(p.Paths) }
-	findConflict := func() *engine.FileLock { return d.eng.FindConflictingFileLock(p.Paths, mode) }
+	findConflict := func() (*engine.FileLock, []string) { return d.eng.FindConflictingFileLock(p.Paths, mode) }
 	if len(p.Resources) > 0 {
 		tryAcquire = func() (*engine.FileLock, bool, error) {
 			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl, false)
 		}
 		waitChannels = func() (<-chan struct{}, error) { return d.eng.WaitChannelsForResourceKeys(p.Resources) }
-		findConflict = func() *engine.FileLock { return d.eng.FindConflictingResourceLock(p.Resources, mode) }
+		findConflict = func() (*engine.FileLock, []string) { return d.eng.FindConflictingResourceLock(p.Resources, mode) }
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -835,8 +835,8 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 			return okResponse(wire.LockAcquireResponse{Lock: lockToWire(*lock)})
 		}
 		if !p.Wait {
-			if held := findConflict(); held != nil {
-				return errResponse(lockAcquireConflictErr(held))
+			if held, overlap := findConflict(); held != nil {
+				return errResponse(lockAcquireConflictErr(overlap, held))
 			}
 			return errResponse(engine.ErrLockConflict)
 		}

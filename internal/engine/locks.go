@@ -62,24 +62,49 @@ func (e *Engine) TryAcquireLock(holder string, rawPaths []string, mode LockMode,
 // tryAcquire's own internal check would have found (locksConflict, using the
 // identical canonicalization each acquire path uses) — so a caller that just got
 // ok=false can report WHO holds the conflicting lock instead of the bare generic
-// ErrLockConflict ("someone else has it" vs. no information at all).
-func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) *FileLock {
+// ErrLockConflict ("someone else has it" vs. no information at all). The second
+// return value is the SPECIFIC subset of the caller's own requested paths/keys
+// that overlaps with the held lock — not held.Paths in full, which may (and
+// often does) include other paths the caller never asked for at all, e.g. a
+// broader pre-existing lock that happens to cover one of the requested paths
+// among several unrelated ones. A real, confusing incident: an acquire request
+// for 4 paths conflicted with an existing 6-path lock, and the error listed all
+// 6 (including 2 the request never mentioned) with no way to tell which of the
+// requested 4 actually collided.
+func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) (*FileLock, []string) {
 	return e.findConflicting(canonicalPaths(rawPaths), mode)
 }
-func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) *FileLock {
+func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) (*FileLock, []string) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
 	return e.findConflicting(sorted, mode)
 }
-func (e *Engine) findConflicting(paths []string, mode LockMode) *FileLock {
+func (e *Engine) findConflicting(paths []string, mode LockMode) (*FileLock, []string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, existing := range e.locks {
 		if locksConflict(paths, mode, existing) {
-			return existing
+			return existing, intersectPaths(paths, existing.Paths)
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// intersectPaths returns the elements of a that also appear in b — used to
+// narrow a lock conflict down to only the requested paths/keys that actually
+// overlap with the held lock, not its entire (possibly much broader) path set.
+func intersectPaths(a, b []string) []string {
+	inB := make(map[string]bool, len(b))
+	for _, p := range b {
+		inB[p] = true
+	}
+	var out []string
+	for _, p := range a {
+		if inB[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // TryAcquireResourceLock is the internal-use counterpart for non-filesystem

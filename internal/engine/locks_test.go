@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -180,12 +181,43 @@ func TestFindConflictingFileLockNamesTheHolder(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
-	held := e.FindConflictingFileLock([]string{"/repo/file"}, LockExclusive)
+	held, overlap := e.FindConflictingFileLock([]string{"/repo/file"}, LockExclusive)
 	if held == nil || held.Holder != "alice" {
 		t.Fatalf("expected FindConflictingFileLock to find alice's lock, got %+v", held)
 	}
-	if held := e.FindConflictingFileLock([]string{"/repo/other-file"}, LockExclusive); held != nil {
+	if !slices.Equal(overlap, []string{"/repo/file"}) {
+		t.Fatalf("expected the overlap to be exactly the requested path, got %v", overlap)
+	}
+	if held, _ := e.FindConflictingFileLock([]string{"/repo/other-file"}, LockExclusive); held != nil {
 		t.Fatalf("expected no conflict for an unrelated path, got %+v", held)
+	}
+}
+
+// TestFindConflictingFileLockOverlapExcludesUnrequestedPaths is a regression
+// test for a real, confusing incident: an agent's `lock acquire` request for 4
+// paths partially overlapped with its OWN earlier, broader 6-path lock (a
+// different, non-identical path set, so reentrancy correctly didn't kick in —
+// see TestReacquireBySameHolderIsIdempotent). The conflict error listed all 6
+// of the held lock's paths, including 2 the new request never even mentioned,
+// with no way to tell which of the 4 REQUESTED paths were actually the
+// problem. The overlap must be exactly the intersection, never the held lock's
+// full path set.
+func TestFindConflictingFileLockOverlapExcludesUnrequestedPaths(t *testing.T) {
+	e := New()
+	held6 := []string{"/repo/a.go", "/repo/b.go", "/repo/c.go", "/repo/d.go", "/repo/e.go", "/repo/f.go"}
+	if _, ok, err := e.TryAcquireLock("peri", held6, LockExclusive, time.Hour, false); err != nil || !ok {
+		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
+	}
+
+	// A different, non-identical 4-path request from the SAME holder, overlapping
+	// on exactly one path ("/repo/c.go") with the existing 6-path lock.
+	requested := []string{"/repo/x.go", "/repo/y.go", "/repo/c.go", "/repo/z.go"}
+	held, overlap := e.FindConflictingFileLock(requested, LockExclusive)
+	if held == nil {
+		t.Fatalf("expected a conflict (partial overlap is not reentrant)")
+	}
+	if !slices.Equal(overlap, []string{"/repo/c.go"}) {
+		t.Fatalf("expected the overlap to be exactly the one shared path, got %v (held lock's full set: %v)", overlap, held.Paths)
 	}
 }
 
