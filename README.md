@@ -99,6 +99,7 @@ breeze lock exec /path/to/file --as alice -- ./build.sh           # attached: he
                                                                   # whole life, released the instant
                                                                   # the process dies — the crash-safe mode
 breeze lock release <lock-id> --as alice
+breeze lock release-all --as alice        # release every lock (any kind) alice holds, no ID needed
 breeze lock list [--all] [--json]
 breeze lock check /path/to/file [--as alice] [--json]   # read-only: is this locked by someone else?
 ```
@@ -112,8 +113,15 @@ your existing lock (same ID, no TTL renewal — use `lock renew` for that) rathe
 than erroring with a conflict indistinguishable from "someone else has it." A
 DIFFERENT holder, or a different mode from you (e.g. shared vs. exclusive on the
 same path), is still a genuine conflict, and that error now names the current
-holder and its expiry. An *attached* lock (`lock exec`) is never treated as
+holder, its expiry, and only the specific path(s) from your request that actually
+overlap with the held lock — not the held lock's entire (possibly much broader,
+unrelated) path list. An *attached* lock (`lock exec`) is never treated as
 reentrant, since it's tied to one specific connection's lifetime.
+
+Wrapping up and want to clear everything you're holding without releasing lock
+IDs one by one? `breeze lock release-all --as alice` releases every lock you
+hold — file locks and resource mutexes alike — leaving other identities'
+holdings untouched.
 
 `lock check` never acquires or releases anything — it just reports whether a path is
 currently held by an identity other than `--as` (own locks are never a conflict). No

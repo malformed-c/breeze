@@ -670,6 +670,14 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		}
 		return okResponse(struct{}{})
 
+	case wire.OpLockReleaseAll:
+		released := d.eng.ReleaseAllLocks(req.As)
+		out := make([]wire.LockInfo, 0, len(released))
+		for _, l := range released {
+			out = append(out, lockToWire(l))
+		}
+		return okResponse(wire.LockReleaseAllResponse{Released: out})
+
 	case wire.OpLockRenew:
 		var p wire.LockRenewRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {

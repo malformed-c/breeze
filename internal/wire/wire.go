@@ -25,11 +25,12 @@ const (
 	OpRoleRevoke Op = "role.revoke"
 	OpRoleList   Op = "role.list"
 
-	OpLockAcquire Op = "lock.acquire"
-	OpLockExec    Op = "lock.exec" // streaming
-	OpLockRelease Op = "lock.release"
-	OpLockRenew   Op = "lock.renew"
-	OpLockList    Op = "lock.list"
+	OpLockAcquire    Op = "lock.acquire"
+	OpLockExec       Op = "lock.exec" // streaming
+	OpLockRelease    Op = "lock.release"
+	OpLockReleaseAll Op = "lock.release_all"
+	OpLockRenew      Op = "lock.renew"
+	OpLockList       Op = "lock.list"
 
 	OpInventory Op = "inventory" // resource locks (non-file), separate from lock.list
 
@@ -184,6 +185,14 @@ type LockExecRequest struct {
 type LockReleaseRequest struct {
 	ID    string `json:"id"`
 	Force bool   `json:"force,omitempty"`
+}
+
+// LockReleaseAllResponse reports every lock (any kind) that was released — the
+// caller's own current holdings, not scoped to file locks only, since "release
+// everything I'm holding" is the point (a deploy claim left dangling is just as
+// blocking as a stray file lock).
+type LockReleaseAllResponse struct {
+	Released []LockInfo `json:"released"`
 }
 
 type LockRenewRequest struct {

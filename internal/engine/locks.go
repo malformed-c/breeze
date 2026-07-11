@@ -277,6 +277,30 @@ func (e *Engine) ReleaseLock(id, holder string, force bool) error {
 	return nil
 }
 
+// ReleaseAllLocks releases every lock (any kind, including manual claims) held
+// by holder, e.g. when an agent wraps up and wants to clear its holdings without
+// releasing one lock ID at a time. Returns the released locks for confirmation;
+// an empty/nil result (never an error) means holder held nothing.
+func (e *Engine) ReleaseAllLocks(holder string) []FileLock {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var released []FileLock
+	for id, lock := range e.locks {
+		if lock.Holder != holder {
+			continue
+		}
+		released = append(released, *lock)
+		delete(e.locks, id)
+		e.audit("lock.released", holder, fmt.Sprintf("id=%s kind=%s paths=%v holder=%s force=false", lock.ID, lock.Kind, lock.Paths, lock.Holder))
+		e.notifyPathsLocked(lock.Paths)
+	}
+	if len(released) > 0 {
+		sort.Slice(released, func(i, j int) bool { return released[i].ID < released[j].ID })
+		e.changed()
+	}
+	return released
+}
+
 func (e *Engine) RenewLock(id, holder string, ttl time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()

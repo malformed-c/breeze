@@ -116,6 +116,7 @@ func usage() {
                                                # a mutex over a named concept, not a real file
   lock exec <path...> [--shared] --as NAME -- <command...>
   lock release <lock-id> --as NAME [--force]
+  lock release-all --as NAME            # release every lock (any kind) NAME holds
   lock renew <lock-id> [--ttl D] --as NAME
   lock list [--all] [--json]                  # --all also includes resource locks (deploy claims)
   lock check <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
@@ -1102,11 +1103,11 @@ func cmdRole(p paths, args []string) error {
 
 func cmdLock(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze lock acquire|exec|release|renew|list|check ...")
+		return fmt.Errorf("usage: breeze lock acquire|exec|release|release-all|renew|list|check ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze lock acquire|exec|release|renew|list|check ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze lock acquire|exec|release|release-all|renew|list|check ..."); handled {
 		return err
 	}
 	as := resolveIdentity(p, f)
@@ -1150,6 +1151,27 @@ func cmdLock(p paths, args []string) error {
 		payload, _ := json.Marshal(wire.LockReleaseRequest{ID: f.rest[0], Force: f.force})
 		_, err := call(p, wire.Request{Op: wire.OpLockRelease, As: as, Payload: payload})
 		return err
+	case "release-all":
+		resp, err := call(p, wire.Request{Op: wire.OpLockReleaseAll, As: as})
+		if err != nil {
+			return err
+		}
+		out, err := decodePayload[wire.LockReleaseAllResponse](resp)
+		if err != nil {
+			return err
+		}
+		if f.jsonOut {
+			printJSON(out)
+			return nil
+		}
+		if len(out.Released) == 0 {
+			fmt.Println("no locks held")
+			return nil
+		}
+		for _, l := range out.Released {
+			fmt.Printf("released %-6s %-8s %-8s %v\n", l.ID, l.Kind, l.Mode, l.Paths)
+		}
+		return nil
 	case "renew":
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze lock renew <lock-id> [--ttl D] --as NAME")

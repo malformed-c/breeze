@@ -173,6 +173,43 @@ func TestReacquireByAttachedLockIsNotIdempotent(t *testing.T) {
 	}
 }
 
+// TestReleaseAllLocksReleasesOnlyRequestedHoldersLocks is a regression test for
+// the "release all file locks" request: an agent wrapping up should be able to
+// clear every lock it holds — file and resource kinds alike, including a manual
+// claim — without releasing anyone else's locks or needing each lock ID by hand.
+func TestReleaseAllLocksReleasesOnlyRequestedHoldersLocks(t *testing.T) {
+	e := New()
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/a"}, LockExclusive, time.Hour, false); err != nil || !ok {
+		t.Fatalf("acquire a failed: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/b"}, LockExclusive, time.Hour, false); err != nil || !ok {
+		t.Fatalf("acquire b failed: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := e.TryAcquireResourceLock("alice", []string{"deploy/app/prod"}, LockExclusive, time.Hour, true); err != nil || !ok {
+		t.Fatalf("acquire resource lock failed: ok=%v err=%v", ok, err)
+	}
+	bobLock, ok, err := e.TryAcquireLock("bob", []string{"/repo/c"}, LockExclusive, time.Hour, false)
+	if err != nil || !ok {
+		t.Fatalf("acquire c failed: ok=%v err=%v", ok, err)
+	}
+
+	released := e.ReleaseAllLocks("alice")
+	if len(released) != 3 {
+		t.Fatalf("expected 3 locks released, got %d: %+v", len(released), released)
+	}
+	if len(e.ListAllLocks()) != 1 {
+		t.Fatalf("expected only bob's lock to remain, got %d", len(e.ListAllLocks()))
+	}
+	remaining := e.ListAllLocks()
+	if remaining[0].ID != bobLock.ID {
+		t.Fatalf("expected bob's lock %s to survive, got %s", bobLock.ID, remaining[0].ID)
+	}
+
+	if released := e.ReleaseAllLocks("alice"); len(released) != 0 {
+		t.Fatalf("expected releasing again to be a no-op, got %+v", released)
+	}
+}
+
 // TestFindConflictingFileLockNamesTheHolder is a regression test for an
 // unhelpful bare "lock conflict" error with no information about who holds it
 // or how to proceed.

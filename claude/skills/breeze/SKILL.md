@@ -128,6 +128,7 @@ breeze lock exec <path...> [--shared] --as <name> -- <command...>   # crash-safe
                                                                      # command's whole life, released
                                                                      # instantly if the process dies
 breeze lock release <lock-id> --as <name> [--force]
+breeze lock release-all --as <name>   # release everything <name> holds, any kind, no ID needed
 breeze lock list [--all] [--json]   # --all also includes resource locks (e.g. deploy claims)
 breeze lock check <path...> [--as <name>] [--json]   # read-only, no acquire/release involved
 breeze inventory [--json]     # resource-locks-only view (e.g. a deploy's (target,environment)
