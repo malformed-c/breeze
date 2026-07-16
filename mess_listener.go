@@ -165,6 +165,12 @@ func handleMessCommand(eng *engine.Engine, messPath, identity string, m messInbo
 		reply("breeze: %v", err)
 		return
 	}
+	// Same short-SHA expansion the CLI applies to every <commit> argument (see
+	// resolveCommit in paths.go) — without it, a reviewer typing a short SHA in
+	// chat would land on a different StageKey than the full-SHA one `stage start`
+	// recorded, since StageKey.Commit is an exact-match map key with zero
+	// SHA-prefix awareness of its own.
+	commit = resolveCommit(commit)
 
 	p, ok := eng.Pipeline(pipelineName)
 	if !ok {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,6 +200,82 @@ func TestHandleMessCommandApprovesWithMatchingTopic(t *testing.T) {
 	}
 	if len(inst.Approvals) != 1 || inst.Approvals[0].Identity != "alice" {
 		t.Fatalf("expected alice's approval to be recorded, got %+v", inst.Approvals)
+	}
+}
+
+// TestHandleMessCommandExpandsShortSHA is a regression test: a chat-typed short
+// SHA in an "@breeze approve" command must resolve to the exact same StageKey
+// as the full SHA an earlier approval (e.g. a CLI `stage approve`, which itself
+// calls resolveCommit) recorded — StageKey.Commit is an exact-match map key
+// with zero SHA-prefix awareness of its own (see resolveCommit's doc comment in
+// paths.go). Requires 2 approvals so the outcome actually distinguishes "same
+// instance" from "different instance": if the chat approval landed on a
+// separate, short-SHA-keyed instance, this stays stuck at 1/2 forever instead
+// of resolving to StageSucceeded.
+func TestHandleMessCommandExpandsShortSHA(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
+	restore := chdir(t, repo)
+	defer restore()
+
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	full := strings.TrimSpace(string(out))
+	short := full[:8]
+
+	e := engine.New()
+	p := engine.Pipeline{
+		Name: "release",
+		Stages: []engine.StageDef{
+			{Name: "review", Type: engine.StageApproval,
+				ApprovalPolicy: &engine.ApprovalPolicy{RequiredApprovals: 2, RequiredRole: "reviewer"}},
+		},
+		FanOutAt:     1,
+		CommandTopic: "#release-approvals",
+	}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register pipeline: %v", err)
+	}
+	if _, err := e.RegisterIdentity("bob", ""); err != nil {
+		t.Fatalf("register bob: %v", err)
+	}
+	if err := e.AssignRole("bob", "reviewer"); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
+		t.Fatalf("register alice: %v", err)
+	}
+	if err := e.AssignRole("alice", "reviewer"); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	// First approval, under the FULL sha — as if a CLI `stage approve` (which
+	// itself calls resolveCommit) had already run.
+	if _, err := e.ApproveStage("release", "review", full, "", "bob", "lgtm from bob"); err != nil {
+		t.Fatalf("bob's approval: %v", err)
+	}
+
+	// Second approval arrives via chat, addressed by the SHORT sha.
+	m := messInboundMessage{
+		ID: "m1", From: "alice-on-mess", Topic: "release-approvals",
+		Kind: "topic", Body: "@breeze approve release/review " + short + " --brief lgtm",
+	}
+	handleMessCommand(e, "", "test-daemon-identity", m)
+
+	inst, err := e.StageStatus("release", "review", full, "")
+	if err != nil {
+		t.Fatalf("status under full sha: %v", err)
+	}
+	if inst.Status != engine.StageSucceeded {
+		t.Fatalf("expected the short-SHA chat approval to land on the same full-SHA instance as bob's, got status=%s approvals=%+v", inst.Status, inst.Approvals)
+	}
+	if len(inst.Approvals) != 2 {
+		t.Fatalf("expected both approvals recorded on one instance, got %+v", inst.Approvals)
 	}
 }
 
