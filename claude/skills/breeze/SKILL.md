@@ -253,10 +253,13 @@ A pipeline with `command_topic = "#some-topic"` set lets a mess message
 that topic actually approve a review stage — no CLI call needed. RBAC is NOT
 bypassed: the sender is mapped back to a breeze identity (reverse of
 `--mess-agent`) and must hold the stage's `RequiredRole`, same as a CLI
-`stage approve` would need; a rejection replies in the topic explaining why. Only
-`approve` — never deploy/rollback/cancel via chat. Subscriptions are established
-once at daemon startup, so a newly added `command_topic` needs a
-`breeze daemon restart` to take effect.
+`stage approve` would need; a rejection replies in the topic explaining why.
+`<commit>` here accepts a short SHA too (resolved server-side, against the
+daemon's own cwd) — a reviewer typing a short SHA in chat lands on the same
+instance a full-SHA `stage start` created. Only `approve` — never
+deploy/rollback/cancel via chat. Subscriptions are established once at daemon
+startup, so a newly added `command_topic` needs a `breeze daemon restart` to
+take effect.
 
 ### Rolling back a bad deploy
 

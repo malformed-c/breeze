@@ -727,6 +727,11 @@ work-unit brief, distinguishing a chat-triggered approval from a CLI one without
 any new audit-log plumbing. The daemon also replies in the topic (threaded off
 the triggering message) once the approval resolves, success or rejection alike.
 
+`<commit>` here accepts a short SHA too, same as any CLI `<commit>` argument —
+resolved server-side, against the daemon's own working directory, before
+looking up the stage instance, so a reviewer typing a short SHA in chat lands
+on the exact same instance a full-SHA `stage start` created.
+
 Only `approve` is supported — never `deploy`/`rollback`/`cancel` via chat, by
 design (this is the lowest-risk, most reversible action). The daemon subscribes
 to every registered pipeline's `command_topic` **once, at startup** — adding or
