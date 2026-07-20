@@ -966,3 +966,41 @@ authority it already legitimately holds. Concretely:
 - Full design rationale (why RBAC works this way, why deploy reuses the lock
   engine, retention/pruning, etc.) lives in code comments near each mechanism —
   there's deliberately no separate design doc to fall out of sync with the code.
+- **Lock system robustness audit** (contention, crash/stale-lock reclamation,
+  deadlock avoidance, TTL/expiry, concurrent-race/reentrancy near-misses —
+  `internal/engine/locks_test.go`, `daemon_lock_test.go`) found and fixed three
+  real bugs: `RenewLock` didn't check whether a lock was `Attached`, so renewing
+  one made it eligible for TTL sweep-deletion while its connection was still
+  open (a genuine double-grant risk — now rejected, and `SweepExpiredLocks`
+  exempts `Attached` locks unconditionally as a second layer); a waiter
+  registered across multiple paths at once leaked a stale entry under any path
+  a release/expiry didn't happen to touch (`notifyPathsLocked` now prunes
+  closed channels from every key, not just the touched ones); and a conflict
+  error named only one arbitrary (map-iteration-order) holder when several
+  locks conflicted at once (`findConflicting` now returns every conflict).
+  **Deliberately NOT fixed, characterized instead**: breeze has *no* deadlock
+  detection or avoidance of any kind — `tryAcquire` is a pure "check conflicts,
+  else grant" function, so two agents cross-waiting on each other's locks block
+  forever with nothing to ever break the cycle; the *only* mitigation is a
+  caller-supplied `--timeout` (`TestCrossWaitBlocksForeverWithNoTimeout` /
+  `TestHandleLockAcquireCrossWaitBrokenByTimeout` pin this down as current,
+  intentional behavior — full deadlock detection would need a wait-for graph
+  and cycle check on every acquire, a real design change, not a bugfix, and
+  wasn't undertaken here). Also documented (not changed): reentrancy on a
+  resource lock matches holder/paths/mode only, not `ManualClaim` — re-issuing
+  a plain `lock acquire --resource` against a key you already hold via `deploy
+  claim`/`stage claim` silently re-reports the existing claim unchanged
+  (`TestResourceReentrancyIgnoresManualClaimMismatch`).
+- **Perf pass** (`internal/engine/locks_bench_test.go`): `tryAcquire` does a
+  linear scan of every held lock for both its reentrancy check and its
+  conflict check, so acquire cost grows roughly linearly with the lock table's
+  size — ~6µs uncontended, ~54µs against 1000 pre-existing unrelated locks on
+  this hardware. `ListLocks`/`ListAllLocks` similarly scale with table size
+  (they copy-and-sort everything on every call: ~2µs at 10 locks, ~330µs at
+  1000). `SweepExpiredLocks`'s steady-state ("nothing expired," the common
+  case on every 5s tick) cost also scales linearly with table size but stays
+  under 25µs even at 1000 locks. None of this is a real bottleneck at breeze's
+  actual expected scale (a handful of concurrent agents, realistically tens to
+  low hundreds of locks) — noted here as a real architectural property (an
+  index by path would trade this away for insert/delete complexity) rather
+  than something worth optimizing preemptively.
