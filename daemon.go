@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -39,6 +40,39 @@ type daemonServer struct {
 	// accept loop's clean-shutdown branch checks it to decide whether to exit
 	// normally or re-exec in place (see execSelfAsDaemon).
 	restarting atomic.Bool
+
+	// conns tracks every handleConn goroutine currently in flight — waited on
+	// (bounded, see waitConnsIdle) during shutdown/restart so an ordinary
+	// request already being processed gets a real response instead of the
+	// connection being yanked out from under it by a restart's re-exec (which
+	// replaces the whole process image, killing every other goroutine
+	// instantly, mid-write). A real bug found live: `operator update-all`
+	// restarting a daemon while a concurrent `stage start` was still running
+	// its command left that caller with a bare "EOF", even though the engine
+	// itself resolved the stage correctly via CancelRunningStages below — the
+	// caller just never got to hear about it.
+	conns sync.WaitGroup
+}
+
+// waitConnsIdle waits up to timeout for every in-flight handleConn goroutine
+// to finish, returning false if the timeout elapsed first. Bounded rather than
+// unconditional: a long-lived streaming connection (`lock exec` held open for
+// an external command's whole lifetime, `operator watch`) must never block a
+// restart indefinitely — the common case (an ordinary request already
+// resolving, often within milliseconds once CancelRunningStages has killed
+// whatever it was waiting on) finishes well inside the bound.
+func (d *daemonServer) waitConnsIdle(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		d.conns.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // runDaemon is the entry point for `breeze daemon`. Mirrors mess/daemon.go's startup
@@ -104,6 +138,14 @@ func runDaemon(p paths, args []string) error {
 				if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process is now orphaned with no result; re-run `stage start` to retry"); n > 0 {
 					log.Printf("cancelled %d stage instance(s) still running at shutdown (their underlying processes are now orphaned, untracked)", n)
 				}
+				// Give every in-flight request a real chance to write its response
+				// before anything tears the process down — CancelRunningStages just
+				// unblocked any handler waiting on a killed stage process, so this
+				// is normally near-instant; bounded so one long-lived streaming
+				// connection (lock exec, operator watch) can never stall a restart.
+				if !d.waitConnsIdle(5 * time.Second) {
+					log.Printf("warning: shutting down with a request still in flight after 5s — its caller will see a connection error, not a response")
+				}
 				// Wait for any snapshot write still in flight to actually land on
 				// disk before tearing anything down — a real bug found in practice:
 				// a mutation (e.g. a deploy claim) made moments before shutdown could
@@ -133,7 +175,7 @@ func runDaemon(p paths, args []string) error {
 				return err
 			}
 		}
-		go d.handleConn(conn)
+		d.conns.Go(func() { d.handleConn(conn) })
 	}
 }
 
