@@ -1597,6 +1597,20 @@ func sortedKeys(m map[string][]string) []string {
 	return keys
 }
 
+// stageFailureErr returns a non-nil error when status is a failed terminal
+// outcome ("failed" or "gate_failed") — the status text on stdout is still the
+// primary, human-readable signal; this only controls the process's own exit
+// code, so a background/scripted caller checking $? (or a chained `&&`) sees a
+// real failure instead of a misleadingly-successful exit 0 just because the
+// RPC itself succeeded. Mirrors the existing `stage wait` timeout convention:
+// print the informative line first, then return a plain sentinel error.
+func stageFailureErr(status string) error {
+	if status == "failed" || status == "gate_failed" {
+		return fmt.Errorf("stage %s", status)
+	}
+	return nil
+}
+
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: breeze stage start|approve|status|wait|cancel|claim ...")
@@ -1636,13 +1650,13 @@ func cmdStage(p paths, args []string) error {
 		}
 		if f.jsonOut {
 			printJSON(out)
-			return nil
+			return stageFailureErr(out.Instance.Status)
 		}
 		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
 		if out.Instance.Error != "" {
 			fmt.Println(out.Instance.Error)
 		}
-		return nil
+		return stageFailureErr(out.Instance.Status)
 	case "status":
 		payload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env})
 		resp, err := call(p, wire.Request{Op: wire.OpStageStatus, Payload: payload})
@@ -1655,10 +1669,10 @@ func cmdStage(p paths, args []string) error {
 		}
 		if f.jsonOut {
 			printJSON(out)
-			return nil
+			return stageFailureErr(out.Instance.Status)
 		}
 		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
-		return nil
+		return stageFailureErr(out.Instance.Status)
 	case "wait":
 		payload, _ := json.Marshal(wire.StageWaitRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Timeout: f.timeout})
 		resp, err := call(p, wire.Request{Op: wire.OpStageWait, Payload: payload})
@@ -1671,14 +1685,17 @@ func cmdStage(p paths, args []string) error {
 		}
 		if f.jsonOut {
 			printJSON(out)
-			return nil
+			if out.TimedOut {
+				return fmt.Errorf("timed out")
+			}
+			return stageFailureErr(out.Instance.Status)
 		}
 		if out.TimedOut {
 			fmt.Printf("%s: %s (timed out waiting for resolution)\n", out.Instance.Stage, out.Instance.Status)
 			return fmt.Errorf("timed out")
 		}
 		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
-		return nil
+		return stageFailureErr(out.Instance.Status)
 	case "cancel":
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
@@ -1809,13 +1826,13 @@ func cmdDeployRollback(p paths, args []string) error {
 	}
 	if f.jsonOut {
 		printJSON(out)
-		return nil
+		return stageFailureErr(out.Instance.Status)
 	}
 	fmt.Printf("%s: %s (rollback)\n", out.Instance.Stage, out.Instance.Status)
 	if out.Instance.Error != "" {
 		fmt.Println(out.Instance.Error)
 	}
-	return nil
+	return stageFailureErr(out.Instance.Status)
 }
 
 // cmdDeployClaim reserves a deploy stage's (target,environment) exclusivity ahead of

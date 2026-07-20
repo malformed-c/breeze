@@ -13,7 +13,7 @@ exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
 
 # A failure that happens BEFORE the watcher ever starts — this is the "already in
 # history at connect time" case that must NOT be notified about.
-exec breeze stage start release build stalecommit --as ci
+! exec breeze stage start release build stalecommit --as ci
 stdout 'build: failed'
 
 exec breeze operator notify &notify&
@@ -22,7 +22,7 @@ exec sleep 0.5
 
 # A failure that happens AFTER the watcher is already running — this one is
 # genuinely new and must be notified.
-exec breeze stage start release build freshcommit --as ci
+! exec breeze stage start release build freshcommit --as ci
 stdout 'build: failed'
 exec sleep 0.5
 

@@ -8,8 +8,8 @@ cp stdout admin.token
 exec breeze apply -f release.hcl --as admin --token-file admin.token
 exec breeze apply -f other.hcl --as admin --token-file admin.token
 
-exec breeze stage start release build abc123 --as ci
-exec breeze stage start other build def456 --as ci
+! exec breeze stage start release build abc123 --as ci
+! exec breeze stage start other build def456 --as ci
 
 # Grouped by pipeline, alphabetically: "other" before "release".
 exec breeze operator

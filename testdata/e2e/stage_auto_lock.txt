@@ -14,8 +14,9 @@ exec breeze identity register admin
 cp stdout admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
-# Start a slow build in the background -- no `stage claim` was ever made.
-exec breeze stage start release build abc123 --as ci &build&
+# Start a slow build in the background -- no `stage claim` was ever made. It's
+# expected to exit non-zero once cancelled below (the run ends Failed).
+! exec breeze stage start release build abc123 --as ci &build&
 exec sleep 0.3
 exec breeze stage status release build abc123 --json
 stdout '"status":\s*"running"'

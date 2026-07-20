@@ -10,7 +10,7 @@ exec breeze identity register ci
 cp stdout ci.token
 exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
 
-exec breeze stage start release build abc123 --as ci
+! exec breeze stage start release build abc123 --as ci
 stdout 'build: failed'
 
 exec sleep 0.5

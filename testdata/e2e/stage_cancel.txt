@@ -22,7 +22,10 @@ exec breeze role assign builder ci --as admin --token-file admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # Start a slow build in the background, wait for it to actually reach Running.
-exec breeze stage start release build abc123 --as ci --token-file ci.token &build&
+# It's expected to exit non-zero once cancelled below (the run ends Failed) --
+# `!` before the background invocation tells `wait` not to treat that as a
+# testscript failure.
+! exec breeze stage start release build abc123 --as ci --token-file ci.token &build&
 exec sleep 0.3
 exec breeze stage status release build abc123 --json
 stdout '"status":\s*"running"'
@@ -36,7 +39,7 @@ stdout 'build: failed \(cancelled\)'
 # not just the state mutation, actually happened.
 wait build
 
-exec breeze stage status release build abc123 --json
+! exec breeze stage status release build abc123 --json
 stdout '"status":\s*"failed"'
 stdout '"error":\s*"stuck-cancelling"'
 

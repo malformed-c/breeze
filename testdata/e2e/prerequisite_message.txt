@@ -12,7 +12,7 @@ exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # build fails outright (/bin/false) — the RPC itself still succeeds, reporting
 # StageFailed as data.
-exec breeze stage start release build 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
+! exec breeze stage start release build 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
 stdout 'build: failed'
 ! stdout 'cancelled'
 
