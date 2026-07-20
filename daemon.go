@@ -817,18 +817,26 @@ func (d *daemonServer) requireTier2(req wire.Request) (*engine.Identity, error) 
 	return d.eng.VerifyToken(req.As, req.Token)
 }
 
-// lockAcquireConflictErr names the current holder of a conflicting lock instead
-// of the bare generic ErrLockConflict — "held by X since Y, expires Z" instead
-// of just "lock conflict," so a caller can tell it's a genuine conflict with
-// someone else (reentrancy — see tryAcquire — already handles "it's my own
-// lock" before this is ever reached).
-func lockAcquireConflictErr(conflictingPaths []string, held *engine.FileLock) error {
-	expiry := "never"
-	if !held.ExpiresAt.IsZero() {
-		expiry = held.ExpiresAt.Format(time.RFC3339)
+// lockAcquireConflictErr names the current holder(s) of every conflicting lock
+// instead of the bare generic ErrLockConflict — "held by X since Y, expires Z"
+// instead of just "lock conflict," so a caller can tell it's a genuine
+// conflict with someone else (reentrancy — see tryAcquire — already handles
+// "it's my own lock" before this is ever reached). Lists every conflict, not
+// just one: e.g. two shared locks from different holders can both block one
+// exclusive request, and naming only the first (arbitrary map-iteration-order)
+// one would mislead a caller into thinking releasing/waiting on just that
+// holder is sufficient.
+func lockAcquireConflictErr(conflicts []engine.LockConflict) error {
+	parts := make([]string, len(conflicts))
+	for i, c := range conflicts {
+		expiry := "never"
+		if !c.Lock.ExpiresAt.IsZero() {
+			expiry = c.Lock.ExpiresAt.Format(time.RFC3339)
+		}
+		parts[i] = fmt.Sprintf("%v is already held by %q (mode %s, since %s, expires %s)",
+			c.Overlap, c.Lock.Holder, c.Lock.Mode, c.Lock.AcquiredAt.Format(time.RFC3339), expiry)
 	}
-	return fmt.Errorf("lock conflict: %v is already held by %q (mode %s, since %s, expires %s)",
-		conflictingPaths, held.Holder, held.Mode, held.AcquiredAt.Format(time.RFC3339), expiry)
+	return fmt.Errorf("lock conflict: %s", strings.Join(parts, "; "))
 }
 
 func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
@@ -866,13 +874,13 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		return d.eng.TryAcquireLock(req.As, p.Paths, mode, ttl, false)
 	}
 	waitChannels := func() (<-chan struct{}, error) { return d.eng.WaitChannelsForPaths(p.Paths) }
-	findConflict := func() (*engine.FileLock, []string) { return d.eng.FindConflictingFileLock(p.Paths, mode) }
+	findConflict := func() []engine.LockConflict { return d.eng.FindConflictingFileLock(p.Paths, mode) }
 	if len(p.Resources) > 0 {
 		tryAcquire = func() (*engine.FileLock, bool, error) {
 			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl, false)
 		}
 		waitChannels = func() (<-chan struct{}, error) { return d.eng.WaitChannelsForResourceKeys(p.Resources) }
-		findConflict = func() (*engine.FileLock, []string) { return d.eng.FindConflictingResourceLock(p.Resources, mode) }
+		findConflict = func() []engine.LockConflict { return d.eng.FindConflictingResourceLock(p.Resources, mode) }
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -885,8 +893,8 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 			return okResponse(wire.LockAcquireResponse{Lock: lockToWire(*lock)})
 		}
 		if !p.Wait {
-			if held, overlap := findConflict(); held != nil {
-				return errResponse(lockAcquireConflictErr(overlap, held))
+			if conflicts := findConflict(); len(conflicts) > 0 {
+				return errResponse(lockAcquireConflictErr(conflicts))
 			}
 			return errResponse(engine.ErrLockConflict)
 		}

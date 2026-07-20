@@ -58,36 +58,51 @@ func (e *Engine) TryAcquireLock(holder string, rawPaths []string, mode LockMode,
 	return e.tryAcquire(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached, false)
 }
 
-// FindConflictingFileLock/FindConflictingResourceLock look up the SAME conflict
-// tryAcquire's own internal check would have found (locksConflict, using the
-// identical canonicalization each acquire path uses) — so a caller that just got
-// ok=false can report WHO holds the conflicting lock instead of the bare generic
-// ErrLockConflict ("someone else has it" vs. no information at all). The second
-// return value is the SPECIFIC subset of the caller's own requested paths/keys
-// that overlaps with the held lock — not held.Paths in full, which may (and
-// often does) include other paths the caller never asked for at all, e.g. a
-// broader pre-existing lock that happens to cover one of the requested paths
-// among several unrelated ones. A real, confusing incident: an acquire request
-// for 4 paths conflicted with an existing 6-path lock, and the error listed all
-// 6 (including 2 the request never mentioned) with no way to tell which of the
-// requested 4 actually collided.
-func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) (*FileLock, []string) {
+// LockConflict pairs one currently-held lock that conflicts with a requested
+// acquire alongside the SPECIFIC subset of the caller's own requested
+// paths/keys that overlaps with it — not the held lock's Paths in full, which
+// may (and often does) include other paths the caller never asked for at all.
+// A real, confusing incident: an acquire request for 4 paths conflicted with
+// an existing 6-path lock, and the error listed all 6 (including 2 the
+// request never mentioned) with no way to tell which of the requested 4
+// actually collided.
+type LockConflict struct {
+	Lock    *FileLock
+	Overlap []string
+}
+
+// FindConflictingFileLock/FindConflictingResourceLock look up every currently
+// conflicting lock tryAcquire's own internal check would have found
+// (locksConflict, using the identical canonicalization each acquire path
+// uses) — so a caller that just got ok=false can report WHO holds the
+// conflicting lock(s) instead of the bare generic ErrLockConflict ("someone
+// else has it" vs. no information at all). Deliberately returns EVERY
+// conflict, not just the first one a map iteration happens to find — e.g. two
+// shared locks from different holders can both block one exclusive request,
+// and naming only one would mislead a caller into thinking waiting on that
+// one holder alone is sufficient.
+func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) []LockConflict {
 	return e.findConflicting(canonicalPaths(rawPaths), mode)
 }
-func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) (*FileLock, []string) {
+func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) []LockConflict {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
 	return e.findConflicting(sorted, mode)
 }
-func (e *Engine) findConflicting(paths []string, mode LockMode) (*FileLock, []string) {
+func (e *Engine) findConflicting(paths []string, mode LockMode) []LockConflict {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var conflicts []LockConflict
 	for _, existing := range e.locks {
 		if locksConflict(paths, mode, existing) {
-			return existing, intersectPaths(paths, existing.Paths)
+			conflicts = append(conflicts, LockConflict{Lock: existing, Overlap: intersectPaths(paths, existing.Paths)})
 		}
 	}
-	return nil, nil
+	// Map iteration order is random; sort for deterministic, testable output —
+	// callers (e.g. the CLI's conflict error) list every conflict, so their
+	// order should be stable run to run, not just their content.
+	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Lock.ID < conflicts[j].Lock.ID })
+	return conflicts
 }
 
 // intersectPaths returns the elements of a that also appear in b — used to
@@ -243,8 +258,16 @@ func (e *Engine) registerWaiters(keys []string) <-chan struct{} {
 	return ch
 }
 
-// notifyPaths must be called with e.mu held; wakes and clears every waiter registered
-// on any of the given canonical paths.
+// notifyPathsLocked must be called with e.mu held; wakes and clears every
+// waiter registered on any of the given canonical paths, then prunes any
+// now-closed channel from every OTHER key's waiter list too. A waiter
+// registered across multiple paths/keys at once (e.g. `lock acquire a b`,
+// waiting on both) is closed the moment ANY one of its paths is released —
+// but without the prune pass its stale reference under an untouched key would
+// linger in e.waiters forever: a genuine memory leak found in a robustness
+// audit, since nothing else would ever remove it short of that OTHER key
+// also happening to be released/expired later (which, for a rarely-touched
+// path, might be never).
 func (e *Engine) notifyPathsLocked(paths []string) {
 	for _, p := range paths {
 		key := "lock:" + p
@@ -257,6 +280,32 @@ func (e *Engine) notifyPathsLocked(paths []string) {
 			}
 		}
 		delete(e.waiters, key)
+	}
+	e.pruneClosedWaitersLocked()
+}
+
+// pruneClosedWaitersLocked removes every already-closed channel from
+// e.waiters, across every remaining key — must be called with e.mu held.
+// Cheap given breeze's expected scale (a handful of agents, at most tens of
+// concurrent locks/waiters), and avoids needing a separate reverse (channel
+// -> every key it's registered under) index just to know what else to prune
+// when only one of a multi-path waiter's paths was actually released.
+func (e *Engine) pruneClosedWaitersLocked() {
+	for key, chans := range e.waiters {
+		kept := chans[:0]
+		for _, ch := range chans {
+			select {
+			case <-ch:
+				// closed — drop it
+			default:
+				kept = append(kept, ch)
+			}
+		}
+		if len(kept) == 0 {
+			delete(e.waiters, key)
+		} else {
+			e.waiters[key] = kept
+		}
 	}
 }
 
@@ -310,6 +359,16 @@ func (e *Engine) RenewLock(id, holder string, ttl time.Duration) error {
 	}
 	if lock.Holder != holder {
 		return fmt.Errorf("lock %s is held by %s, not %s", id, lock.Holder, holder)
+	}
+	// An attached (`lock exec`) lock relies on connection-drop detection, not
+	// TTL, for its crash backstop — see SweepExpiredLocks. Giving one a
+	// nonzero TTL via renew would make it eligible for sweep-deletion while
+	// its connection is still open and the holder still believes it holds the
+	// lock: a genuine bug found in a robustness audit, since a second
+	// acquirer could then grab the same exclusive path while the first
+	// `lock exec` process is still actively running its command.
+	if lock.Attached {
+		return fmt.Errorf("lock %s is attached (lock exec) — it has no TTL to renew; it releases automatically when its connection closes", id)
 	}
 	lock.TTL = ttl
 	if ttl > 0 {
@@ -373,7 +432,11 @@ func (e *Engine) SweepExpiredLocks() {
 	now := e.now()
 	var expired []*FileLock
 	for id, l := range e.locks {
-		if l.TTL > 0 && !l.ExpiresAt.IsZero() && now.After(l.ExpiresAt) {
+		// Attached locks are unconditionally exempt regardless of what TTL
+		// they happen to carry — belt-and-suspenders alongside RenewLock's own
+		// rejection of renewing one, since an attached lock's crash backstop
+		// is connection-drop detection, never TTL.
+		if !l.Attached && l.TTL > 0 && !l.ExpiresAt.IsZero() && now.After(l.ExpiresAt) {
 			expired = append(expired, l)
 			delete(e.locks, id)
 		}
