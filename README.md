@@ -503,6 +503,30 @@ breeze deploy history release deploy [--env staging] [--limit N]
 a `required_role` (command/deploy) or is an approval stage (always Tier-2, since an
 approval is inherently an authorization-bearing attestation).
 
+**Failed means exit code 1.** `stage start`/`approve`/`status`/`wait` and `deploy
+rollback` all exit non-zero when the reported outcome is `failed` or `gate_failed` —
+the RPC itself still succeeds either way (exit code is data at the engine level, by
+design), but the CLI *process's* own exit code reflects the outcome, so `&&`/`$?` in
+a script or background command actually sees the failure. `stage cancel` is the one
+exception: ending a cancelled instance in `failed` is the cancel's own intended,
+successful outcome, not a failure of the cancel itself.
+
+### Running a whole pipeline
+
+```sh
+breeze pipeline run release abc123 --env staging --as ci --token T [--brief "..."]
+```
+
+Drives every stage in order — one `stage start`/`status` RPC per stage — instead of
+calling each stage by hand. An already-succeeded stage is **skipped**, not
+re-triggered, so re-running this exact command after a manual `stage approve`
+continues from where it stopped. It deliberately **never auto-approves**: hitting an
+approval-type stage stops the run and prints what's needed (current approval count,
+required role, the exact `stage approve` command to run) rather than approving on
+anyone's behalf. It also stops immediately on the first stage whose own outcome
+fails, rather than plowing ahead into stages whose prerequisite just broke. `--env`
+is required up front if the pipeline fans out (checked before touching any stage).
+
 ### Rolling back
 
 ```sh

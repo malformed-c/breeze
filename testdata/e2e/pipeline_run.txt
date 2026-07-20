@@ -1,0 +1,93 @@
+# `breeze pipeline run` drives every stage in order via the same RPCs a manual
+# per-stage CLI call would use, instead of requiring one `stage start`/`approve`
+# call per stage by hand. It stops (never auto-approves) at an approval stage,
+# skips a stage that's already succeeded (so re-running after a manual approval
+# continues from where it left off), and stops immediately on the first stage
+# whose own outcome fails.
+env BREEZE_DIR=$WORK/state
+
+exec breeze identity register admin
+cp stdout admin.token
+exec breeze identity register ci
+cp stdout ci.token
+exec breeze identity register alice
+cp stdout alice.token
+exec breeze role assign deployer ci --as admin --token-file admin.token
+exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# A fanned-out pipeline requires --env up front — fails fast, before touching
+# any stage, rather than getting partway through and only then discovering it
+# can't proceed.
+! exec breeze pipeline run release abc123 --as ci --token-file ci.token
+stderr 'fans out'
+
+# First run: build succeeds, then the runner stops at the approval stage
+# instead of trying to approve it itself.
+! exec breeze pipeline run release abc123 --env staging --as ci --token-file ci.token
+stdout 'build: succeeded'
+stdout 'review: awaiting approval \(0/1, role "reviewer"\)'
+stdout 'breeze stage approve release review abc123'
+! stdout 'deploy'
+
+exec breeze stage approve release review abc123 --as alice --token-file alice.token
+
+# Second run: build and review are both already succeeded, so they're skipped
+# (not re-triggered) — only deploy and test actually run.
+exec breeze pipeline run release abc123 --env staging --as ci --token-file ci.token
+stdout 'build: succeeded \(already\)'
+stdout 'review: succeeded \(already\)'
+stdout 'deploy: succeeded'
+stdout 'test: succeeded'
+stdout 'pipeline "release" complete'
+
+exec breeze pipeline status release abc123 --json
+stdout '"stage":\s*"deploy"[\s\S]*"status":\s*"succeeded"'
+stdout '"stage":\s*"test"[\s\S]*"status":\s*"succeeded"'
+
+# A pipeline whose first stage fails outright: the runner stops there instead
+# of trying anything further (there's nothing further to try in this pipeline,
+# but the error still names exactly what stopped it).
+exec breeze apply -f brittle.hcl --as admin --token-file admin.token
+! exec breeze pipeline run brittle def456 --as ci --token-file ci.token
+stdout 'build: failed'
+stderr 'stopped at "build"'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "release" {
+  environments = ["staging"]
+
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true", "{commit}"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+  stage "deploy" {
+    type          = "deploy"
+    fans_out      = true
+    required_role = "deployer"
+    timeout       = "10s"
+    command       = ["/bin/true", "{commit}", "{environment}"]
+  }
+  stage "test" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true", "{environment}"]
+  }
+}
+
+-- brittle.hcl --
+pipeline "brittle" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+}

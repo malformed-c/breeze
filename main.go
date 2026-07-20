@@ -139,6 +139,12 @@ func usage() {
   pipeline show <name> [--json]
   pipeline list [--json]
   pipeline status <name> <commit> [--json]
+  pipeline run <name> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+                                         # drives every stage in order (one stage
+                                         # start/status RPC per stage); stops and
+                                         # reports at the first approval stage or
+                                         # failure — re-run to continue after
+                                         # approving or fixing what broke
 
 -- stages --
   stage start   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
@@ -1439,14 +1445,16 @@ func normalizeDuration(s string) string {
 
 func cmdPipeline(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze pipeline register|show|list ...")
+		return fmt.Errorf("usage: breeze pipeline register|show|list|status|run ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze pipeline register|show|list|status ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze pipeline register|show|list|status|run ..."); handled {
 		return err
 	}
 	switch sub {
+	case "run":
+		return cmdPipelineRun(p, f)
 	case "register":
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze pipeline register <file.json|-> --as ADMIN --token T")
@@ -1537,6 +1545,106 @@ func cmdPipeline(p paths, args []string) error {
 	default:
 		return fmt.Errorf("unknown pipeline subcommand %q", sub)
 	}
+}
+
+// cmdPipelineRun drives a pipeline's stages in order for one commit, calling
+// the same stage.start/stage.status RPCs a manual per-stage CLI call would,
+// instead of requiring one `breeze stage start` per stage by hand. An
+// already-succeeded stage is skipped (not re-triggered), so re-running this
+// exact command after e.g. a manual `stage approve` continues from where it
+// left off. Deliberately does NOT auto-approve: hitting an approval-type
+// stage stops the run and reports what's needed, since approval is a human
+// decision this command was never asked to make on anyone's behalf. Also
+// stops on the first stage whose own outcome fails — plowing ahead into
+// later stages whose prerequisite just broke would only produce more
+// confusing gate-failure noise.
+func cmdPipelineRun(p paths, f flagSet) error {
+	if len(f.rest) < 2 {
+		return fmt.Errorf("usage: breeze pipeline run <name> <commit> [--env NAME] [--brief \"...\"] --as WHO [--token T]")
+	}
+	name, commit := f.rest[0], resolveCommit(f.rest[1])
+
+	payload, _ := json.Marshal(wire.PipelineShowRequest{Name: name})
+	resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: payload})
+	if err != nil {
+		return err
+	}
+	show, err := decodePayload[wire.PipelineShowResponse](resp)
+	if err != nil {
+		return err
+	}
+	pl := show.Pipeline
+
+	if f.env == "" && pl.FanOutAt < len(pl.Stages) {
+		return fmt.Errorf("pipeline %q fans out at stage %q across environments %v — pass --env NAME", name, pl.Stages[pl.FanOutAt].Name, pl.Environments)
+	}
+
+	as := resolveIdentity(p, f)
+	token, err := resolveTokenAuto(p, f, as)
+	if err != nil {
+		return err
+	}
+
+	for i, sd := range pl.Stages {
+		env := ""
+		if i >= pl.FanOutAt {
+			env = f.env
+		}
+
+		statusPayload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: name, Stage: sd.Name, Commit: commit, Environment: env})
+		resp, err := call(p, wire.Request{Op: wire.OpStageStatus, Payload: statusPayload})
+		if err != nil {
+			return err
+		}
+		statusOut, err := decodePayload[wire.StageStatusResponse](resp)
+		if err != nil {
+			return err
+		}
+
+		if statusOut.Instance.Status == "succeeded" {
+			fmt.Printf("%s: succeeded (already)\n", sd.Name)
+			continue
+		}
+
+		if sd.Type == "approval" {
+			need := 0
+			role := ""
+			if sd.ApprovalPolicy != nil {
+				need = sd.ApprovalPolicy.RequiredApprovals
+				role = sd.ApprovalPolicy.RequiredRole
+			}
+			fmt.Printf("%s: awaiting approval (%d/%d, role %q)\n", sd.Name, len(statusOut.Instance.Approvals), need, role)
+			fmt.Printf("  run: breeze stage approve %s %s %s", name, sd.Name, shortCommitForDisplay(commit))
+			if env != "" {
+				fmt.Printf(" --env %s", env)
+			}
+			fmt.Printf(" --as WHO --token T\n  then re-run this command to continue\n")
+			return fmt.Errorf("stopped at %q: awaiting approval", sd.Name)
+		}
+
+		if statusOut.Instance.Status == "running" {
+			return fmt.Errorf("%s: already running (use `breeze stage wait`)", sd.Name)
+		}
+
+		startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: name, Stage: sd.Name, Commit: commit, Environment: env, Brief: f.brief})
+		resp, err = call(p, wire.Request{Op: wire.OpStageStart, As: as, Token: token, Payload: startPayload})
+		if err != nil {
+			return err
+		}
+		startOut, err := decodePayload[wire.StageStartResponse](resp)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s: %s\n", startOut.Instance.Stage, startOut.Instance.Status)
+		if startOut.Instance.Error != "" {
+			fmt.Println(startOut.Instance.Error)
+		}
+		if ferr := stageFailureErr(startOut.Instance.Status); ferr != nil {
+			return fmt.Errorf("stopped at %q: %w", sd.Name, ferr)
+		}
+	}
+	fmt.Printf("pipeline %q complete for %s\n", name, shortCommitForDisplay(commit))
+	return nil
 }
 
 // printPipelineHuman renders a pipeline's stage-prerequisite chain explicitly —

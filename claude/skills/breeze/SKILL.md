@@ -196,6 +196,15 @@ breeze stage start   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --
 breeze stage approve <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as <who> [--token T]
 breeze stage status  <pipeline> <stage> <commit> [--env NAME] [--json]
 
+breeze pipeline run <name> <commit> [--env NAME] [--brief "..."] --as <who> [--token T]
+                                         # drives every stage in order for you (one
+                                         # stage start/status RPC each); skips a
+                                         # stage that's already succeeded, so
+                                         # re-running after a manual `stage approve`
+                                         # continues where it left off; NEVER
+                                         # auto-approves an approval stage — stops
+                                         # and prints exactly what's needed instead
+
 breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]
 ```
 
@@ -207,6 +216,12 @@ shows commits truncated to 12 chars; `--json` always shows the full value.
 `stage start`/`approve` only need `--token` if the target stage actually has a
 `required_role` set, or is an approval stage. Check `pipeline show <name>` first if
 unsure whether a given stage needs one.
+
+**Exit code reflects the outcome, not just the RPC.** `stage start`/`approve`/
+`status`/`wait` and `deploy rollback` exit non-zero when the reported status is
+`failed`/`gate_failed` — check `$?` (or use `&&`) instead of assuming success just
+because the command printed something and didn't crash. `stage cancel` is the one
+exception (a cancelled-into-failed instance is the cancel's own successful outcome).
 
 **Before triggering any stage, check its prerequisites make sense** —
 `breeze pipeline status <pipeline> <commit>` shows every stage/environment's current
