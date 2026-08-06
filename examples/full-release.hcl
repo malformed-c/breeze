@@ -5,11 +5,22 @@
 #
 # Roles referenced here ("builder", "reviewer", "deployer") must exist before this
 # applies cleanly:
-#   breeze role assign builder  <ci-identity>       --as admin --token-file <path>
-#   breeze role assign reviewer <reviewer-identity>  --as admin --token-file <path>
-#   breeze role assign deployer <admin-or-ci>        --as admin --token-file <path>
+#   breeze assign role builder  <ci-identity>       --as admin --token-file <path>
+#   breeze assign role reviewer <reviewer-identity>  --as admin --token-file <path>
+#   breeze assign role deployer <admin-or-ci>        --as admin --token-file <path>
 
 pipeline "release" {
+  # Inherited by every stage and every pre_gate/post_action hook below, per field:
+  # a stage that sets only memory_max still yields CPU like everything else, and
+  # the next stage someone adds can't forget to. Weights (unlike quotas) only bite
+  # under contention, which is what you usually want when CI shares a host with
+  # something that has to stay responsive. A machine-wide floor can go under all of
+  # this in <state-dir>/defaults.hcl — see examples/defaults.hcl.
+  resource_limits {
+    cpu_weight = 50
+    tasks_max  = 512
+  }
+
   environments = ["staging", "prod"]
   environment_deps {
     prod = ["staging"]
@@ -22,6 +33,12 @@ pipeline "release" {
     concurrency_limit = 4
     timeout           = "10m"
     command           = ["./scripts/build.sh", "{commit}"]
+
+    # Overrides only what it names; cpu_weight/tasks_max still come from the
+    # pipeline block above.
+    resource_limits {
+      memory_high = "8G"   # throttle+reclaim rather than OOM-kill a big build
+    }
 
     pre_gate {
       # A generic pre-check, e.g. wrapping a CI status API. breeze has no

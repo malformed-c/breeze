@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 
 	"breeze/internal/hook"
@@ -41,15 +42,18 @@ func validatePipeline(p *Pipeline) error {
 		return fmt.Errorf("pipeline %q: at least one stage required", p.Name)
 	}
 
-	seen := make(map[string]bool, len(p.Stages))
-	for _, s := range p.Stages {
+	seen := make(map[string]int, len(p.Stages))
+	for i, s := range p.Stages {
 		if s.Name == "" {
 			return fmt.Errorf("pipeline %q: stage with empty name", p.Name)
 		}
-		if seen[s.Name] {
+		if _, dup := seen[s.Name]; dup {
 			return fmt.Errorf("pipeline %q: duplicate stage name %q", p.Name, s.Name)
 		}
-		seen[s.Name] = true
+		seen[s.Name] = i
+	}
+	if err := validateStageNeeds(p, seen); err != nil {
+		return err
 	}
 
 	if p.FanOutAt < 0 || p.FanOutAt > len(p.Stages) {
@@ -126,6 +130,40 @@ func validatePipeline(p *Pipeline) error {
 	return nil
 }
 
+// validateStageNeeds checks the stage graph at registration time: every name in a
+// stage's Needs must be a declared stage, and must be declared EARLIER than the
+// stage needing it. That single backward-reference rule is what makes the graph
+// acyclic by construction — so unlike EnvironmentDeps there is no cycle DFS here,
+// and no cyclic config can ever reach a run-time gate check. index maps stage name
+// to declaration index (built by the caller's duplicate-name pass).
+func validateStageNeeds(p *Pipeline, index map[string]int) error {
+	for i, s := range p.Stages {
+		switch s.Convergence {
+		case "", ConvergeAll, ConvergeAny:
+		default:
+			return fmt.Errorf("pipeline %q stage %q: unknown convergence %q (must be %q or %q)", p.Name, s.Name, s.Convergence, ConvergeAll, ConvergeAny)
+		}
+		seenNeed := make(map[string]bool, len(s.Needs))
+		for _, name := range s.Needs {
+			j, ok := index[name]
+			if !ok {
+				return fmt.Errorf("pipeline %q stage %q: needs unknown stage %q", p.Name, s.Name, name)
+			}
+			if j == i {
+				return fmt.Errorf("pipeline %q stage %q: cannot need itself", p.Name, s.Name)
+			}
+			if j > i {
+				return fmt.Errorf("pipeline %q stage %q: needs %q, which is declared later — a stage may only need stages declared before it", p.Name, s.Name, name)
+			}
+			if seenNeed[name] {
+				return fmt.Errorf("pipeline %q stage %q: duplicate need %q", p.Name, s.Name, name)
+			}
+			seenNeed[name] = true
+		}
+	}
+	return nil
+}
+
 func validateHook(h Hook) error {
 	if h.Timeout <= 0 {
 		return fmt.Errorf("hook timeout required")
@@ -145,13 +183,42 @@ func validateTemplatePlaceholders(tmpl CommandTemplate) error {
 	}, knownParams)
 }
 
-// validateResourceLimits catches simple integer-range typos at registration
-// time (systemd's IOWeight/TasksMax bounds); CPUQuota/MemoryMax are opaque
-// systemd-syntax strings breeze doesn't reinterpret, so a malformed value
-// there surfaces as a systemd-run error at run time instead.
+// cpuQuotaRe and memorySizeRe pin the SHAPE of systemd's own syntax for the
+// string-valued limits: a percentage for CPUQuota ("200%", "12.5%"), and a byte
+// count with an optional K/M/G/T/P/E suffix (systemd accepts a bare or "B"/"iB"
+// -suffixed form of each) for the memory limits. "infinity" is systemd's explicit
+// no-limit value and is accepted for all three.
+var (
+	cpuQuotaRe   = regexp.MustCompile(`^\d+(\.\d+)?%$`)
+	memorySizeRe = regexp.MustCompile(`^\d+(\.\d+)?([KMGTPE](i?B)?|B)?$`)
+)
+
+// validateResourceLimits rejects a malformed limit at registration time rather
+// than letting it surface as a systemd-run error partway through a pipeline run.
+// This is a shape check, not a semantic one — breeze still doesn't reinterpret
+// what the values MEAN, it just refuses the typos that would otherwise only be
+// discovered by a stage failing in a way that looks like the build broke:
+// `cpu_quota = "1400"` (missing %), `memory_max = "8GB "`, `memory_max = "8 G"`.
+// Registration is the right place because it's the moment an admin is looking at
+// the config and can fix it, and because breeze's whole premise is that a gate
+// rejection should be legible before anything runs.
 func validateResourceLimits(rl *hook.ResourceLimits) error {
 	if rl == nil {
 		return nil
+	}
+	if rl.CPUQuota != "" && rl.CPUQuota != "infinity" && !cpuQuotaRe.MatchString(rl.CPUQuota) {
+		return fmt.Errorf("resource_limits: cpu_quota %q must be a percentage like \"200%%\" (200%% = 2 cores) or \"infinity\"", rl.CPUQuota)
+	}
+	if rl.CPUWeight != 0 && (rl.CPUWeight < 1 || rl.CPUWeight > 10000) {
+		return fmt.Errorf("resource_limits: cpu_weight must be between 1 and 10000 (systemd's default is 100)")
+	}
+	for _, m := range []struct{ name, value string }{
+		{"memory_max", rl.MemoryMax},
+		{"memory_high", rl.MemoryHigh},
+	} {
+		if m.value != "" && m.value != "infinity" && !memorySizeRe.MatchString(m.value) {
+			return fmt.Errorf("resource_limits: %s %q must be a byte count like \"512M\", \"2G\" or \"infinity\"", m.name, m.value)
+		}
 	}
 	if rl.IOWeight != 0 && (rl.IOWeight < 1 || rl.IOWeight > 10000) {
 		return fmt.Errorf("resource_limits: io_weight must be between 1 and 10000")

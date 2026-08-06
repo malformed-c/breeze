@@ -10,15 +10,15 @@
 #     left over from a dead run, waiting on its TTL to expire.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # Start a slow build in the background -- no `stage claim` was ever made. It's
 # expected to exit non-zero once cancelled below (the run ends Failed).
-! exec breeze stage start release build abc123 --as ci &build&
+! exec breeze start stage release build abc123 --as ci &build&
 exec sleep 0.3
-exec breeze stage status release build abc123 --json
+exec breeze status stage release build abc123 --json
 stdout '"status":\s*"running"'
 
 # The lock shows up automatically, without anyone claiming it first.
@@ -27,10 +27,10 @@ stdout '"key":\s*"stage/release/build/abc123"'
 stdout '"holder":\s*"ci"'
 
 # A different actor's own start on the SAME instance is rejected while it runs.
-! exec breeze stage start release build abc123 --as bob
+! exec breeze start stage release build abc123 --as bob
 stderr 'already in progress|already claimed'
 
-exec breeze stage cancel release build abc123 --as ci --reason stuck-cancelling
+exec breeze cancel stage release build abc123 --as ci --reason stuck-cancelling
 stdout 'build: failed \(cancelled\)'
 wait build
 
@@ -40,7 +40,7 @@ stdout '\(no resources held\)'
 
 # A fresh start on the SAME commit right after cancellation succeeds -- not
 # blocked by a stale lock the dead run left behind.
-exec breeze stage start release build newcommit --as bob
+exec breeze start stage release build newcommit --as bob
 stdout 'build: succeeded'
 
 exec breeze stop

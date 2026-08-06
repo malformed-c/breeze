@@ -22,11 +22,11 @@ func daemonSysProcAttr() *syscall.SysProcAttr {
 // released the flock, closed the listener, and removed the socket file (see
 // runDaemon's stop-path), so the freshly-exec'd process starts with a clean slate
 // and goes through the exact same tryBindDaemon startup sequence as any other
-// explicit `breeze daemon` invocation.
+// explicit `breeze start daemon` invocation.
 func execSelfAsDaemon() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(exe, []string{exe, "daemon"}, os.Environ())
+	return syscall.Exec(exe, []string{exe, "start", "daemon"}, os.Environ())
 }

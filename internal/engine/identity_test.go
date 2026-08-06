@@ -1,6 +1,9 @@
 package engine
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBootstrapFirstIdentityGetsAdmin(t *testing.T) {
 	e := New()
@@ -130,5 +133,44 @@ func TestSetNotifyOptOut(t *testing.T) {
 	}
 	if err := e.SetNotifyOptOut("nobody", true); err == nil {
 		t.Fatalf("expected an error for an unknown identity")
+	}
+}
+
+// The `identity register --help` footgun registered a real identity literally named
+// "--help" and printed its (live, unowned) token. The CLI's parseFlags stops that at
+// the front door now; this closes the same door at the engine, so no other path can
+// re-create the junk.
+func TestRegisterIdentityRejectsFlagShapedName(t *testing.T) {
+	e := New()
+	for _, name := range []string{"--help", "-h", "--force"} {
+		if _, err := e.RegisterIdentity(name, ""); err == nil {
+			t.Errorf("registering %q must be refused", name)
+		}
+	}
+	if _, err := e.RegisterIdentity("alice", ""); err != nil {
+		t.Fatalf("an ordinary name must still register: %v", err)
+	}
+}
+
+// A role operation against an unregistered identity used to fail with a bare "not
+// found", which reads as a missing role or a missing token file just as easily as
+// the truth — and did, live, twice in a row. Roles are free-form strings with no
+// catalog, so the identity is the only thing that can be missing here; say so.
+func TestRoleOpsNameTheMissingIdentity(t *testing.T) {
+	e := New()
+	for _, op := range []struct {
+		name string
+		run  func() error
+	}{
+		{"assign", func() error { return e.AssignRole("nosuchguy", "deployer") }},
+		{"revoke", func() error { return e.RevokeRole("nosuchguy", "deployer") }},
+	} {
+		err := op.run()
+		if err == nil {
+			t.Fatalf("%s against an unregistered identity must fail", op.name)
+		}
+		if !strings.Contains(err.Error(), "nosuchguy") || !strings.Contains(err.Error(), "not registered") {
+			t.Errorf("%s error should name the unregistered identity, got %q", op.name, err)
+		}
 	}
 }

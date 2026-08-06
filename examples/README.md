@@ -9,6 +9,12 @@ it. For a real, working example wired to actual scripts, see `../ci/` in this re
 - `full-release.hcl` — the canonical shape this whole system was designed around:
   `build → review → deploy → test`, fanning out at `deploy` into `staging`/`prod`,
   with `prod` depending on `staging`'s entire chain having finished first.
+- `defaults.hcl` — NOT a pipeline: machine-level resource limits for one daemon,
+  copied to its state dir (`<repo>/.git/breeze/defaults.hcl`) and loaded on
+  `breeze restart daemon`. Applies under every command that daemon runs.
+- `diverging.hcl` — branches that diverge and re-converge: `unit`, `race` and `lint`
+  all run off `build` (concurrently, under `breeze run pipeline`), and `package`
+  converges back on `unit` + `race`. Shows `needs` and `convergence`.
 
 Apply either with:
 

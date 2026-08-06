@@ -32,6 +32,22 @@ at `.claude/skills/breeze/SKILL.md` — clone this repo and Claude Code picks it
 automatically as a project-scoped skill, no separate install step. It's the same
 content as the operational cheat-sheet below, kept in sync with it.
 
+## CLI grammar — verb first
+
+Every command reads `breeze <verb> <noun> [args]`: `breeze start stage`, `breeze
+acquire lock`, `breeze list pipelines`, `breeze rollback deploy`. The verb is what
+you're doing, which is what you reach for first, and one verb reads the same across
+every object it applies to — `start stage` / `start daemon`, `list locks` / `list
+pipelines` / `list grants`. `breeze --help` prints the full set.
+
+A handful of commands have no object to name and are just the verb: `apply`,
+`status`, `ping`, `whoami`, `ps`, `inventory`, `operator`, `stop`.
+
+The pre-swap noun-first spellings (`breeze stage start`, `breeze lock acquire`,
+`breeze pipeline run`, ...) **still work** — they route to exactly the same handler
+and print a one-line pointer to the new spelling on stderr. Nothing scripted against
+the old grammar breaks; they're just absent from `--help` and the docs.
+
 ## Per-repo by default
 
 breeze picks its state directory in this order:
@@ -53,7 +69,7 @@ sanity-check without reasoning about it — if it's ever not what you expected, 
 the bug to chase, not the pipeline/lock state. They also print the running binary's
 build timestamp (`version 0.1.0 (built 2026-07-04T12:48:37Z)`) — baked in via
 `-ldflags "-X main.buildTime=..."` in the Makefile/`ci/deploy.sh` — so after a
-`daemon restart` you can confirm at a glance it's actually serving the binary you
+`restart daemon` you can confirm at a glance it's actually serving the binary you
 just built, not a stale one; a plain `go build` with no ldflags shows
 `(build time unknown)`, itself a useful signal that you're not running a binary
 built through the normal path.
@@ -63,21 +79,21 @@ already running) and lives in `<state-dir>/breeze.sock`; `breeze stop` shuts it
 down, `breeze ping`/`breeze status` check it.
 
 ```sh
-breeze daemon             # foreground, this exact directory's state
-breeze daemon --help      # prints this usage and exits — never silently daemonizes
-breeze daemon -d          # start detached (backgrounded) instead of foreground
-breeze daemon restart     # ask an already-running daemon to restart itself in place
+breeze start daemon         # foreground, this exact directory's state
+breeze start daemon --help  # prints this usage and exits — never silently daemonizes
+breeze start daemon -d      # start detached (backgrounded) instead of foreground
+breeze restart daemon       # ask an already-running daemon to restart itself in place
 ```
 
-**Bare `breeze daemon` blocks your shell in the foreground** — `-d`/`--background`
+**`breeze start daemon` blocks your shell in the foreground** — `-d`/`--background`
 starts it detached instead, for a first start you don't want to tie up a terminal
-with. `breeze daemon --help` (or any argument it doesn't recognize) prints usage and
+with. `breeze start daemon --help` (or any argument it doesn't recognize) prints usage and
 exits cleanly rather than silently starting a daemon anyway — a real incident: with
 no argument validation at all, `--help` used to fall straight through to the normal
 startup path, and an agent that ran it to check usage ended up with a live daemon it
 had to separately go find and kill.
 
-**`breeze daemon restart` asks the already-running daemon to restart itself in
+**`breeze restart daemon` asks the already-running daemon to restart itself in
 place** (same PID, re-executing whatever binary is currently on disk) rather than
 this CLI killing it and spawning a brand-new detached process to replace it —
 there's no window where a second process exists, nothing external to track, and no
@@ -85,52 +101,81 @@ extra flags needed to background the replacement (it already is one, being the s
 process). If nothing is running yet, there's nothing to ask, so it falls back to a
 fresh detached start, identical to `-d`. Either way this is a **deliberate, explicit**
 action — the transparent auto-start every routine command triggers on first use
-never displaces or restarts an existing daemon; only running `breeze daemon`
-yourself (bare, `-d`, or `restart`) ever does.
+never displaces or restarts an existing daemon; only running `breeze start daemon`
+yourself (bare, `-d`, or `restart daemon`) ever does.
 
 ## Two resource kinds
 
 ### File locks — ad hoc, no policy
 
 ```sh
-breeze lock acquire /path/to/file --as alice                      # detached: TTL-bounded (30m default)
-breeze lock acquire /path/to/file --shared --as alice             # shared (multiple readers)
-breeze lock exec /path/to/file --as alice -- ./build.sh           # attached: held for the command's
+breeze acquire lock /path/to/file --as alice                      # detached: TTL-bounded (30m default)
+breeze acquire lock /path/to/file --shared --as alice             # shared (multiple readers)
+breeze acquire lock /path/to/file --wait --timeout 30s --as alice # block for it, bounded
+breeze exec lock /path/to/file --as alice -- ./build.sh           # attached: held for the command's
                                                                   # whole life, released the instant
                                                                   # the process dies — the crash-safe mode
-breeze lock exec /path/to/file --as alice \
-  --cpu-quota 200% --memory-max 1G --tasks-max 64 --io-weight 100 -- ./build.sh
+breeze exec lock /path/to/file --as alice \
+  --cpu-quota 200% --cpu-weight 50 --memory-max 1G --memory-high 512M \
+  --tasks-max 64 --io-weight 100 -- ./build.sh
                                                                   # same, but wraps ./build.sh in a
                                                                   # transient `systemd-run --scope` with
                                                                   # these cgroup limits — see "Resource
                                                                   # limits" under pipeline HCL for what
                                                                   # each flag controls
-breeze lock release <lock-id> --as alice
-breeze lock release-all --as alice        # release every lock (any kind) alice holds, no ID needed
-breeze lock list [--all] [--json]
-breeze lock check /path/to/file [--as alice] [--json]   # read-only: is this locked by someone else?
+breeze release lock <lock-id> --as alice
+breeze release locks --as alice        # release every lock (any kind) alice holds, no ID needed
+breeze list locks [--all] [--json]
+breeze check lock /path/to/file [--as alice] [--json]   # read-only: is this locked by someone else?
 ```
 
 Locks carry no RBAC — `--as` here is plain attribution (who holds it, so only the
 holder or `--force` can release), not a permission check.
 
+**Both lock commands try by default.** A conflict fails immediately rather than
+queueing, and exits **4** — deliberately distinct from the generic 1, because it's
+the one failure a caller can resolve by waiting: "someone else holds this, come
+back later" versus "this command is wrong and will fail identically forever." That
+distinction is what makes a try-lock usable from a script:
+
+```sh
+breeze acquire lock build.lock --as ci; case $? in
+  0) make ; breeze release locks --as ci ;;
+  4) echo "someone else is building; skipping" ;;
+  *) exit 1 ;;   # a real error — bad flag, no daemon, unknown identity
+esac
+```
+
+`--try` is the explicit spelling of that default, worth writing at a call site where
+"can this block?" matters to the next reader. `--wait` blocks instead, bounded by
+`--timeout` (a timeout also exits 4 — it's the same retryable class). Asking for
+both, or for `--timeout` without `--wait`, is an error rather than a silently
+resolved contradiction.
+
+`exec lock` used to be the exception here, and it was a bug: it queued
+unconditionally, with no `--wait` to opt out of, no `--timeout` to bound it, and no
+flag of any kind — a contended path meant blocking forever, which for an agent
+wrapping a build is a hung session with nothing to act on. It now behaves like
+`acquire lock` in every respect. If you were relying on it queueing, pass `--wait`
+explicitly.
+
 **Re-acquiring a lock you already hold is idempotent** (detached mode only) —
-`breeze lock acquire <path> --as alice` again, same path and mode, just re-reports
-your existing lock (same ID, no TTL renewal — use `lock renew` for that) rather
+`breeze acquire lock <path> --as alice` again, same path and mode, just re-reports
+your existing lock (same ID, no TTL renewal — use `renew lock` for that) rather
 than erroring with a conflict indistinguishable from "someone else has it." A
 DIFFERENT holder, or a different mode from you (e.g. shared vs. exclusive on the
 same path), is still a genuine conflict, and that error now names the current
 holder, its expiry, and only the specific path(s) from your request that actually
 overlap with the held lock — not the held lock's entire (possibly much broader,
-unrelated) path list. An *attached* lock (`lock exec`) is never treated as
+unrelated) path list. An *attached* lock (`exec lock`) is never treated as
 reentrant, since it's tied to one specific connection's lifetime.
 
 Wrapping up and want to clear everything you're holding without releasing lock
-IDs one by one? `breeze lock release-all --as alice` releases every lock you
+IDs one by one? `breeze release locks --as alice` releases every lock you
 hold — file locks and resource mutexes alike — leaving other identities'
 holdings untouched.
 
-`lock check` never acquires or releases anything — it just reports whether a path is
+`check lock` never acquires or releases anything — it just reports whether a path is
 currently held by an identity other than `--as` (own locks are never a conflict). No
 lifecycle to manage makes it a natural fit for gating an external action rather than
 holding a lock across it — e.g. `.claude/hooks/breeze-lock-check.sh` wires this repo's
@@ -141,7 +186,7 @@ for any reason other than an actual conflict.
 
 `breeze inventory` shows a separate class of *resource* locks breeze creates
 internally (e.g. a deploy stage's exclusivity on a `(target, environment)` pair) —
-kept apart from real file paths shown by `lock list` by default. `breeze lock list
+kept apart from real file paths shown by `list locks` by default. `breeze list locks
 --all` unions both kinds together — "what am I holding right now" (a file lock
 *and* a deploy claim at once) without cross-referencing two commands, or reaching
 for the broader `breeze operator` dashboard just to see your own holds.
@@ -149,9 +194,9 @@ for the broader `breeze operator` dashboard just to see your own holds.
 ### Resource mutexes — a lock on a named concept, not a file
 
 ```sh
-breeze lock acquire --resource gpu-0 --as alice --ttl 30m [--shared] [--wait] [--timeout D]
-breeze lock release <lock-id> --as alice
-breeze lock list --all [--json]   # resource-kind locks only ever show up under --all
+breeze acquire lock --resource gpu-0 --as alice --ttl 30m [--shared] [--wait] [--timeout D]
+breeze release lock <lock-id> --as alice
+breeze list locks --all [--json]   # resource-kind locks only ever show up under --all
 ```
 
 Same acquire/release/renew/wait/TTL machinery as a file lock, just keyed by an
@@ -160,13 +205,13 @@ filesystem path — for coordinating on something that isn't a real file (a GPU
 slot, a shared external resource, a build runner). This is the exact mechanism
 breeze already uses internally for a deploy stage's `(target, environment)`
 exclusivity, now exposed directly. `--resource` and a file path are mutually
-exclusive in one `lock acquire` call.
+exclusive in one `acquire lock` call.
 
 **Paths are resolved client-side, relative to your git worktree's toplevel when
 you're in one.** A relative path like `src/main.go` doesn't get resolved against the
 daemon's own (arbitrary, long-lived) working directory — it's resolved against
 *your* actual cwd, and then, if you're inside a git worktree, reduced to a path
-relative to that worktree's root. That means `breeze lock acquire src/main.go` names
+relative to that worktree's root. That means `breeze acquire lock src/main.go` names
 the same logical resource no matter which of a repo's worktrees you run it from
 (they all share one breeze daemon per the per-repo rule above), so two agents in two
 different worktree checkouts correctly contend for the same lock instead of two
@@ -176,7 +221,10 @@ path, unchanged from locking any other real file.
 
 ### Pipelines — the main feature
 
-A pipeline is an admin-defined, ordered list of **stages**, keyed by commit hash.
+A pipeline is an admin-defined graph of **stages**, keyed by commit hash. Stages are
+declared in order and, by default, form a straight line (each one requires the one
+before it); a stage can instead declare exactly which stages it `needs`, which is
+how branches diverge and re-converge — see "The stage graph" below.
 Three stage types:
 
 - **command** — a policy-gated, parameterized shell command (e.g. `build`, `test`).
@@ -195,14 +243,53 @@ command — breeze has zero built-in knowledge of git, GitHub, or any CI system.
 
 Any `<commit>` CLI argument accepts either a full SHA or an abbreviated prefix (4+
 hex chars) — the CLI expands it client-side via `git rev-parse` (in whatever repo
-your current directory is inside) before sending it to the daemon, so `stage start
-build abc1234` and `stage status build abc1234def...` for the same commit always
+your current directory is inside) before sending it to the daemon, so `start stage
+build abc1234` and `status stage build abc1234def...` for the same commit always
 resolve to the identical stage instance. This is a CLI-side convenience only: the
 daemon itself has no git awareness and treats a commit as an opaque string, so
 anything that isn't a plausible abbreviated SHA (a version tag, a synthetic key
 like `livetest-1`) passes through unchanged. Human-readable output (plain-text, not
 `--json`) shows commits truncated to 12 characters for readability; `--json` output
 always shows the full value, since callers may need to pass it back verbatim.
+
+#### The stage graph — divergence and convergence
+
+Gate 1 ("has my prerequisite succeeded?") is per-stage, not positional. Omit `needs`
+and a stage requires the stage declared immediately before it — the straight line
+breeze has always run, and what every existing pipeline keeps doing. Declare `needs`
+and you say exactly what it waits for:
+
+```hcl
+stage "build" { type = "command"  ... }
+stage "unit"  { type = "command"  needs = ["build"] ... }   # diverge: unit, race and
+stage "race"  { type = "command"  needs = ["build"] ... }   # lint are siblings off
+stage "lint"  { type = "command"  needs = ["build"] ... }   # build, independent
+stage "package" {                                           # converge back
+  type  = "command"
+  needs = ["unit", "race"]
+  ...
+}
+stage "audit" { type = "command"  needs = [] ... }          # a root: needs nothing
+```
+
+- `needs = ["a", "b"]` — converge: **every** listed stage must have succeeded.
+- `convergence = "any"` — converge on **whichever** one got there: `needs = ["test-short",
+  "test-race"]` with `convergence = "any"` lets either satisfy the gate. To require one
+  specific branch instead, just name that one in `needs`.
+- `needs = []` (explicitly empty, distinct from omitting it) — a root: no prerequisite
+  at all, so the stage diverges from the chain rather than continuing it.
+
+A stage may only need stages **declared before it**. That single rule makes the graph
+acyclic by construction — a cycle can't be written, so it can't be registered and
+can't be hit at run time. Everything else is unchanged: a `needs` name that isn't a
+declared stage, a forward reference, a self-reference or an unknown `convergence` is
+rejected by `breeze apply`, not discovered mid-run.
+
+The graph composes with the environment fan-out below: a prerequisite declared before
+the fan-out point is the single shared commit-only instance, one at or after it is
+scoped to the dependent's own environment. `breeze run pipeline` executes the graph
+in rounds — every stage whose prerequisites are met runs together (see "Running a
+whole pipeline").
 
 #### Environments and the fan-out point
 
@@ -217,18 +304,18 @@ allowed to start (e.g. `prod` waits for all of `staging`'s stages to finish — 
 just `staging`'s own deploy step). Two environments with no dependency relation
 between them proceed fully concurrently.
 
-`breeze pipeline show <name>` (plain text, without `--json`) renders this whole
+`breeze show pipeline <name>` (plain text, without `--json`) renders this whole
 chain explicitly — each stage's `requires: <predecessor>` (Gate 1), and any
 `env deps: <env> requires <deps>` (Gate 2) at the fan-out stage — rather than
 leaving ordering to be inferred from HCL declaration order. `--json` is unchanged
 (the raw pipeline definition, for tooling).
 
 An environment can also declare an `environment_owners` entry — a plain identity
-name ("who's responsible for `engix99`"), surfaced via `pipeline show`/`--json`.
+name ("who's responsible for `engix99`"), surfaced via `show pipeline`/`--json`.
 Declaring it is purely documentation — it isn't itself checked by any gate — but it
 *does* unlock one real capability: the declared owner (or an admin) can temporarily
 delegate deploy authority over that environment to someone else who doesn't hold the
-role a deploy there requires, via `breeze deploy grant` — see "Granting temporary
+role a deploy there requires, via `breeze grant deploy` — see "Granting temporary
 deploy access" below. Contrast an owner with a deploy's resource-lock `Holder`
 (`breeze inventory`), which answers a different question: not who's *responsible*
 for an environment long-term, but who's *actively deploying to it right now* — see
@@ -282,6 +369,14 @@ the *immediate* predecessor stage's actor, not every earlier actor in the chain.
 - **Tier 1** (locks, `whoami`, `ps`, any `*.list`/`*.show`/`*.status` read):
   identity resolves ambiently — `--as` flag, or whatever's registered for your
   session. Low stakes, no token required.
+  **No token required, but a token you do pass is checked.** A Tier-1 read used to
+  silently accept and ignore a bogus `--as`/`--token`, so a wrong credential and a
+  right one printed identical output — which made every "did my token work?" check
+  vacuous (one nearly got recorded as verification live). Passing nothing is still
+  fine and still public; passing something wrong is now an error naming what's
+  wrong. The two deliberate exemptions are `auth.check` (reporting credential
+  validity is its whole job) and `identity register` (the bootstrap/recovery path —
+  a stale session token must never lock you out of re-registering).
 - **Tier 2** (triggering a role-gated stage, approving a review, registering a
   pipeline, managing identities/roles): `--as` may be omitted (same session-scoped
   fallback as Tier 1), and so may `--token`/`--token-file` — see "Session-bound
@@ -289,7 +384,7 @@ the *immediate* predecessor stage's actor, not every earlier actor in the chain.
   inferred, and are still the only way to act as an identity your session isn't
   currently bound to.
 
-**Session-bound tokens**: `identity register` binds the session (keyed the same
+**Session-bound tokens**: `register identity` binds the session (keyed the same
 way as the name file above) to BOTH the identity name and its token, not just the
 name — so a later Tier-2 call in that same session can omit `--as`/`--token`
 entirely, not just `--as`. This is a direct, deliberate choice, not a default to
@@ -303,18 +398,35 @@ existed. A bound token is only ever used for the identity it was bound to — na
 a *different* `--as` on a call never falls back to a mismatched bound token.
 
 ```sh
-breeze identity register admin              # first-ever identity auto-gets the admin role;
+breeze register identity admin              # first-ever identity auto-gets the admin role;
                                             # prints a token ONCE — breeze never persists it,
                                             # save it yourself (e.g. --token-file somewhere you control)
-breeze identity register alice              # a fresh name needs no auth
-breeze identity register admin --as admin --token-file .git/breeze/admin.token
+breeze register identity alice              # a fresh name needs no auth
+breeze register identity admin --as admin --token-file .git/breeze/admin.token
                                             # re-registering an EXISTING name (token rotation)
                                             # requires its own current token, or --force as an admin
 
-breeze role assign reviewer alice --as admin --token-file .git/breeze/admin.token
-breeze role assign deployer admin  --as admin --token-file .git/breeze/admin.token
-breeze role list [--json]
+breeze assign role reviewer alice --as admin --token-file .git/breeze/admin.token
+breeze assign role deployer admin  --as admin --token-file .git/breeze/admin.token
+breeze list roles [--json]
+
+breeze check auth --as alice --token-file alice.token              # is this credential valid?
+breeze check auth --as alice --token-file alice.token --role deployer   # ...and does it hold this role?
 ```
+
+**Verifying a credential without mutating anything.** `check auth` answers "is this
+`--as`/`--token` pair valid" (and with `--role`, "does it hold that role") using a
+read-only RPC — it's the "did my registration/rotation actually work" probe, and it
+exits non-zero when the answer is no. It exists because there was previously no way
+to ask: reads ignored credentials, so the only way to test a token was to attempt a
+privileged *mutation* and see whether it was refused.
+
+`whoami` distinguishes a registered identity that holds no roles from a name that was
+never registered — it used to echo any name back with an empty role list, so those two
+were indistinguishable in the one command whose name promises to tell them apart, and
+a missing identity got read live as a bug in `assign role`. `assign role`/`revoke role`
+now also say what changed on success, and name the unregistered identity on failure
+instead of a bare "not found".
 
 **The recommended way to register: use your existing mess identity name.**
 breeze's identity names and mess agent names are separate namespaces, but if you
@@ -322,7 +434,7 @@ already talk to other agents via `mess`, register breeze under that *same* name:
 
 ```sh
 mess whoami                              # e.g. "alice"
-breeze identity register alice           # same name -> MessTarget() defaults to itself
+breeze register identity alice           # same name -> MessTarget() defaults to itself
 ```
 
 This makes outbound notifications, mess-thread grouping (see "Waiting instead of
@@ -333,11 +445,11 @@ genuinely needs a name that diverges from your mess one (e.g. a shared
 CI/service identity with no mess presence of its own, or a deliberate alias):
 
 ```sh
-breeze identity register alice --mess-agent alice-on-mess   # notify.go's mess sends
+breeze register identity alice --mess-agent alice-on-mess   # notify.go's mess sends
                                                              # now target "alice-on-mess",
                                                              # not the raw identity name
-breeze identity notify off --as alice   # opt out of breeze's mess notifications entirely
-breeze identity notify on  --as alice   # opt back in
+breeze notify identity off --as alice   # opt out of breeze's mess notifications entirely
+breeze notify identity on  --as alice   # opt back in
 ```
 
 Both are self-service (Tier-1, no token needed — the same risk model as lock holder
@@ -369,7 +481,7 @@ pipeline "release" {
   environment_deps {
     prod = ["staging"]
   }
-  environment_owners {                             # optional; lets the named identity `deploy grant`
+  environment_owners {                             # optional; lets the named identity `grant deploy`
     staging = "alice"                              # temporary deploy access to others for that env
     prod    = "bob"
   }
@@ -414,6 +526,13 @@ pipeline "release" {
 }
 ```
 
+**Stage prerequisites.** Two optional attributes on any stage author the graph (see
+"The stage graph" above): `needs = ["a", "b"]` names exactly which earlier stages
+must have succeeded first — omit it for the default "the stage declared before this
+one", or set `needs = []` to root the stage with no prerequisite at all — and
+`convergence = "any"` accepts whichever one of them gets there rather than requiring
+all of them (`"all"` is the default).
+
 ```sh
 breeze apply -f pipeline.hcl --as admin --token-file .git/breeze/admin.token --dry-run   # show the plan only
 breeze apply -f pipeline.hcl --as admin --token-file .git/breeze/admin.token             # upsert what's new/changed
@@ -448,11 +567,10 @@ Command/hook templates use `{name}` placeholders — `commit`, `environment`,
 containing `; rm -rf /` or `$(whoami)` lands as inert bytes in one argv slot; there
 is no shell to interpret it. See `internal/hook/hook.go`.
 
-**Resource limits.** Any stage's `command` or any `pre_gate`/`post_action` hook can
-carry an optional `resource_limits` block, bounding that command's CPU/memory/
-process-count/IO footprint via a transient `systemd-run --scope` wrapper — a single
-runaway build/test/deploy can't starve the host or other concurrently-running
-stages:
+**Resource limits.** Any stage's `command` and any `pre_gate`/`post_action` hook can
+carry a `resource_limits` block, bounding that command's CPU/memory/process-count/IO
+footprint via a transient `systemd-run --scope` wrapper — a single runaway
+build/test/deploy can't starve the host or other concurrently-running stages:
 
 ```hcl
 stage "build" {
@@ -460,23 +578,80 @@ stage "build" {
   timeout = "10m"
   command = ["./scripts/build.sh", "{commit}"]
   resource_limits {
-    cpu_quota  = "200%"   # systemd CPUQuota= syntax, e.g. "200%" for 2 cores
-    memory_max = "2G"     # systemd MemoryMax= syntax, e.g. "512M", "2G", "infinity"
-    tasks_max  = 64       # max processes/threads
-    io_weight  = 100      # 1-10000, relative IO priority
+    cpu_quota   = "200%"   # CAP: systemd CPUQuota=, "200%" = 2 cores
+    cpu_weight  = 50       # PRIORITY: systemd CPUWeight=, 1-10000 (default 100)
+    memory_max  = "2G"     # CAP: systemd MemoryMax=, "512M"/"2G"/"infinity" — OOM-kills past it
+    memory_high = "1G"     # SOFT: systemd MemoryHigh= — throttles and reclaims, no kill
+    tasks_max   = 64       # max processes/threads
+    io_weight   = 100      # PRIORITY: 1-10000, relative IO share
   }
 }
 ```
 
-All four fields are optional; only the ones set are applied. `cpu_quota`/
-`memory_max` follow systemd's own syntax verbatim — breeze doesn't reinterpret
-them, so a malformed value surfaces as a `systemd-run` error in the stage's own
-captured output rather than a `breeze apply` validation error; `tasks_max`/
-`io_weight` are checked at registration time (simple integer bounds). Requires
+**Caps vs. priorities — this is the choice that matters.** A cap (`cpu_quota`,
+`memory_max`, `tasks_max`) applies unconditionally: a build capped at 4 cores leaves
+the other 24 idle whether or not anything else wants them. A priority (`cpu_weight`,
+`io_weight`) only bites under actual contention — the command uses everything
+that's free and yields when something else needs it. For the common real case, *"CI
+runs on the same box as something that has to stay responsive"*, the priority knobs
+are usually what you want (alone, or under a generous cap). `memory_high` sits
+between: a soft ceiling that throttles and reclaims instead of OOM-killing, so a
+memory-hungry stage degrades rather than dying.
+
+#### Three levels, merged per field
+
+A limit that can be forgotten by the next stage someone adds isn't much of a limit,
+so limits are declarable at three levels and merged **per field**, most specific
+winning:
+
+```hcl
+pipeline "release" {
+  resource_limits {          # 2. pipeline default: inherited by every stage
+    cpu_weight = 50          #    AND every pre_gate/post_action hook in it
+    tasks_max  = 512
+  }
+  stage "heavy" {
+    resource_limits {        # 1. stage's own: wins for the fields it names,
+      memory_max = "16G"     #    inherits cpu_weight/tasks_max from above
+    }
+  }
+}
+```
+
+```hcl
+# 3. machine-level: <state-dir>/defaults.hcl (e.g. .git/breeze/defaults.hcl)
+resource_limits {
+  cpu_weight  = 20     # everything this daemon runs yields to the rest of the box
+  memory_high = "2G"
+}
+```
+
+The machine-level file is **daemon policy, not pipeline config**: it applies to every
+command this daemon runs, including pipelines registered before it existed and ones
+registered through the raw JSON path that never saw HCL. That's the difference
+between a policy and a convention — the host it protects doesn't care who forgot. It
+is read at startup, so `breeze restart daemon` is how a change takes effect, and a
+malformed one makes the daemon **refuse to start** (silently running everything
+unlimited is the one outcome nobody wants, and it would look exactly like a working
+daemon). A stage can still escape a machine default, but only by saying so —
+`cpu_quota = "infinity"` — which is visible in review and in `show pipeline`, unlike
+escaping by forgetting.
+
+**Seeing what actually applies.** `breeze status` prints the machine-level limits,
+and `breeze show pipeline <name>` prints each stage's effective limits plus the
+machine floor underneath them. Worth knowing: `--json` omits `resourceLimits`
+entirely for a stage that has none, so reading the JSON of a pipeline that doesn't
+use limits can't distinguish "unset" from "unsupported" — that exact ambiguity once
+led to a document asserting breeze couldn't limit anything.
+
+Malformed values are rejected by `breeze apply` at registration, not discovered
+mid-run: `cpu_quota = "1400"` (missing `%`), `memory_max = "8 G"`, an out-of-range
+weight. breeze checks the *shape* of systemd's syntax, not its meaning. Requires
 `systemd-run` on the daemon's `PATH` and a usable systemd session (the daemon runs
-as `--user` unless it's root) — with neither configured, a stage with no
-`resource_limits` block behaves exactly as before. `breeze lock exec` accepts the
-same limits as ad-hoc `--cpu-quota`/`--memory-max`/`--tasks-max`/`--io-weight` flags
+as `--user` unless it's root); with no limits set anywhere, no wrapper is used at
+all and everything behaves exactly as it did before. `breeze exec lock` takes the
+same limits as ad-hoc flags:
+`--cpu-quota`/`--cpu-weight`/`--memory-max`/`--memory-high`/`--tasks-max`/`--io-weight`
 (see "File locks" below).
 
 **Relative paths** (a stage's `command`, a hook's `command`, `briefs_dir`) are
@@ -491,52 +666,72 @@ absolute path if you want it anchored somewhere else entirely.
 ## Driving a pipeline
 
 ```sh
-breeze stage start   release build   abc123 --as ci                          # command stage (no role required here)
-breeze stage approve release review  abc123 --as alice --token T --brief "lgtm"
-breeze stage start   release deploy  abc123 --env staging --as admin --token T
-breeze stage status  release deploy  abc123 --env staging [--json]
-breeze pipeline status release abc123                                        # every stage/environment at once
-breeze deploy history release deploy [--env staging] [--limit N]
+breeze start stage   release build   abc123 --as ci                          # command stage (no role required here)
+breeze approve stage release review  abc123 --as alice --token T --brief "lgtm"
+breeze start stage   release deploy  abc123 --env staging --as admin --token T
+breeze status stage  release deploy  abc123 --env staging [--json]
+breeze status pipeline release abc123                                        # every stage/environment at once
+breeze list deploys release deploy [--env staging] [--limit N]
 ```
 
-`stage start`/`stage approve` only need `--token` when the target stage actually has
+`start stage`/`approve stage` only need `--token` when the target stage actually has
 a `required_role` (command/deploy) or is an approval stage (always Tier-2, since an
 approval is inherently an authorization-bearing attestation).
 
-**Failed means exit code 1.** `stage start`/`approve`/`status`/`wait` and `deploy
+**Failed means exit code 1.** `start stage`/`approve`/`status`/`wait` and `deploy
 rollback` all exit non-zero when the reported outcome is `failed` or `gate_failed` —
 the RPC itself still succeeds either way (exit code is data at the engine level, by
 design), but the CLI *process's* own exit code reflects the outcome, so `&&`/`$?` in
-a script or background command actually sees the failure. `stage cancel` is the one
+a script or background command actually sees the failure. `cancel stage` is the one
 exception: ending a cancelled instance in `failed` is the cancel's own intended,
 successful outcome, not a failure of the cancel itself.
 
 ### Running a whole pipeline
 
 ```sh
-breeze pipeline run release abc123 --env staging --as ci --token T [--brief "..."]
+breeze run pipeline release abc123 --env staging --as ci --token T [--brief "..."] [--serial]
 ```
 
-Drives every stage in order — one `stage start`/`status` RPC per stage — instead of
+Drives the whole stage graph — one `start stage`/`status` RPC per stage — instead of
 calling each stage by hand. An already-succeeded stage is **skipped**, not
-re-triggered, so re-running this exact command after a manual `stage approve`
-continues from where it stopped. It deliberately **never auto-approves**: hitting an
-approval-type stage stops the run and prints what's needed (current approval count,
-required role, the exact `stage approve` command to run) rather than approving on
-anyone's behalf. It also stops immediately on the first stage whose own outcome
-fails, rather than plowing ahead into stages whose prerequisite just broke. `--env`
-is required up front if the pipeline fans out (checked before touching any stage).
+re-triggered, so re-running this exact command after a manual `approve stage`
+continues from where it stopped. `--env` is required up front if the pipeline fans
+out (checked before touching any stage).
+
+Execution goes in **rounds**: every stage whose prerequisites are satisfied runs
+together, concurrently, then the next round is recomputed. On a linear pipeline each
+round holds exactly one stage — identical to how this always behaved; once branches
+diverge, they make progress at the same time. `--serial` runs one stage at a time in
+a valid order instead, when you want a single readable transcript.
+
+It deliberately **never auto-approves**: an approval-type stage blocks, and the
+summary prints what's needed (current approval count, required role, the exact
+`approve stage` command) rather than approving on anyone's behalf. A stage that
+fails or blocks stops **its own branch**, not the run — sibling branches still
+finish, since nothing downstream of a blocked stage can become ready anyway. The run
+ends when nothing is ready, reporting every stage that blocked and everything a
+blocked prerequisite kept it from reaching, and exits non-zero if anything did:
+
+```
+running 3 stages in parallel: unit, race, lint
+unit: succeeded
+race: failed
+lint: succeeded
+stopped:
+  race: stage failed
+  not reached (prerequisite unmet): package
+```
 
 ### Rolling back
 
 ```sh
-breeze deploy rollback release deploy commitA --env staging --as admin --token T --brief "reverting a bad release"
+breeze rollback deploy release deploy commitA --env staging --as admin --token T --brief "reverting a bad release"
 ```
 
-A normal `stage start` on a deploy stage rejects an older commit once a newer one
+A normal `start stage` on a deploy stage rejects an older commit once a newer one
 has already succeeded there (the monotonic-ordering rule) — which is exactly what
 you don't want when the newer one turns out to be broken and you need to get back
-to the last known-good commit *now*. `deploy rollback` deliberately bypasses that
+to the last known-good commit *now*. `rollback deploy` deliberately bypasses that
 rule, and Gate 1/Gate 2 as well (the target commit presumably already passed the
 pipeline once — re-checking gates that might have since had their evidence pruned
 by retention isn't useful here). It does **not** bypass RBAC — same
@@ -544,35 +739,35 @@ by retention isn't useful here). It does **not** bypass RBAC — same
 so a rollback and a concurrent deploy still can't race each other. On success, the
 "current" pointer resets to the rolled-back commit (not just the highest seq ever
 seen), so a later forward-deploy of something genuinely newer is still allowed, and
-`deploy history` records the outcome as `rolled_back`, distinct from a normal
+`list deploys` records the outcome as `rolled_back`, distinct from a normal
 `succeeded` forward deploy, so the audit trail shows it was a deliberate reversion.
 
 ### Claiming a deploy ahead of time
 
 ```sh
-breeze deploy claim release deploy --env staging --ttl 15m --as admin --token T
+breeze claim deploy release deploy --env staging --ttl 15m --as admin --token T
 ```
 
 A deploy stage's `(target, environment)` exclusivity is normally only held for the
 duration of the deploy command itself — before you actually trigger it, `breeze
-inventory` shows nothing, even if you're about to deploy any second. `deploy claim`
+inventory` shows nothing, even if you're about to deploy any second. `claim deploy`
 reserves that same lock early, so other agents checking `breeze inventory`/`operator`
-see a `Holder` (and can `stage wait`/back off accordingly) before the real deploy
+see a `Holder` (and can `wait stage`/back off accordingly) before the real deploy
 command even starts — e.g. to signal "I'm about to deploy to staging" while you're
 still finishing prep work. Same RBAC as a normal deploy (`DeployPolicy.RequiredRole`)
 — claiming is authorization-equivalent to deploying, not a lesser-privileged peek.
-When you do run the real `stage start ... deploy`, it recognizes your own held claim
+When you do run the real `start stage ... deploy`, it recognizes your own held claim
 and reuses it rather than rejecting itself as a conflicting concurrent deploy; the
 lock releases once that real deploy finishes (success or failure), same as an
-unclaimed one would. If instead that deploy gets cancelled (`breeze stage cancel`,
+unclaimed one would. If instead that deploy gets cancelled (`breeze cancel stage`,
 or the automatic recovery on daemon restart/stop) rather than finishing normally,
 your claim survives — cancelling the run doesn't hand your reserved environment
 to someone else just because this particular attempt got interrupted; you keep
 blocking other actors until you retry (and let it resolve normally), release it
 yourself, or its `--ttl` expires. If you never get around to the real deploy at
 all, it just expires at `--ttl` (default: the stage's own configured `timeout`) —
-nothing to explicitly release, though `breeze lock release <id> --as WHO` works
-too if you want to free it early. Calling `deploy claim` again while your own
+nothing to explicitly release, though `breeze release lock <id> --as WHO` works
+too if you want to free it early. Calling `claim deploy` again while your own
 earlier claim is still active just re-reports it (not an error — a repeat claim
 isn't a conflict against yourself). A genuine conflict names the actual current
 holder and its expiry (`"deploy/engix99" is already locked by "alice" (since ...,
@@ -582,77 +777,77 @@ directly`), not just "someone else has it."
 ### Claiming a command stage instance ahead of time
 
 ```sh
-breeze stage claim release build abc123 [--env NAME] [--ttl D] --as alice --token T
+breeze claim stage release build abc123 [--env NAME] [--ttl D] --as alice --token T
 ```
 
-The same idea as `deploy claim`, generalized to command stages: reserve one
+The same idea as `claim deploy`, generalized to command stages: reserve one
 specific stage instance's execution slot — `(pipeline, stage, commit[,
 environment])`, not a `(target, environment)` pair (a command stage has no
 target/environment identity of its own until fanned out) — before actually
-running it. Same RBAC as a real `stage start` on that stage
+running it. Same RBAC as a real `start stage` on that stage
 (`CommandPolicy.RequiredRole`, if set). Visible via `breeze inventory`/`operator`
-immediately, same as a deploy claim. A DIFFERENT actor's `stage start` on that
-exact instance is rejected while the claim holds; your own `stage start`
+immediately, same as a deploy claim. A DIFFERENT actor's `start stage` on that
+exact instance is rejected while the claim holds; your own `start stage`
 recognizes and consumes it instead of failing a self-conflict. If you never get
 around to the real run, the claim just expires at `--ttl` (default: the stage's
 own configured `timeout`). Approval stages aren't claimable (multiple distinct
-approvers is the point, not exclusivity); deploy stages keep using `deploy claim`
-instead (see above) — `stage claim` rejects both outright.
+approvers is the point, not exclusivity); deploy stages keep using `claim deploy`
+instead (see above) — `claim stage` rejects both outright.
 
 **This mutex isn't opt-in.** Every command-stage run — whether or not anyone ever
-calls `stage claim` first — automatically holds this exact same lock for its full
+calls `claim stage` first — automatically holds this exact same lock for its full
 duration, exactly like a deploy always has: `breeze inventory`/`operator` shows a
 `Holder` for any actively-running claimable stage, and a different actor's
-`stage start` on the identical instance is rejected while it's running. A `stage
+`start stage` on the identical instance is rejected while it's running. A `stage
 claim` made ahead of time is just an early acquire of that same lock — your own
-subsequent `stage start` reuses it rather than acquiring a second one.
+subsequent `start stage` reuses it rather than acquiring a second one.
 
 **Cancelling a run's effect on the lock depends on whether it was ever manually
-claimed.** If the run never had a `stage claim` (or `deploy claim`) behind it —
-the common case — `breeze stage cancel` (or the automatic recovery on daemon
+claimed.** If the run never had a `claim stage` (or `claim deploy`) behind it —
+the common case — `breeze cancel stage` (or the automatic recovery on daemon
 restart/stop) releases its lock immediately, so a retry is never blocked waiting
 on the lock's own TTL to expire. But if the lock IS a manual claim you made
 yourself, cancelling the run that reused it does **not** release your claim —
 your reservation survives (still blocking other actors, still visible in
 `inventory`) so a stranger can't slip into the slot you deliberately reserved
 just because this particular attempt got interrupted. You keep it until you
-explicitly `breeze lock release` it, its own `--ttl` expires, or you retry and
+explicitly `breeze release lock` it, its own `--ttl` expires, or you retry and
 let it resolve normally (success or failure both release it then, same as an
 unclaimed run always has).
 
 ### Granting temporary deploy access
 
 ```sh
-breeze deploy grant release --env staging --to bob --ttl 2h [--target release] --as alice --token T
-breeze deploy grants [release] [--env staging] [--json]   # Tier-1 read, no auth needed
+breeze grant deploy release --env staging --to bob --ttl 2h [--target release] --as alice --token T
+breeze list grants [release] [--env staging] [--json]   # Tier-1 read, no auth needed
 ```
 
 An environment's declared `environment_owners` identity, an admin, **or whoever
 currently holds a deploy claim/lock somewhere in that environment** can
 temporarily delegate deploy authority over it to someone who doesn't hold the
 role a deploy there normally requires — e.g. covering for the usual deployer
-while they're out, without a permanent `role assign`. That last case —
+while they're out, without a permanent `assign role`. That last case —
 "holding == owning, for exactly as long as you hold it" — is what makes this
-self-service without static config or admin escalation: `deploy claim` an
-environment to block everyone, then `deploy grant` a narrow window to let one
+self-service without static config or admin escalation: `claim deploy` an
+environment to block everyone, then `grant deploy` a narrow window to let one
 other identity land a fix while your own claim keeps blocking everyone else,
 with no `environment_owners` entry or admin in the loop at all. `--ttl` is
 mandatory: a grant is always time-bounded, never a backdoor around RBAC forever.
 Omit `--target` to cover every deploy target in that environment, or repeat it to
 scope the grant to specific targets only (`--target release` doesn't also cover a
 `worker` target deployed to the same environment) — a grant is exactly as narrow as
-you make it. `deploy grants` lists what's currently delegated, to whom, by whom, and
+you make it. `list grants` lists what's currently delegated, to whom, by whom, and
 until when — check it the same way you'd check `breeze inventory` before assuming
 "lacks the role" is the whole story on why someone can or can't deploy somewhere.
-The grant is consumed the same way a role would be: it satisfies both `deploy claim`
-and the real `stage start ... deploy`/`deploy rollback`, and simply stops working
+The grant is consumed the same way a role would be: it satisfies both `claim deploy`
+and the real `start stage ... deploy`/`rollback deploy`, and simply stops working
 once `--ttl` elapses — nothing to explicitly revoke, though a shorter follow-up
-`deploy grant` for the same (pipeline, environment, grantee) replaces it outright.
+`grant deploy` for the same (pipeline, environment, grantee) replaces it outright.
 
 ### Recovering a stuck stage
 
 ```sh
-breeze stage cancel <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO --token T
+breeze cancel stage <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO --token T
 ```
 
 A manual escape hatch for a `Running`/`Awaiting` instance that's never going to
@@ -660,7 +855,7 @@ resolve on its own — most commonly one orphaned by a daemon restart or stop mi
 (see "Design notes" below; that specific cause is now handled automatically, this
 is for the general case). Forces it to a terminal `Failed` state with your
 `--reason` (or a default one) as the error, so it's immediately retryable via a
-fresh `stage start`. Requires the same RBAC that stage would need to trigger (its
+fresh `start stage`. Requires the same RBAC that stage would need to trigger (its
 own `RequiredRole`), or admin.
 
 If the underlying command is genuinely still executing (as opposed to already
@@ -675,11 +870,11 @@ after the cancellation and silently overwrite it back to a resolved state.
 ### Waiting instead of polling
 
 ```sh
-breeze stage start release build abc123 --as ci
-breeze stage wait  release build abc123 --timeout 30m &   # background it, keep working
+breeze start stage release build abc123 --as ci
+breeze wait stage  release build abc123 --timeout 30m &   # background it, keep working
 ```
 
-`stage wait` blocks until the stage resolves (or times out) — designed to be
+`wait stage` blocks until the stage resolves (or times out) — designed to be
 backgrounded via your shell or Claude Code's own background-Bash execution. On every
 resolution, breeze also proactively shells out to `mess send <identity> "..."`
 (best-effort, only if `mess` is installed):
@@ -699,13 +894,13 @@ resolution, breeze also proactively shells out to `mess send <identity> "..."`
 
 It deliberately does **not** notify the identity that triggered the stage that just
 resolved, even when that same identity also holds the role being notified (e.g. one
-identity acting as both CI and reviewer) — `stage start`/`stage approve` are
+identity acting as both CI and reviewer) — `start stage`/`approve stage` are
 synchronous RPCs that already hand that same caller the resolved instance directly
 as their response, so pinging them about their own call's own result would just be
 noise — if you want to be woken up rather than checking back yourself, that's
-exactly what backgrounding `stage wait` is for.
+exactly what backgrounding `wait stage` is for.
 
-An identity with `identity notify off` set is skipped entirely from the per-identity
+An identity with `notify identity off` set is skipped entirely from the per-identity
 sends above (opt-out is a personal preference, checked independently of the actor
 exclusion). Separately, if the pipeline sets `notify_topic`, **every** resolution —
 success or failure, whether or not any per-identity target was computed — also
@@ -743,10 +938,10 @@ command. **Authorization is not bypassed**: the message's mess sender is mapped
 back to a breeze identity (the reverse of `--mess-agent`'s own mapping — whichever
 identity's mapped mess-agent name, or raw identity name if unmapped, equals the
 sender), and that identity must hold the stage's own `ApprovalPolicy.RequiredRole`
-exactly as a CLI-issued `stage approve` would require — a sender with no matching
+exactly as a CLI-issued `approve stage` would require — a sender with no matching
 identity, or one lacking the role, is rejected with a reply in the topic
 explaining why, never silently ignored. The recorded `Approval.Brief` is annotated
-with `(via mess from <sender>)` so it's visible in `pipeline status` and any
+with `(via mess from <sender>)` so it's visible in `status pipeline` and any
 work-unit brief, distinguishing a chat-triggered approval from a CLI one without
 any new audit-log plumbing. The daemon also replies in the topic (threaded off
 the triggering message) once the approval resolves, success or rejection alike.
@@ -754,13 +949,13 @@ the triggering message) once the approval resolves, success or rejection alike.
 `<commit>` here accepts a short SHA too, same as any CLI `<commit>` argument —
 resolved server-side, against the daemon's own working directory, before
 looking up the stage instance, so a reviewer typing a short SHA in chat lands
-on the exact same instance a full-SHA `stage start` created.
+on the exact same instance a full-SHA `start stage` created.
 
 Only `approve` is supported — never `deploy`/`rollback`/`cancel` via chat, by
 design (this is the lowest-risk, most reversible action). The daemon subscribes
 to every registered pipeline's `command_topic` **once, at startup** — adding or
 changing a pipeline's `command_topic` while the daemon is already running
-requires a `breeze daemon restart` to take effect. The daemon listens under its
+requires a `breeze restart daemon` to take effect. The daemon listens under its
 own dedicated mess identity (derived from its state directory, never an ambient
 one inherited from whatever session happened to start it) — this closes a real
 class of bug where an ambient identity could collide with an unrelated
@@ -787,13 +982,13 @@ result even if writing it fails.
 breeze operator [--pipeline NAME] [--env NAME] [--json]
 ```
 
-Unlike `pipeline status` (scoped to one pipeline+commit) or `deploy history`
+Unlike `status pipeline` (scoped to one pipeline+commit) or `list deploys`
 (scoped to one pipeline+stage), `breeze operator` is the cross-pipeline,
 cross-commit "what needs *me* right now" view for a human: every approval stage
 still short of its threshold (with who's approved so far, what role is still
 needed, and how long it's been waiting), every stage currently running (with how
 long it's been running), the most recent failures and successes (each capped,
-newest first — full history is `deploy history`/the audit log's job), and every
+newest first — full history is `list deploys`/the audit log's job), and every
 lock (file and resource) currently held.
 
 Each category is **grouped by pipeline** — a sub-header per pipeline (sorted
@@ -831,10 +1026,10 @@ its finish time, so a retry that fails again notifies again) fires exactly once 
 process lifetime.
 
 ```sh
-breeze operator update-all
+breeze restart daemons
 ```
 
-Fans `daemon restart`'s in-place self-re-exec out across **every** breeze daemon on
+Fans `restart daemon`'s in-place self-re-exec out across **every** breeze daemon on
 this machine, not just the one directory the caller happens to be in — for when
 you've rebuilt breeze and want every repo's daemon to pick up the new binary
 without hunting down each one by hand. Discovery has no maintained list to go
@@ -861,12 +1056,12 @@ it calls. `build`/`test`/`deploy` each operate on the given commit in an **isola
 in the main checkout:
 
 ```sh
-breeze stage start   breeze build     <sha> --as ci-test
-breeze stage start   breeze test      <sha> --as ci-test
-breeze stage approve breeze review    <sha> --as admin --token-file .git/breeze/admin.token
-breeze stage start   breeze deploy    <sha> --env local --as admin --token-file .git/breeze/admin.token
-breeze stage start   breeze push      <sha> --env local --as admin --token-file .git/breeze/admin.token
-breeze stage start   breeze smoketest <sha> --env local --as admin
+breeze start stage   breeze build     <sha> --as ci-test
+breeze start stage   breeze test      <sha> --as ci-test
+breeze approve stage breeze review    <sha> --as admin --token-file .git/breeze/admin.token
+breeze start stage   breeze deploy    <sha> --env local --as admin --token-file .git/breeze/admin.token
+breeze start stage   breeze push      <sha> --env local --as admin --token-file .git/breeze/admin.token
+breeze start stage   breeze smoketest <sha> --env local --as admin
 ```
 
 Six stages: `build` → `test` → `review` → `deploy` → `push` → `smoketest`. `deploy`
@@ -928,6 +1123,59 @@ authority it already legitimately holds. Concretely:
 
 ## Design notes
 
+- The stage graph is a **backward-reference-only DAG**: a stage may only `needs` a
+  stage declared before it. That one rule replaces a cycle check entirely — a cycle
+  can't be expressed, so unlike `environment_deps` (which needs a real DFS, see
+  `internal/engine/environment.go`) there's nothing to detect at registration and
+  nothing to guard against at run time. It also keeps the environment fan-out
+  index-based and untouched: everything before `fans_out` is still commit-only,
+  everything at or after it is still `(commit, environment)`-scoped, and a
+  prerequisite's scope follows the **prerequisite's** own position, not its
+  dependent's (`parentKey`, `internal/engine/stage.go`).
+- Gate 2 ("has the environment this one depends on finished?") asks about every
+  **terminal** stage — the ones nothing else needs — rather than the last-declared
+  stage. Once branches can diverge, a chain ends in several places at once, and
+  finishing only one of them isn't a finished chain. For a linear pipeline the
+  terminal set is exactly the last stage, so this is the check it always was.
+- `needs` distinguishes **unset from empty**: absent means "the preceding stage"
+  (so every pre-existing pipeline keeps its straight line with no edit), `[]` means
+  "no prerequisite at all." That distinction survives HCL (gohcl decodes an omitted
+  optional list to nil and `[]` to an empty non-nil slice) and JSON (the wire field
+  is deliberately not `omitempty`, which would flatten `[]` back to absent and
+  silently re-chain a root stage).
+- The verb-first CLI (`breeze start stage`) is a **routing table in front of the
+  existing handlers** (`route.go`), not a rewrite of their argument parsing: a
+  canonical invocation is rewritten into the old noun-first argv and dispatched
+  unchanged. That's also what makes the old spelling free to keep working — it's
+  already in the shape the rewrite produces.
+- A lock acquire and its waiter registration happen in **one** engine critical
+  section (`AcquireFileLockOrWait`), not a try followed by a separate register: the
+  gap between those two is a lost-wakeup window, and a caller that lost a wake there
+  waited on a lock that was already free — forever, for `exec lock`, which had no
+  timeout to bound it. `internal/engine/lock_wait_test.go` keeps both halves
+  written down: one test demonstrates the two-step sequence losing the wake, the
+  next proves the single-step one can't.
+- Resource limits merge in two different places on purpose. A pipeline-level
+  default is resolved **client-side at `apply` time** (`internal/hclconfig`), like
+  `fans_out` becoming an index — HCL is authoring sugar over the payload the wire
+  protocol already accepts, and resolving it there keeps `apply`'s diff honest
+  (both sides of the comparison are fully resolved, so re-applying an unchanged
+  file is still reported as unchanged). The machine-level floor is applied
+  **server-side at execution time** (`Engine.EffectiveLimits`), because it has to
+  cover pipelines registered before it existed and ones registered through the raw
+  JSON path — and deliberately isn't baked into the stored definition, which would
+  make every re-apply look like a diff.
+- Credential verification is **one check in `dispatch`**, not per-op: if a request
+  carries both `As` and `Token`, they must verify, whatever the op. Doing it per-op
+  is what produced the gap in the first place — every Tier-1 read simply never
+  looked. The CLI side matters as much: read commands forward an *explicitly typed*
+  `--token`/`--token-file` so the daemon can see it, but never a session-inferred
+  one, since a stale session file must not start failing ordinary reads.
+- Anti-enumeration applies to **authentication**, not to an admin's own diagnostics.
+  `VerifyToken` still refuses to distinguish "unknown identity" from "wrong token"
+  to an unauthenticated caller; `assign role` naming an unregistered identity leaks
+  nothing, because its caller is already an authenticated admin who can read the
+  whole list anyway — and the bare "not found" it replaced cost real time live.
 - No VCS/CI integration by design — "older/newer" between commits is defined by
   **order of first appearance to breeze**, not git ancestry. This only makes sense
   if stages are triggered close to commit creation time; see
@@ -938,7 +1186,7 @@ authority it already legitimately holds. Concretely:
   "rename ... no such file or directory" warnings, and capable of silently
   persisting a stale snapshot if an older write's rename finished after a newer
   one's). The writer always converges on the most recently submitted snapshot.
-- `breeze daemon restart` uses `syscall.Exec` (`sysproc_unix.go`) to replace the
+- `breeze restart daemon` uses `syscall.Exec` (`sysproc_unix.go`) to replace the
   daemon's own process image in place, same PID — not fork-and-kill-the-old-one.
   The OpRestart handler only flags the restart and closes the stop channel; the
   actual re-exec happens back in `runDaemon`'s own accept loop, after its normal
@@ -988,8 +1236,8 @@ authority it already legitimately holds. Concretely:
   and cycle check on every acquire, a real design change, not a bugfix, and
   wasn't undertaken here). Also documented (not changed): reentrancy on a
   resource lock matches holder/paths/mode only, not `ManualClaim` — re-issuing
-  a plain `lock acquire --resource` against a key you already hold via `deploy
-  claim`/`stage claim` silently re-reports the existing claim unchanged
+  a plain `acquire lock --resource` against a key you already hold via `deploy
+  claim`/`claim stage` silently re-reports the existing claim unchanged
   (`TestResourceReentrancyIgnoresManualClaimMismatch`).
 - **Perf pass** (`internal/engine/locks_bench_test.go`): `tryAcquire` does a
   linear scan of every held lock for both its reentrancy check and its

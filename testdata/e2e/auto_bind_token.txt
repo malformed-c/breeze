@@ -7,30 +7,30 @@ env BREEZE_DIR=$WORK/state
 env BREEZE_SESSION_ID=test-session-1
 
 # Registering binds this session to "admin" + admin's own token.
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
 
 # Register carol under a DIFFERENT simulated session so test-session-1 stays
 # bound to admin (registering always rebinds the CURRENT session to whatever
 # name was just registered).
 env BREEZE_SESSION_ID=other-session
-exec breeze identity register carol
+exec breeze register identity carol
 env BREEZE_SESSION_ID=test-session-1
 
 # No --as, no --token at all — both must be inferred from the session's bound
 # admin identity/token for this real Tier-2 op to succeed.
-exec breeze role assign builder carol
-exec breeze role list --json
+exec breeze assign role builder carol
+exec breeze list roles --json
 stdout '"name":\s*"carol"[\s\S]*"builder"'
 
 # A wrong EXPLICIT token still overrides (and fails) rather than silently
 # falling back to the bound one.
-! exec breeze role assign reviewer carol --token-file wrong.token
+! exec breeze assign role reviewer carol --token-file wrong.token
 stderr 'authentication failed'
 
 # Switching --as to an identity the session ISN'T bound to must NOT silently
 # reuse admin's bound token to authenticate as carol.
-! exec breeze role assign reviewer carol --as carol
+! exec breeze assign role reviewer carol --as carol
 stderr 'this operation requires --as and --token'
 
 exec breeze stop

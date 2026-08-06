@@ -6,16 +6,16 @@ env BREEZE_DIR=$WORK/state
 env PATH=$WORK/bin:$PATH
 chmod 0755 bin/mess
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register alice --mess-agent alice-on-mess
-exec breeze identity register carol
-exec breeze identity register ci
-exec breeze role assign reviewer alice --as admin --token-file admin.token
-exec breeze role assign reviewer carol --as admin --token-file admin.token
+exec breeze register identity alice --mess-agent alice-on-mess
+exec breeze register identity carol
+exec breeze register identity ci
+exec breeze assign role reviewer alice --as admin --token-file admin.token
+exec breeze assign role reviewer carol --as admin --token-file admin.token
 
 # carol opts out of breeze's mess notifications entirely.
-exec breeze identity notify off --as carol
+exec breeze notify identity off --as carol
 
 # Regression check: `ps` and `role list` are two separate RPC handlers that both
 # render IdentityInfo — MessAgent/NotifyOptOut must show up in BOTH, not just one
@@ -23,12 +23,12 @@ exec breeze identity notify off --as carol
 # construction that never got these fields added).
 exec breeze ps --json
 stdout '"messAgent":\s*"alice-on-mess"'
-exec breeze role list --json
+exec breeze list roles --json
 stdout '"messAgent":\s*"alice-on-mess"'
 stdout '"notifyOptOut":\s*true'
 
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
-exec breeze stage start release build abc123 --as ci
+exec breeze start stage release build abc123 --as ci
 exec sleep 0.5
 
 exists mess-calls.log

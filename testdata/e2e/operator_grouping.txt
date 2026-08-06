@@ -3,13 +3,13 @@
 # scope the whole surface (including --json) down to one pipeline/environment.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
 exec breeze apply -f release.hcl --as admin --token-file admin.token
 exec breeze apply -f other.hcl --as admin --token-file admin.token
 
-! exec breeze stage start release build abc123 --as ci
-! exec breeze stage start other build def456 --as ci
+! exec breeze start stage release build abc123 --as ci
+! exec breeze start stage other build def456 --as ci
 
 # Grouped by pipeline, alphabetically: "other" before "release".
 exec breeze operator

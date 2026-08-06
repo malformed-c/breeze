@@ -7,10 +7,10 @@ import (
 	breezehook "breeze/internal/hook"
 )
 
-func toHookTemplate(h Hook) breezehook.Template {
+func (e *Engine) toHookTemplate(h Hook) breezehook.Template {
 	return breezehook.Template{
 		Path: h.Command.Path, Args: h.Command.Args, Env: h.Command.Env, Dir: h.Command.Dir, Timeout: h.Timeout,
-		ResourceLimits: h.Command.ResourceLimits,
+		ResourceLimits: e.EffectiveLimits(h.Command.ResourceLimits),
 	}
 }
 
@@ -18,9 +18,9 @@ func toHookTemplate(h Hook) breezehook.Template {
 // first failure (process-start error, timeout, or nonzero exit) stops the rest and is
 // returned as an RPC-level gate error — the stage's main action never runs. Must be
 // called WITHOUT e.mu held (hooks may be slow).
-func runPreGates(hooks []Hook, params breezehook.Params) error {
+func (e *Engine) runPreGates(hooks []Hook, params breezehook.Params) error {
 	for i, h := range hooks {
-		res := breezehook.Run(context.Background(), toHookTemplate(h), params)
+		res := breezehook.Run(context.Background(), e.toHookTemplate(h), params)
 		switch {
 		case res.Err != nil:
 			return gateErr("pre-gate hook #%d (%s) failed to start: %v", i, h.Command.Path, res.Err)
@@ -39,7 +39,7 @@ func runPreGates(hooks []Hook, params breezehook.Params) error {
 func (e *Engine) runPostActions(hooks []Hook, params breezehook.Params, pipeline, stage, actor string) {
 	for _, h := range hooks {
 		go func(h Hook) {
-			res := breezehook.Run(context.Background(), toHookTemplate(h), params)
+			res := breezehook.Run(context.Background(), e.toHookTemplate(h), params)
 			if res.Err == nil && !res.TimedOut && res.ExitCode == 0 {
 				return
 			}

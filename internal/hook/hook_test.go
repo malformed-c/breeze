@@ -192,3 +192,43 @@ func TestRunWithResourceLimitsTimeoutStillKillsProcessGroup(t *testing.T) {
 		t.Fatalf("expected timeout to kill promptly through the systemd-run wrapper, took %v", elapsed)
 	}
 }
+
+// A priority (CPUWeight/IOWeight) and a soft ceiling (MemoryHigh) have to reach
+// systemd as their own properties — they're the knobs that matter when CI shares a
+// host with something that must stay responsive, where a hard cap is the wrong tool.
+func TestWrapWithSystemdRunPassesWeightsAndSoftLimits(t *testing.T) {
+	_, args := WrapWithSystemdRun("/bin/true", nil, &ResourceLimits{
+		CPUWeight: 50, MemoryHigh: "4G", MemoryMax: "8G",
+	})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--property=CPUWeight=50", "--property=MemoryHigh=4G", "--property=MemoryMax=8G"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected %q in %v", want, args)
+		}
+	}
+}
+
+// An all-empty limits block must behave exactly like no block: wrapping every
+// command in systemd-run for a set of limits that says nothing would add a
+// dependency on systemd (and a failure mode) for no benefit at all.
+func TestEmptyResourceLimitsDoNotWrap(t *testing.T) {
+	for _, rl := range []*ResourceLimits{nil, {}} {
+		if !rl.IsZero() {
+			t.Fatalf("%+v should count as zero", rl)
+		}
+	}
+	if (&ResourceLimits{CPUWeight: 1}).IsZero() {
+		t.Fatalf("a set field must not count as zero")
+	}
+
+	res := Run(context.Background(), Template{
+		Path: "/bin/echo", Args: []string{"unwrapped"}, Timeout: 5 * time.Second,
+		ResourceLimits: &ResourceLimits{},
+	}, nil)
+	if res.Err != nil || res.ExitCode != 0 {
+		t.Fatalf("an empty limits block must not change how the command runs: %+v", res)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); got != "unwrapped" {
+		t.Fatalf("stdout = %q", got)
+	}
+}

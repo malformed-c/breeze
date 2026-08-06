@@ -1,6 +1,22 @@
 package engine
 
-import "slices"
+import (
+	"fmt"
+	"slices"
+)
+
+// errUnregistered names the identity a role operation couldn't find, rather than
+// the bare ErrNotFound these used to return. That bare error cost real time live:
+// `role assign deployer opus-inflight` failed twice with nothing but "not found",
+// which reads as "the role doesn't exist" or "the token file is missing" just as
+// easily as the truth ("that identity was never registered") — and since roles are
+// free-form strings with no catalog to look up, the identity is the ONLY thing that
+// can be missing here. Naming it is not identity enumeration: every caller of these
+// is already an authenticated admin (see daemon.go's requireAdmin), so it learns
+// nothing it couldn't learn from `breeze list roles`.
+func errUnregistered(identity string) error {
+	return fmt.Errorf("identity %q is not registered (see `breeze list roles`; register it with `breeze register identity %s`)", identity, identity)
+}
 
 // AssignRole appends role to identity's role list (idempotent — assigning an already-
 // held role is a no-op, not an error). Roles are free-form strings; there is no
@@ -10,7 +26,7 @@ func (e *Engine) AssignRole(identity string, role Role) error {
 	defer e.mu.Unlock()
 	id, ok := e.identities[identity]
 	if !ok {
-		return ErrNotFound
+		return errUnregistered(identity)
 	}
 	if !slices.Contains(id.Roles, role) {
 		id.Roles = append(id.Roles, role)
@@ -24,7 +40,7 @@ func (e *Engine) RevokeRole(identity string, role Role) error {
 	defer e.mu.Unlock()
 	id, ok := e.identities[identity]
 	if !ok {
-		return ErrNotFound
+		return errUnregistered(identity)
 	}
 	id.Roles = slices.DeleteFunc(id.Roles, func(r Role) bool { return r == role })
 	e.changed()

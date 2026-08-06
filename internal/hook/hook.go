@@ -31,15 +31,38 @@ type Template struct {
 
 // ResourceLimits bounds a command's cgroup footprint via systemd-run --scope.
 // All fields are optional; only limits actually set are passed through as
-// systemd unit properties. CPUQuota/MemoryMax follow systemd's own syntax
-// (e.g. "200%", "512M", "2G", "infinity") — breeze does not reinterpret them,
-// so a malformed value surfaces as a systemd-run error captured in the
-// command's own output, not a breeze-side validation error.
+// systemd unit properties. The string-valued fields follow systemd's own syntax
+// (e.g. "200%", "512M", "2G", "infinity"); breeze validates their SHAPE at
+// pipeline-registration time (see engine.validateResourceLimits) so a typo fails
+// at `breeze apply` rather than halfway through a pipeline run, but it does not
+// otherwise reinterpret them.
+//
+// Two kinds of limit, and the difference matters when the host is shared: a
+// CAP (CPUQuota, MemoryMax, TasksMax) applies unconditionally, even on an
+// otherwise idle machine, so a build capped at 4 cores leaves 24 idle whether or
+// not anything else wants them. A PRIORITY (CPUWeight, IOWeight) only bites
+// under actual contention — the command gets everything that's free and yields
+// when something else needs it. For "CI must not starve the control plane
+// sharing this box" the priority knobs are usually what's wanted, alone or
+// alongside a generous cap; for "this build must never exceed what I budgeted"
+// the caps are. MemoryHigh sits between: a soft ceiling that throttles and
+// reclaims rather than killing, so it degrades instead of failing the way
+// MemoryMax's OOM kill does.
 type ResourceLimits struct {
-	CPUQuota  string // systemd CPUQuota=, e.g. "200%" for 2 cores
-	MemoryMax string // systemd MemoryMax=, e.g. "512M", "2G"
-	TasksMax  int    // systemd TasksMax=; 0 = unset
-	IOWeight  int    // systemd IOWeight=, 1-10000; 0 = unset
+	CPUQuota   string // systemd CPUQuota=, e.g. "200%" for 2 cores — a hard cap
+	CPUWeight  int    // systemd CPUWeight=, 1-10000 (default 100); 0 = unset — relative share under contention
+	MemoryMax  string // systemd MemoryMax=, e.g. "512M", "2G" — hard cap, OOM-kills past it
+	MemoryHigh string // systemd MemoryHigh=, same syntax — soft cap: throttle + reclaim, no kill
+	TasksMax   int    // systemd TasksMax=; 0 = unset
+	IOWeight   int    // systemd IOWeight=, 1-10000; 0 = unset — relative share under contention
+}
+
+// IsZero reports whether no limit at all is set — used to decide whether a
+// command needs the systemd-run wrapper, so an all-empty block behaves exactly
+// like no block.
+func (rl *ResourceLimits) IsZero() bool {
+	return rl == nil || (rl.CPUQuota == "" && rl.CPUWeight == 0 && rl.MemoryMax == "" &&
+		rl.MemoryHigh == "" && rl.TasksMax == 0 && rl.IOWeight == 0)
 }
 
 // WrapWithSystemdRun rewrites (path, args) into a systemd-run invocation that
@@ -64,8 +87,14 @@ func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string,
 	if rl.CPUQuota != "" {
 		sdArgs = append(sdArgs, "--property=CPUQuota="+rl.CPUQuota)
 	}
+	if rl.CPUWeight > 0 {
+		sdArgs = append(sdArgs, fmt.Sprintf("--property=CPUWeight=%d", rl.CPUWeight))
+	}
 	if rl.MemoryMax != "" {
 		sdArgs = append(sdArgs, "--property=MemoryMax="+rl.MemoryMax)
+	}
+	if rl.MemoryHigh != "" {
+		sdArgs = append(sdArgs, "--property=MemoryHigh="+rl.MemoryHigh)
 	}
 	if rl.TasksMax > 0 {
 		sdArgs = append(sdArgs, fmt.Sprintf("--property=TasksMax=%d", rl.TasksMax))
@@ -138,7 +167,7 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	}
 
 	path := tmpl.Path
-	if tmpl.ResourceLimits != nil {
+	if !tmpl.ResourceLimits.IsZero() {
 		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
 	}
 

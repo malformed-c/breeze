@@ -192,7 +192,7 @@ func handleMessCommand(eng *engine.Engine, messPath, identity string, m messInbo
 
 	actor, ok := identityForMessSender(eng, m.From)
 	if !ok {
-		reply("breeze: no breeze identity is mapped to mess agent %q (see --mess-agent on `identity register`) — command ignored", m.From)
+		reply("breeze: no breeze identity is mapped to mess agent %q (see --mess-agent on `register identity`) — command ignored", m.From)
 		return
 	}
 

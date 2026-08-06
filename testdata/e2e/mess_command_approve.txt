@@ -8,19 +8,19 @@ env BREEZE_DIR=$WORK/state
 env PATH=$WORK/bin:$PATH
 chmod 0755 bin/mess
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register alice --mess-agent alice-on-mess
-exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze register identity alice --mess-agent alice-on-mess
+exec breeze assign role reviewer alice --as admin --token-file admin.token
 
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
-exec breeze stage start release build abc123 --as ci
+exec breeze start stage release build abc123 --as ci
 stdout 'build: succeeded'
 
 # command_topic subscriptions are established once, at daemon startup (see
 # Pipeline.CommandTopic's doc comment) -- the pipeline was registered AFTER the
 # daemon auto-started, so restart to pick it up.
-exec breeze daemon restart
+exec breeze restart daemon
 exec sleep 1
 
 exists mess-calls.log
@@ -36,7 +36,7 @@ grep 'sub #release-approvals --as breeze-daemon-[0-9a-f]{8}' mess-calls.log
 # CommandTopic itself is authored with.
 grep 'pub release-approvals breeze: release/review \(abc123\) approved by alice -> succeeded --thread m1 --as breeze-daemon-[0-9a-f]{8}' mess-calls.log
 
-exec breeze pipeline status release abc123 --json
+exec breeze status pipeline release abc123 --json
 stdout '"stage":\s*"review"[\s\S]*"status":\s*"succeeded"'
 stdout '"identity":\s*"alice"'
 stdout '"brief":\s*"\(via mess from alice-on-mess\) lgtm via chat"'

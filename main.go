@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"breeze/internal/hclconfig"
@@ -32,8 +34,29 @@ func main() {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
 		os.Exit(1)
 	}
-	cmd := os.Args[1]
-	args := os.Args[2:]
+
+	// `breeze <verb> --help` / `breeze <group> --help` answers with that word's own
+	// commands and exits 0 — asking for help is never an error, and never reaches a
+	// handler that could mistake "--help" for a positional argument.
+	if text, ok := helpForCommand(os.Args[1:]); ok {
+		fmt.Println(text)
+		return
+	}
+
+	// The CLI grammar is verb-first (`breeze start stage ...`); canonicalize
+	// rewrites it into the noun-first shape the handlers below still parse, and
+	// lets the pre-swap spelling through with a pointer to the new one. See
+	// route.go.
+	argv, deprecated, err := canonicalize(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "breeze:", err)
+		os.Exit(1)
+	}
+	if deprecated != "" {
+		fmt.Fprintln(os.Stderr, "breeze:", deprecated)
+	}
+	cmd := argv[0]
+	args := argv[1:]
 
 	// Grouped to match usage()'s section order: daemon lifecycle, identity/RBAC,
 	// locks, pipelines, stages, deploy, then operator (cross-cutting monitoring).
@@ -68,97 +91,155 @@ func main() {
 		err = cmdDeploy(p, args)
 	case "operator":
 		err = cmdOperator(p, args)
+	case "auth":
+		err = cmdAuth(p, args)
 	default:
 		usage()
 		os.Exit(1)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
 }
 
+// ExitLockConflict is the exit status for "someone else holds this lock" —
+// distinct from the generic 1 precisely because it's the one failure a caller can
+// resolve by waiting and retrying, as opposed to a wrong flag, a missing identity
+// or a dead daemon, all of which will fail identically no matter how many times
+// you try. That distinction is what makes a try-lock usable from a script:
+//
+//	breeze acquire lock build.lock --as ci; case $? in
+//	  0) make ; breeze release locks --as ci ;;
+//	  4) echo "someone else is building; skipping" ;;
+//	  *) exit 1 ;;   # a real error
+//	esac
+const ExitLockConflict = 4
+
+func exitCode(err error) int {
+	var rpc *rpcError
+	if errors.As(err, &rpc) && rpc.Code() == wire.CodeLockConflict {
+		return ExitLockConflict
+	}
+	return 1
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: breeze <command> [args]
+	fmt.Fprintln(os.Stderr, `usage: breeze <verb> <noun> [args]
 
 -- daemon lifecycle --
-  daemon                                run the daemon in the foreground for THIS
+  start daemon                          run the daemon in the foreground for THIS
                                          directory; explicit start displaces whatever's
                                          already running here (auto-start never does)
-  daemon restart                        ask the running daemon to restart itself in
+  start daemon --background | -d        start detached (first start you don't want
+                                         to block on) instead of the foreground default
+  restart daemon                        ask the running daemon to restart itself in
                                          place (same pid); falls back to a fresh
                                          detached start if nothing's running yet
-  daemon --background | -d              start detached (first start you don't want
-                                         to block on) instead of the foreground default
-  stop                                  shut the daemon down
+  restart daemons                       restart every breeze daemon this machine's
+                                         discovery registry knows about — picks up
+                                         whatever binary is already on disk, never
+                                         rebuilds anything
+  stop [daemon]                         shut the daemon down
   ping                                  check daemon liveness (auto-starts it)
   status [--json]                       one-shot overview: liveness, identity/lock/
-                                         resource/pipeline counts
+                                         resource/pipeline counts, and the machine-level
+                                         resource limits this daemon applies to EVERY
+                                         command it runs (<state-dir>/defaults.hcl —
+                                         a resource_limits block; restart to reload)
 
 -- identity & RBAC --
   whoami [--as NAME]                    print resolved identity
   ps [--json]                           list identities and locks
-  identity register <name> [--mess-agent NAME]
+  register identity <name> [--mess-agent NAME]
                                          mint a token, print it once (fresh name: no
                                          auth needed; existing name: rotate with its
                                          own --as/--token, or --force as an admin).
                                          --mess-agent maps this identity to a mess
                                          agent name other than its own (default: same
                                          name); omit to leave an existing mapping as-is
-  identity revoke <name> --as ADMIN --token T
-  identity notify on|off --as NAME      opt in/out of breeze's mess notifications
+  revoke identity <name> --as ADMIN --token T
+  notify identity on|off --as NAME      opt in/out of breeze's mess notifications
                                          (self-service, no token needed)
-  role assign <role> <identity> --as ADMIN --token T
-  role revoke <role> <identity> --as ADMIN --token T
-  role list [--json]
+  assign role <role> <identity> --as ADMIN --token T
+  revoke role <role> <identity> --as ADMIN --token T
+  list roles [--json]
+  check auth [--as NAME] [--token T] [--role R] [--json]
+                                         read-only: is this credential valid (and, with
+                                         --role, does it hold that role)? The probe for
+                                         "did my registration/rotation actually work" —
+                                         mutates nothing, exits non-zero if it doesn't
 
 -- locks --
-  lock acquire <path...> [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
-  lock acquire --resource <name>... [--shared] [--ttl D] [--wait] [--timeout D] --as NAME
+  acquire lock <path...> [--shared] [--ttl D] [--try | --wait [--timeout D]] --as NAME
+  acquire lock --resource <name>... [--shared] [--ttl D] [--try | --wait [--timeout D]] --as NAME
                                                # a mutex over a named concept, not a real file
-  lock exec <path...> [--shared] --as NAME -- <command...>
-  lock exec <path...> [--cpu-quota 200%] [--memory-max 1G] [--tasks-max N] [--io-weight N]
+  exec lock <path...> [--shared] [--try | --wait [--timeout D]] --as NAME -- <command...>
+  exec lock <path...> [--cpu-quota 200%] [--cpu-weight N] [--memory-max 1G]
+                      [--memory-high 1G] [--tasks-max N] [--io-weight N]
                                          --as NAME -- <command...>
                                          # bounds the command's cgroup footprint via a
-                                         # transient systemd-run --scope wrapper
-  lock release <lock-id> --as NAME [--force]
-  lock release-all --as NAME            # release every lock (any kind) NAME holds
-  lock renew <lock-id> [--ttl D] --as NAME
-  lock list [--all] [--json]                  # --all also includes resource locks (deploy claims)
-  lock check <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
-  inventory [--json]                    list non-file resources (e.g. deploy-env
+                                         # transient systemd-run --scope wrapper.
+                                         # quota/max are hard CAPS (apply even on an idle
+                                         # box); weight is a PRIORITY (only bites under
+                                         # contention — the one you want when CI shares a
+                                         # host with something that must stay responsive);
+                                         # memory-high throttles instead of OOM-killing
+  release lock <lock-id> --as NAME [--force]
+  release locks --as NAME               # release every lock (any kind) NAME holds
+  renew lock <lock-id> [--ttl D] --as NAME
+  list locks [--all] [--json]                 # --all also includes resource locks (deploy claims)
+  check lock <path...> [--as NAME] [--json]   # read-only: is this locked by someone else?
+  list resources [--json]               non-file resources (e.g. deploy-env
                                          exclusivity) and their current holder
+                                         (also spelled "inventory")
+
+  Both lock commands TRY by default: a conflict fails immediately and exits 4,
+  distinct from the generic 1, so a script can tell "someone else holds it, retry
+  later" from "this command is wrong and always will be". --try says that out loud;
+  --wait blocks instead, bounded by --timeout (a timeout is also a 4).
 
 -- pipelines --
   apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]
                                          # HCL-authored pipeline config, client-side
                                          # only; upserts via pipeline.register — the
                                          # normal way to register/update a pipeline
-  pipeline register <file.json|-> --as ADMIN --token T
+                                         # Stage attributes worth knowing exist:
+                                         #   needs / convergence  — which stages this one
+                                         #     waits on; how branches diverge and converge
+                                         #   resource_limits { cpu_quota, memory_max,
+                                         #     tasks_max, io_weight } — caps a stage's or
+                                         #     hook's cgroup footprint (same systemd-run
+                                         #     --scope wrapper 'exec lock' uses), so a
+                                         #     runaway build can't starve the host
+  register pipeline <file.json|-> --as ADMIN --token T
                                          # lower-level: register from a raw JSON payload
-  pipeline show <name> [--json]
-  pipeline list [--json]
-  pipeline status <name> <commit> [--json]
-  pipeline run <name> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
-                                         # drives every stage in order (one stage
-                                         # start/status RPC per stage); stops and
-                                         # reports at the first approval stage or
-                                         # failure — re-run to continue after
-                                         # approving or fixing what broke
+  show pipeline <name> [--json]         # stages, their prerequisites (the graph) and
+                                         # environment fan-out
+  list pipelines [--json]
+  status pipeline <name> <commit> [--json]
+  run pipeline <name> <commit> [--env NAME] [--brief "..."] [--serial] --as WHO [--token T]
+                                         # drives the whole stage graph: every stage
+                                         # whose prerequisites are met runs together
+                                         # (--serial for one at a time), then the next
+                                         # round. Never auto-approves; reports every
+                                         # stage that blocked and everything a blocked
+                                         # prerequisite kept it from reaching — re-run
+                                         # to continue after approving or fixing
 
 -- stages --
-  stage start   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
-  stage approve <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
-  stage status  <pipeline> <stage> <commit> [--env NAME] [--json]
-  stage wait    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
+  start stage   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  approve stage <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  status stage  <pipeline> <stage> <commit> [--env NAME] [--json]
+  wait stage    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
                                          # designed to be backgrounded: start, then
                                          # background this command and continue other work
-  stage cancel  <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO [--token T]
+  cancel stage  <pipeline> <stage> <commit> [--env NAME] [--reason "..."] --as WHO [--token T]
                                          force a stuck Running/Awaiting instance to
                                          Failed (e.g. after a daemon restart orphaned
                                          it) so it can be retried; same RBAC as
                                          triggering that stage would need, or admin
-  stage claim   <pipeline> <stage> <commit> [--env NAME] [--ttl D] --as WHO [--token T]
+  claim stage   <pipeline> <stage> <commit> [--env NAME] [--ttl D] --as WHO [--token T]
                                          # reserve a COMMAND stage instance's execution slot
                                          # ahead of time — a real actor start recognizes and
                                          # consumes its own claim; a DIFFERENT actor's start
@@ -166,17 +247,17 @@ func usage() {
                                          # same RBAC as triggering that stage would need
 
 -- deploy --
-  deploy history  <pipeline> <stage> [--env NAME] [--limit N] [--json]
-  deploy rollback <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
+  list deploys     <pipeline> <stage> [--env NAME] [--limit N] [--json]
+  rollback deploy  <pipeline> <stage> <commit> --env NAME [--brief "..."] --as WHO [--token T]
                                          # bypasses ordering/staleness gates; same RBAC as a normal deploy
-  deploy claim    <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]
+  claim deploy     <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]
                                          # reserve (target,environment) exclusivity ahead of
                                          # the real deploy; same RBAC as a normal deploy
-  deploy grant    <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]
+  grant deploy     <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]
                                          # environment_owner (or admin) temporarily delegates
                                          # deploy authority, optionally scoped to specific targets
-  deploy grants   [<pipeline>] [--env NAME] [--json]
-                                         # list currently-known grants (Tier-1 read)
+  list grants      [<pipeline>] [--env NAME] [--json]
+                                         # currently-known grants (Tier-1 read)
 
 -- operator (cross-pipeline monitoring) --
   operator [--json]                     human-operator view: pending approvals,
@@ -185,25 +266,23 @@ func usage() {
                                          the instant an approval/failure/success needs
                                          attention; Tier-1, runs until interrupted;
                                          D = reconnect delay
-  operator update-all                   restart every breeze daemon this machine's
-                                         discovery registry knows about (in-place
-                                         self-re-exec, same as "daemon restart" per
-                                         directory) — picks up whatever binary is
-                                         already on disk, never rebuilds anything`)
+
+The pre-swap noun-first spellings (breeze stage start, breeze lock acquire, ...)
+still work and point at their replacement.`)
 }
 
 // --- flag helpers (small, ad hoc — breeze payloads are structured, not free text,
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
 
 type flagSet struct {
-	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline string
-	cpuQuota, memoryMax, tasksMax, ioWeight                                                                string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
-	shared, wait, force, jsonOut, dryRun, prune, all, help                                                 bool
-	targets                                                                                                []string // repeated --target NAME
-	resources                                                                                              []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
-	rest                                                                                                   []string // positional args before `--` (or all args, if no `--` present)
-	cmdArgs                                                                                                []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
-	unknownFlag                                                                                            string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
+	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline, role string
+	cpuQuota, cpuWeight, memoryMax, memoryHigh, tasksMax, ioWeight                                               string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
+	shared, wait, force, jsonOut, dryRun, prune, all, help, serial, tryLock                                      bool
+	targets                                                                                                      []string // repeated --target NAME
+	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
+	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
+	cmdArgs                                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
+	unknownFlag                                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
 }
 
 func parseFlags(args []string) flagSet {
@@ -267,6 +346,11 @@ func parseFlags(args []string) flagSet {
 			if i < len(args) {
 				f.reason = args[i]
 			}
+		case "--role":
+			i++
+			if i < len(args) {
+				f.role = args[i]
+			}
 		case "--target":
 			i++
 			if i < len(args) {
@@ -281,6 +365,16 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.cpuQuota = args[i]
+			}
+		case "--cpu-weight":
+			i++
+			if i < len(args) {
+				f.cpuWeight = args[i]
+			}
+		case "--memory-high":
+			i++
+			if i < len(args) {
+				f.memoryHigh = args[i]
 			}
 		case "--memory-max":
 			i++
@@ -318,6 +412,8 @@ func parseFlags(args []string) flagSet {
 			f.shared = true
 		case "--wait":
 			f.wait = true
+		case "--try":
+			f.tryLock = true
 		case "--force":
 			f.force = true
 		case "--json":
@@ -326,6 +422,8 @@ func parseFlags(args []string) flagSet {
 			f.dryRun = true
 		case "--all":
 			f.all = true
+		case "--serial":
+			f.serial = true
 		case "--help", "-h":
 			f.help = true
 		case "--":
@@ -374,10 +472,17 @@ func (f flagSet) rejectUnknownFlags(usage string) (bool, error) {
 // --tasks-max/--io-weight, or nil if none were given (no systemd-run wrapping
 // at all — the common case). Used by `breeze lock exec`.
 func (f flagSet) resourceLimits() (*hook.ResourceLimits, error) {
-	if f.cpuQuota == "" && f.memoryMax == "" && f.tasksMax == "" && f.ioWeight == "" {
+	if f.cpuQuota == "" && f.cpuWeight == "" && f.memoryMax == "" && f.memoryHigh == "" && f.tasksMax == "" && f.ioWeight == "" {
 		return nil, nil
 	}
-	rl := &hook.ResourceLimits{CPUQuota: f.cpuQuota, MemoryMax: f.memoryMax}
+	rl := &hook.ResourceLimits{CPUQuota: f.cpuQuota, MemoryMax: f.memoryMax, MemoryHigh: f.memoryHigh}
+	if f.cpuWeight != "" {
+		n, err := strconv.Atoi(f.cpuWeight)
+		if err != nil {
+			return nil, fmt.Errorf("--cpu-weight: %w", err)
+		}
+		rl.CPUWeight = n
+	}
 	if f.tasksMax != "" {
 		n, err := strconv.Atoi(f.tasksMax)
 		if err != nil {
@@ -396,6 +501,50 @@ func (f flagSet) resourceLimits() (*hook.ResourceLimits, error) {
 }
 
 // resolveToken returns the explicit token, reading --token-file if --token wasn't given.
+// readRequest builds a Tier-1 (read-only) request that still CARRIES whatever
+// credential the caller explicitly typed. Reads don't need one — that's not the
+// point: a read used to silently ACCEPT AND IGNORE a bogus --as/--token, so
+// `status stage ... --as nobody --token <64 zeroes>` printed exactly what a valid
+// pair printed, which made every "did my token work?" probe vacuous. Forwarding it
+// lets the daemon reject a wrong pair (see dispatch's credential check) instead.
+//
+// Deliberately only an explicitly-passed --token/--token-file, never the
+// session-inferred token: inference is a convenience, and a stale session file must
+// not start failing ordinary reads. An unreadable --token-file is reported here
+// rather than silently treated as "no token" — "which of these three things wasn't
+// found?" is exactly the ambiguity this pass exists to remove.
+func readRequest(p paths, f flagSet, op wire.Op, payload []byte) (wire.Request, error) {
+	token, err := f.resolveToken()
+	if err != nil {
+		return wire.Request{}, err
+	}
+	return wire.Request{Op: op, As: resolveIdentity(p, f), Token: token, Payload: payload}, nil
+}
+
+// waitMode resolves --try/--wait into the single "should this block?" answer both
+// lock commands need. They're opposites, so asking for both is a mistake worth
+// naming rather than silently resolving one way: which one you meant changes
+// whether the command can hang.
+//
+// --try is the explicit spelling of the default (don't block, fail on conflict).
+// It exists because "the default" is invisible at a call site — `breeze exec lock
+// --try ... -- make` says what it does, and says it in a way that survives someone
+// later reading the line and wondering whether it can block.
+func (f flagSet) waitMode() (bool, error) {
+	if f.tryLock && f.wait {
+		return false, fmt.Errorf("--try and --wait are opposites: --try fails immediately on a conflict, --wait blocks for one")
+	}
+	if f.tryLock {
+		return false, nil
+	}
+	if !f.wait && f.timeout != "" {
+		// A timeout with nothing to time out is a request that will never do what
+		// it looks like it does.
+		return false, fmt.Errorf("--timeout only applies with --wait (without it, a conflict fails immediately); did you mean `--wait --timeout %s`?", f.timeout)
+	}
+	return f.wait, nil
+}
+
 func (f flagSet) resolveToken() (string, error) {
 	if f.token != "" {
 		return f.token, nil
@@ -599,6 +748,10 @@ func cmdStatus(p paths, args []string) error {
 	fmt.Printf("breeze daemon: pid %d, version %s, dir %s\n", ping.Pid, versionString(ping.Version, ping.BuildTime), p.dir)
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
+	// Machine-level limits are daemon policy an operator has to be able to see
+	// without reading a config file they may not know exists.
+	fmt.Printf("resource limits (every command this daemon runs): %s\n",
+		describeLimits(resourceLimitsFromWire(ping.DefaultResourceLimits)))
 	return nil
 }
 
@@ -1016,8 +1169,72 @@ func cmdWhoAmI(p paths, args []string) error {
 		fmt.Println("(no identity)")
 		return nil
 	}
+	// "registered, holds no roles" and "never registered" both used to print an
+	// empty roles list, so the one command whose name promises to tell them apart
+	// couldn't — and a missing identity got read live as a role-assignment bug.
+	if !out.Registered {
+		fmt.Printf("%s (NOT registered — run `breeze register identity %s`)\n", out.Name, out.Name)
+		return nil
+	}
 	fmt.Printf("%s roles=%s\n", out.Name, strings.Join(out.Roles, ","))
 	return nil
+}
+
+// cmdAuth implements `breeze check auth` — the read-only "is this credential
+// valid?" probe. It exists because there was previously no way to answer that
+// without performing a privileged MUTATING action and seeing whether it was
+// refused: reads accepted any credential silently, so a bogus token and a real one
+// were indistinguishable. Answers only about the pair you pass; with --role it also
+// answers whether that identity currently holds a given role.
+func cmdAuth(p paths, args []string) error {
+	if len(args) == 0 || args[0] != "check" {
+		return fmt.Errorf("usage: breeze check auth [--as NAME] [--token T] [--role R] [--json]")
+	}
+	f := parseFlags(args[1:])
+	if handled, err := f.rejectUnknownFlags("breeze check auth [--as NAME] [--token T] [--role R] [--json]"); handled {
+		return err
+	}
+	as := resolveIdentity(p, f)
+	token, err := resolveTokenAuto(p, f, as)
+	if err != nil {
+		return err
+	}
+	if as == "" || token == "" {
+		return fmt.Errorf("nothing to check: pass --as NAME and --token T (or --token-file PATH)")
+	}
+	payload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: f.role})
+	resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: payload})
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.AuthCheckResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return authFailureErr(out.Authorized)
+	}
+	if out.Authorized {
+		if f.role != "" {
+			fmt.Printf("ok: %s holds role %q\n", as, f.role)
+		} else {
+			fmt.Printf("ok: %s's credential is valid\n", as)
+		}
+		return nil
+	}
+	fmt.Printf("NOT ok: %s\n", out.Reason)
+	return authFailureErr(false)
+}
+
+// authFailureErr mirrors stageFailureErr: the answer is printed either way, and the
+// process's own exit code carries it too, so `breeze check auth ... && ...` in a
+// script means what it looks like.
+func authFailureErr(authorized bool) error {
+	if authorized {
+		return nil
+	}
+	return fmt.Errorf("credential check failed")
 }
 
 func cmdPs(p paths, args []string) error {
@@ -1050,17 +1267,17 @@ func cmdPs(p paths, args []string) error {
 
 func cmdIdentity(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze identity register|revoke|notify ...")
+		return fmt.Errorf("usage: breeze register identity | revoke identity | notify identity ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze identity register|revoke|notify ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze register identity | revoke identity | notify identity ..."); handled {
 		return err
 	}
 	switch sub {
 	case "register":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze identity register <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
+			return fmt.Errorf("usage: breeze register identity <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
 		}
 		name := f.rest[0]
 		as := resolveIdentity(p, f)
@@ -1082,7 +1299,7 @@ func cmdIdentity(p paths, args []string) error {
 		return nil
 	case "revoke":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze identity revoke <name> --as ADMIN --token T")
+			return fmt.Errorf("usage: breeze revoke identity <name> --as ADMIN --token T")
 		}
 		as := resolveIdentity(p, f)
 		token, err := resolveTokenAuto(p, f, as)
@@ -1094,7 +1311,7 @@ func cmdIdentity(p paths, args []string) error {
 		return err
 	case "notify":
 		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
-			return fmt.Errorf("usage: breeze identity notify on|off [--as NAME]")
+			return fmt.Errorf("usage: breeze notify identity on|off [--as NAME]")
 		}
 		as := resolveIdentity(p, f)
 		if as == "" {
@@ -1110,17 +1327,17 @@ func cmdIdentity(p paths, args []string) error {
 
 func cmdRole(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze role assign|revoke|list ...")
+		return fmt.Errorf("usage: breeze assign role | revoke role | list roles ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze role assign|revoke|list ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze assign role | revoke role | list roles ..."); handled {
 		return err
 	}
 	switch sub {
 	case "assign", "revoke":
 		if len(f.rest) < 2 {
-			return fmt.Errorf("usage: breeze role %s <role> <identity> --as ADMIN --token T", sub)
+			return fmt.Errorf("usage: breeze %s role <role> <identity> --as ADMIN --token T", sub)
 		}
 		as := resolveIdentity(p, f)
 		token, err := resolveTokenAuto(p, f, as)
@@ -1135,10 +1352,25 @@ func cmdRole(p paths, args []string) error {
 			op = wire.OpRoleRevoke
 			payload, _ = json.Marshal(wire.RoleRevokeRequest{Role: f.rest[0], Identity: f.rest[1]})
 		}
-		_, err = call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload})
-		return err
+		if _, err := call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload}); err != nil {
+			return err
+		}
+		// Silence used to be this command's entire success output, which made "it
+		// worked" and "it failed for a reason I misread" look identical in a
+		// transcript — and cost real time live when a failed assign was read as a
+		// bug in assign rather than a missing identity. Say what changed.
+		verb := "assigned role %q to %q\n"
+		if sub == "revoke" {
+			verb = "revoked role %q from %q\n"
+		}
+		fmt.Printf(verb, f.rest[0], f.rest[1])
+		return nil
 	case "list":
-		resp, err := call(p, wire.Request{Op: wire.OpRoleList})
+		req, err := readRequest(p, f, wire.OpRoleList, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1161,11 +1393,11 @@ func cmdRole(p paths, args []string) error {
 
 func cmdLock(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze lock acquire|exec|release|release-all|renew|list|check ...")
+		return fmt.Errorf("usage: breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze lock acquire|exec|release|release-all|renew|list|check ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ..."); handled {
 		return err
 	}
 	as := resolveIdentity(p, f)
@@ -1175,17 +1407,21 @@ func cmdLock(p paths, args []string) error {
 			return fmt.Errorf("cannot mix file paths and --resource in one lock acquire")
 		}
 		if len(f.resources) == 0 && len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze lock acquire <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--wait] [--timeout D]")
+			return fmt.Errorf("usage: breeze acquire lock <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--wait] [--timeout D]")
+		}
+		wait, err := f.waitMode()
+		if err != nil {
+			return err
 		}
 		var req wire.LockAcquireRequest
 		if len(f.resources) > 0 {
-			req = wire.LockAcquireRequest{Resources: f.resources, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout}
+			req = wire.LockAcquireRequest{Resources: f.resources, Shared: f.shared, TTL: f.ttl, Wait: wait, Timeout: f.timeout}
 		} else {
 			lockPaths, err := canonicalLockPaths(f.rest)
 			if err != nil {
 				return err
 			}
-			req = wire.LockAcquireRequest{Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: f.wait, Timeout: f.timeout}
+			req = wire.LockAcquireRequest{Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: wait, Timeout: f.timeout}
 		}
 		payload, _ := json.Marshal(req)
 		resp, err := call(p, wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
@@ -1204,7 +1440,7 @@ func cmdLock(p paths, args []string) error {
 		return nil
 	case "release":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze lock release <lock-id> --as NAME [--force]")
+			return fmt.Errorf("usage: breeze release lock <lock-id> --as NAME [--force]")
 		}
 		payload, _ := json.Marshal(wire.LockReleaseRequest{ID: f.rest[0], Force: f.force})
 		_, err := call(p, wire.Request{Op: wire.OpLockRelease, As: as, Payload: payload})
@@ -1232,14 +1468,18 @@ func cmdLock(p paths, args []string) error {
 		return nil
 	case "renew":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze lock renew <lock-id> [--ttl D] --as NAME")
+			return fmt.Errorf("usage: breeze renew lock <lock-id> [--ttl D] --as NAME")
 		}
 		payload, _ := json.Marshal(wire.LockRenewRequest{ID: f.rest[0], TTL: f.ttl})
 		_, err := call(p, wire.Request{Op: wire.OpLockRenew, As: as, Payload: payload})
 		return err
 	case "list":
 		payload, _ := json.Marshal(wire.LockListRequest{All: f.all})
-		resp, err := call(p, wire.Request{Op: wire.OpLockList, Payload: payload})
+		req, err := readRequest(p, f, wire.OpLockList, payload)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1445,11 +1685,11 @@ func normalizeDuration(s string) string {
 
 func cmdPipeline(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze pipeline register|show|list|status|run ...")
+		return fmt.Errorf("usage: breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze pipeline register|show|list|status|run ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ..."); handled {
 		return err
 	}
 	switch sub {
@@ -1457,7 +1697,7 @@ func cmdPipeline(p paths, args []string) error {
 		return cmdPipelineRun(p, f)
 	case "register":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze pipeline register <file.json|-> --as ADMIN --token T")
+			return fmt.Errorf("usage: breeze register pipeline <file.json|-> --as ADMIN --token T")
 		}
 		var data []byte
 		var err error
@@ -1483,7 +1723,7 @@ func cmdPipeline(p paths, args []string) error {
 		return err
 	case "show":
 		if len(f.rest) < 1 {
-			return fmt.Errorf("usage: breeze pipeline show <name> [--json]")
+			return fmt.Errorf("usage: breeze show pipeline <name> [--json]")
 		}
 		payload, _ := json.Marshal(wire.PipelineShowRequest{Name: f.rest[0]})
 		resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: payload})
@@ -1498,10 +1738,19 @@ func cmdPipeline(p paths, args []string) error {
 			printJSON(out.Pipeline)
 			return nil
 		}
-		printPipelineHuman(out.Pipeline)
+		// The registered definition carries stage/pipeline limits; the daemon's own
+		// machine floor is applied on top at run time and is NOT part of the
+		// definition (baking it in would make `apply` see a diff on every re-apply
+		// of an unchanged file). Fetch it separately so the human view can still say
+		// what a stage will actually run with.
+		printPipelineHuman(out.Pipeline, machineLimits(p))
 		return nil
 	case "list":
-		resp, err := call(p, wire.Request{Op: wire.OpPipelineList})
+		req, err := readRequest(p, f, wire.OpPipelineList, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1519,10 +1768,14 @@ func cmdPipeline(p paths, args []string) error {
 		return nil
 	case "status":
 		if len(f.rest) < 2 {
-			return fmt.Errorf("usage: breeze pipeline status <name> <commit> [--json]")
+			return fmt.Errorf("usage: breeze status pipeline <name> <commit> [--json]")
 		}
 		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: resolveCommit(f.rest[1])})
-		resp, err := call(p, wire.Request{Op: wire.OpPipelineStatus, Payload: payload})
+		req, err := readRequest(p, f, wire.OpPipelineStatus, payload)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1547,20 +1800,28 @@ func cmdPipeline(p paths, args []string) error {
 	}
 }
 
-// cmdPipelineRun drives a pipeline's stages in order for one commit, calling
-// the same stage.start/stage.status RPCs a manual per-stage CLI call would,
-// instead of requiring one `breeze stage start` per stage by hand. An
-// already-succeeded stage is skipped (not re-triggered), so re-running this
-// exact command after e.g. a manual `stage approve` continues from where it
-// left off. Deliberately does NOT auto-approve: hitting an approval-type
-// stage stops the run and reports what's needed, since approval is a human
-// decision this command was never asked to make on anyone's behalf. Also
-// stops on the first stage whose own outcome fails — plowing ahead into
-// later stages whose prerequisite just broke would only produce more
-// confusing gate-failure noise.
+// cmdPipelineRun drives a pipeline's stage graph for one commit, calling the same
+// stage.start/stage.status RPCs a manual per-stage CLI call would, instead of
+// requiring one `breeze stage start` per stage by hand. An already-succeeded stage
+// is skipped (not re-triggered), so re-running this exact command after e.g. a
+// manual `stage approve` continues from where it left off.
+//
+// Execution is by rounds: every stage whose Gate 1 prerequisites are satisfied runs
+// together, concurrently unless --serial, then the next round is recomputed. On a
+// linear pipeline each round holds exactly one stage, which is the behavior this
+// command has always had; once branches diverge, independent branches make progress
+// at the same time.
+//
+// The run stops when nothing is ready any more — deliberately NOT at the first
+// problem. A stage that fails, or is awaiting approval, only blocks the branch
+// downstream of it (those stages never become ready), so sibling branches still
+// finish rather than being abandoned over an unrelated failure. Everything that
+// blocked is reported together at the end, with the exact command needed to unblock
+// it. Approval is never granted automatically: it is a human decision this command
+// was never asked to make on anyone's behalf.
 func cmdPipelineRun(p paths, f flagSet) error {
 	if len(f.rest) < 2 {
-		return fmt.Errorf("usage: breeze pipeline run <name> <commit> [--env NAME] [--brief \"...\"] --as WHO [--token T]")
+		return fmt.Errorf("usage: breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--serial] --as WHO [--token T]")
 	}
 	name, commit := f.rest[0], resolveCommit(f.rest[1])
 
@@ -1585,66 +1846,215 @@ func cmdPipelineRun(p paths, f flagSet) error {
 		return err
 	}
 
-	for i, sd := range pl.Stages {
-		env := ""
-		if i >= pl.FanOutAt {
-			env = f.env
-		}
+	run := &pipelineRun{
+		paths: p, pipeline: pl, name: name, commit: commit,
+		env: f.env, brief: f.brief, as: as, token: token, serial: f.serial,
+		outcomes: make([]stageOutcome, len(pl.Stages)),
+	}
+	return run.drive()
+}
 
-		statusPayload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: name, Stage: sd.Name, Commit: commit, Environment: env})
-		resp, err := call(p, wire.Request{Op: wire.OpStageStatus, Payload: statusPayload})
-		if err != nil {
-			return err
-		}
-		statusOut, err := decodePayload[wire.StageStatusResponse](resp)
-		if err != nil {
-			return err
-		}
+// stageOutcome records what a single stage did during a run — its terminal status
+// as reported by the daemon, plus the lines to print for it.
+type stageOutcome struct {
+	attempted bool
+	succeeded bool
+	status    string // daemon-reported status, or "blocked" for a stage never reached
+	blocker   string // why it blocked, when it did
+	lines     []string
+}
 
-		if statusOut.Instance.Status == "succeeded" {
-			fmt.Printf("%s: succeeded (already)\n", sd.Name)
+type pipelineRun struct {
+	paths                               paths
+	pipeline                            wire.Pipeline
+	name, commit, env, brief, as, token string
+	serial                              bool
+	outcomes                            []stageOutcome
+}
+
+// stageEnv returns the environment a given stage index is keyed by: stages before
+// the fan-out point are commit-only (one shared instance), the rest are scoped to
+// the environment the caller passed. Mirrors engine.keyFor.
+func (r *pipelineRun) stageEnv(i int) string {
+	if i >= r.pipeline.FanOutAt {
+		return r.env
+	}
+	return ""
+}
+
+// ready lists the stages that may run now: not yet attempted, with their Gate 1
+// prerequisites satisfied by stages this run has seen succeed — every one of them,
+// or any one, per the stage's convergence setting.
+func (r *pipelineRun) ready() []int {
+	var out []int
+	for i := range r.pipeline.Stages {
+		if r.outcomes[i].attempted {
 			continue
 		}
-
-		if sd.Type == "approval" {
-			need := 0
-			role := ""
-			if sd.ApprovalPolicy != nil {
-				need = sd.ApprovalPolicy.RequiredApprovals
-				role = sd.ApprovalPolicy.RequiredRole
+		needs := stageNeeds(r.pipeline, i)
+		satisfied := 0
+		for _, j := range needs {
+			if r.outcomes[j].succeeded {
+				satisfied++
 			}
-			fmt.Printf("%s: awaiting approval (%d/%d, role %q)\n", sd.Name, len(statusOut.Instance.Approvals), need, role)
-			fmt.Printf("  run: breeze stage approve %s %s %s", name, sd.Name, shortCommitForDisplay(commit))
-			if env != "" {
-				fmt.Printf(" --env %s", env)
-			}
-			fmt.Printf(" --as WHO --token T\n  then re-run this command to continue\n")
-			return fmt.Errorf("stopped at %q: awaiting approval", sd.Name)
 		}
-
-		if statusOut.Instance.Status == "running" {
-			return fmt.Errorf("%s: already running (use `breeze stage wait`)", sd.Name)
+		want := len(needs)
+		if r.pipeline.Stages[i].Convergence == "any" && want > 0 {
+			want = 1
 		}
-
-		startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: name, Stage: sd.Name, Commit: commit, Environment: env, Brief: f.brief})
-		resp, err = call(p, wire.Request{Op: wire.OpStageStart, As: as, Token: token, Payload: startPayload})
-		if err != nil {
-			return err
-		}
-		startOut, err := decodePayload[wire.StageStartResponse](resp)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("%s: %s\n", startOut.Instance.Stage, startOut.Instance.Status)
-		if startOut.Instance.Error != "" {
-			fmt.Println(startOut.Instance.Error)
-		}
-		if ferr := stageFailureErr(startOut.Instance.Status); ferr != nil {
-			return fmt.Errorf("stopped at %q: %w", sd.Name, ferr)
+		if satisfied >= want {
+			out = append(out, i)
 		}
 	}
-	fmt.Printf("pipeline %q complete for %s\n", name, shortCommitForDisplay(commit))
+	return out
+}
+
+func (r *pipelineRun) drive() error {
+	for {
+		ready := r.ready()
+		if len(ready) == 0 {
+			break
+		}
+		if len(ready) > 1 && !r.serial {
+			names := make([]string, 0, len(ready))
+			for _, i := range ready {
+				names = append(names, r.pipeline.Stages[i].Name)
+			}
+			fmt.Printf("running %d stages in parallel: %s\n", len(names), strings.Join(names, ", "))
+		}
+		if err := r.runRound(ready); err != nil {
+			return err // an RPC-level failure, not a stage outcome — nothing to summarize
+		}
+		// Printed after the whole round so concurrently-running stages can't
+		// interleave their lines; declaration order keeps the transcript stable.
+		for _, i := range ready {
+			for _, line := range r.outcomes[i].lines {
+				fmt.Println(line)
+			}
+		}
+	}
+	return r.summarize()
+}
+
+// runRound executes one round's stages, concurrently unless --serial. The returned
+// error is only ever a transport/RPC failure; a stage that fails its own gate or
+// command is recorded as an outcome, not returned, so the rest of the round still
+// completes.
+func (r *pipelineRun) runRound(ready []int) error {
+	if r.serial {
+		for _, i := range ready {
+			if err := r.runStage(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, len(ready))
+	for n, i := range ready {
+		wg.Go(func() { errs[n] = r.runStage(i) })
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// runStage resolves one stage: skip it if it already succeeded, stop at it if it
+// needs an approval this command won't grant, otherwise trigger it and record what
+// came back. Writes only to r.outcomes[i], so concurrent calls on distinct indices
+// need no locking.
+func (r *pipelineRun) runStage(i int) error {
+	sd := r.pipeline.Stages[i]
+	env := r.stageEnv(i)
+	out := &r.outcomes[i]
+	out.attempted = true
+
+	statusPayload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env})
+	resp, err := call(r.paths, wire.Request{Op: wire.OpStageStatus, Payload: statusPayload})
+	if err != nil {
+		return err
+	}
+	statusOut, err := decodePayload[wire.StageStatusResponse](resp)
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case statusOut.Instance.Status == "succeeded":
+		out.succeeded, out.status = true, "succeeded"
+		out.lines = append(out.lines, fmt.Sprintf("%s: succeeded (already)", sd.Name))
+		return nil
+
+	case sd.Type == "approval":
+		need, role := 0, ""
+		if sd.ApprovalPolicy != nil {
+			need, role = sd.ApprovalPolicy.RequiredApprovals, sd.ApprovalPolicy.RequiredRole
+		}
+		approve := fmt.Sprintf("breeze approve stage %s %s %s", r.name, sd.Name, shortCommitForDisplay(r.commit))
+		if env != "" {
+			approve += " --env " + env
+		}
+		out.status = "awaiting_approval"
+		out.lines = append(out.lines, fmt.Sprintf("%s: awaiting approval (%d/%d, role %q)", sd.Name, len(statusOut.Instance.Approvals), need, role))
+		out.blocker = fmt.Sprintf("awaiting approval — approve with: %s --as WHO --token T", approve)
+		return nil
+
+	case statusOut.Instance.Status == "running":
+		out.status = "running"
+		out.blocker = "already running (use `breeze wait stage`)"
+		out.lines = append(out.lines, fmt.Sprintf("%s: %s", sd.Name, out.blocker))
+		return nil
+	}
+
+	startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env, Brief: r.brief})
+	resp, err = call(r.paths, wire.Request{Op: wire.OpStageStart, As: r.as, Token: r.token, Payload: startPayload})
+	if err != nil {
+		return err
+	}
+	startOut, err := decodePayload[wire.StageStartResponse](resp)
+	if err != nil {
+		return err
+	}
+	out.status = startOut.Instance.Status
+	out.succeeded = startOut.Instance.Status == "succeeded"
+	out.lines = append(out.lines, fmt.Sprintf("%s: %s", startOut.Instance.Stage, startOut.Instance.Status))
+	if startOut.Instance.Error != "" {
+		out.lines = append(out.lines, startOut.Instance.Error)
+		if !out.succeeded {
+			out.blocker = startOut.Instance.Error
+		}
+	}
+	if !out.succeeded && out.blocker == "" {
+		out.blocker = "stage " + startOut.Instance.Status
+	}
 	return nil
+}
+
+// summarize reports the run's end state: success when every stage succeeded, and
+// otherwise one line per stage that blocked plus one per stage never reached
+// because a prerequisite of its did.
+func (r *pipelineRun) summarize() error {
+	var blocked, unreached []string
+	for i, sd := range r.pipeline.Stages {
+		switch {
+		case r.outcomes[i].succeeded:
+		case r.outcomes[i].attempted:
+			blocked = append(blocked, fmt.Sprintf("  %s: %s", sd.Name, r.outcomes[i].blocker))
+		default:
+			unreached = append(unreached, sd.Name)
+		}
+	}
+	if len(blocked) == 0 && len(unreached) == 0 {
+		fmt.Printf("pipeline %q complete for %s\n", r.name, shortCommitForDisplay(r.commit))
+		return nil
+	}
+	fmt.Println("stopped:")
+	for _, line := range blocked {
+		fmt.Println(line)
+	}
+	if len(unreached) > 0 {
+		fmt.Printf("  not reached (prerequisite unmet): %s\n", strings.Join(unreached, ", "))
+	}
+	return fmt.Errorf("pipeline %q incomplete for %s: %d stage(s) blocked, %d not reached", r.name, shortCommitForDisplay(r.commit), len(blocked), len(unreached))
 }
 
 // printPipelineHuman renders a pipeline's stage-prerequisite chain explicitly —
@@ -1653,8 +2063,26 @@ func cmdPipelineRun(p paths, f flagSet) error {
 // deps: ...") were only inferable from HCL declaration order, so a stage attempt
 // that was correctly rejected still felt unanticipated. --json still returns the
 // raw wire.Pipeline (unchanged) for tooling; this is the plain-text default.
-func printPipelineHuman(pl wire.Pipeline) {
+// machineLimits asks the daemon for its machine-level limit floor, best-effort: a
+// failure here must never turn a working `show pipeline` into an error, so it
+// degrades to "no floor known" rather than propagating.
+func machineLimits(p paths) *hook.ResourceLimits {
+	resp, err := call(p, wire.Request{Op: wire.OpPing})
+	if err != nil {
+		return nil
+	}
+	ping, err := decodePayload[wire.PingResponse](resp)
+	if err != nil {
+		return nil
+	}
+	return resourceLimitsFromWire(ping.DefaultResourceLimits)
+}
+
+func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 	fmt.Printf("pipeline %q\n", pl.Name)
+	if !machine.IsZero() {
+		fmt.Printf("  machine limits (this daemon, under every stage below): %s\n", describeLimits(machine))
+	}
 	if pl.FanOutAt < len(pl.Stages) {
 		fmt.Printf("  fan-out at: %s (environments: %v)\n", pl.Stages[pl.FanOutAt].Name, pl.Environments)
 		if len(pl.DebugEnvironments) > 0 {
@@ -1664,6 +2092,14 @@ func printPipelineHuman(pl wire.Pipeline) {
 	fmt.Println()
 	for i, s := range pl.Stages {
 		fmt.Printf("  %-12s  %-9s  requires: %s\n", s.Name, s.Type, stageRequiresText(pl, i))
+		// Limits are rendered per stage because that's where they bite, and because
+		// reading them back out of --json couldn't distinguish "this stage has no
+		// limits" from "this breeze can't do limits" — the exact confusion that got
+		// a wrong document written. What's shown here is the EFFECTIVE set: a
+		// pipeline-level default has already been merged in at apply time.
+		if rl := resourceLimitsFromWire(s.Command.ResourceLimits); !rl.IsZero() {
+			fmt.Printf("  %-12s  %-9s  limits: %s\n", "", "", describeLimits(rl))
+		}
 		if i == pl.FanOutAt {
 			for _, env := range sortedKeys(pl.EnvironmentDeps) {
 				deps := pl.EnvironmentDeps[env]
@@ -1676,24 +2112,61 @@ func printPipelineHuman(pl wire.Pipeline) {
 	}
 }
 
-// stageRequiresText names stage i's Gate 1 predecessor exactly as
-// checkPrerequisite/predecessorKey (internal/engine/stage.go) actually evaluate
-// it — a Debug stage skips Gate 1 entirely, the fan-out entry stage's predecessor
-// is the single shared commit-only instance (no "same environment" — it hasn't
-// fanned out yet), and anything past that point continues within its own
-// environment.
+// stageNeeds resolves stage i's Gate 1 prerequisites to stage indices, mirroring
+// engine.Pipeline.NeedIndices: an unset Needs means the stage declared before this
+// one, an explicitly empty one means none at all. Mirrored rather than shared
+// because the CLI only ever holds a wire.Pipeline — the same deliberate duplication
+// stageRequiresText already carries for the rest of Gate 1.
+func stageNeeds(pl wire.Pipeline, i int) []int {
+	if pl.Stages[i].Needs == nil {
+		if i == 0 {
+			return nil
+		}
+		return []int{i - 1}
+	}
+	out := make([]int, 0, len(pl.Stages[i].Needs))
+	for _, name := range pl.Stages[i].Needs {
+		for j := range pl.Stages[:i] {
+			if pl.Stages[j].Name == name {
+				out = append(out, j)
+			}
+		}
+	}
+	return out
+}
+
+// stageRequiresText names stage i's Gate 1 prerequisites exactly as
+// checkPrerequisite/parentKey (internal/engine/stage.go) actually evaluate them —
+// a Debug stage skips Gate 1 entirely, a prerequisite declared before the fan-out
+// point is the single shared commit-only instance (no "same environment" — it
+// hasn't fanned out yet), and one at or past that point is scoped to the
+// instance's own environment. Converging stages are joined by "+" for
+// convergence=all and "or" for convergence=any, so the rendered line reads as the
+// condition the gate actually applies.
 func stageRequiresText(pl wire.Pipeline, i int) string {
 	if pl.Stages[i].Debug {
 		return "(none — debug stage, skips ordering)"
 	}
-	if i == 0 {
-		return "(none, first stage)"
+	needs := stageNeeds(pl, i)
+	if len(needs) == 0 {
+		if i == 0 {
+			return "(none, first stage)"
+		}
+		return "(none — branch root)"
 	}
-	prev := pl.Stages[i-1].Name
-	if i > pl.FanOutAt {
-		return prev + " (same environment)"
+	parts := make([]string, 0, len(needs))
+	for _, j := range needs {
+		name := pl.Stages[j].Name
+		if j >= pl.FanOutAt {
+			name += " (same environment)"
+		}
+		parts = append(parts, name)
 	}
-	return prev
+	sep := " + "
+	if pl.Stages[i].Convergence == "any" {
+		sep = " or "
+	}
+	return strings.Join(parts, sep)
 }
 
 func sortedKeys(m map[string][]string) []string {
@@ -1721,15 +2194,15 @@ func stageFailureErr(status string) error {
 
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze stage start|approve|status|wait|cancel|claim ...")
+		return fmt.Errorf("usage: breeze start stage | approve stage | status stage | wait stage | cancel stage | claim stage ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze stage start|approve|status|wait|cancel|claim <pipeline> <stage> <commit> [--env NAME] ..."); handled {
+	if handled, err := f.rejectUnknownFlags("breeze start|approve|status|wait|cancel|claim stage <pipeline> <stage> <commit> [--env NAME] ..."); handled {
 		return err
 	}
 	if len(f.rest) < 3 {
-		return fmt.Errorf("usage: breeze stage %s <pipeline> <stage> <commit> [--env NAME] ...", sub)
+		return fmt.Errorf("usage: breeze %s stage <pipeline> <stage> <commit> [--env NAME] ...", sub)
 	}
 	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
 	as := resolveIdentity(p, f)
@@ -1767,7 +2240,11 @@ func cmdStage(p paths, args []string) error {
 		return stageFailureErr(out.Instance.Status)
 	case "status":
 		payload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env})
-		resp, err := call(p, wire.Request{Op: wire.OpStageStatus, Payload: payload})
+		req, err := readRequest(p, f, wire.OpStageStatus, payload)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1783,7 +2260,11 @@ func cmdStage(p paths, args []string) error {
 		return stageFailureErr(out.Instance.Status)
 	case "wait":
 		payload, _ := json.Marshal(wire.StageWaitRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Timeout: f.timeout})
-		resp, err := call(p, wire.Request{Op: wire.OpStageWait, Payload: payload})
+		req, err := readRequest(p, f, wire.OpStageWait, payload)
+		if err != nil {
+			return err
+		}
+		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
@@ -1855,7 +2336,7 @@ func cmdStage(p paths, args []string) error {
 
 func cmdDeploy(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze deploy history|rollback ...")
+		return fmt.Errorf("usage: breeze list deploys | rollback deploy | claim deploy | grant deploy | list grants ...")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -1876,18 +2357,22 @@ func cmdDeploy(p paths, args []string) error {
 
 func cmdDeployHistory(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]"); handled {
 		return err
 	}
 	if len(f.rest) < 2 {
-		return fmt.Errorf("usage: breeze deploy history <pipeline> <stage> [--env NAME] [--limit N] [--json]")
+		return fmt.Errorf("usage: breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]")
 	}
 	limit := 0
 	if f.limit != "" {
 		fmt.Sscanf(f.limit, "%d", &limit)
 	}
 	payload, _ := json.Marshal(wire.DeployHistoryRequest{Pipeline: f.rest[0], Stage: f.rest[1], Environment: f.env, Limit: limit})
-	resp, err := call(p, wire.Request{Op: wire.OpDeployHistory, Payload: payload})
+	req, err := readRequest(p, f, wire.OpDeployHistory, payload)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
@@ -1911,11 +2396,11 @@ func cmdDeployHistory(p paths, args []string) error {
 // deploy: rollback is authorization-equivalent to deploying, not lesser-privileged.
 func cmdDeployRollback(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze deploy rollback <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]"); handled {
 		return err
 	}
 	if len(f.rest) < 3 {
-		return fmt.Errorf("usage: breeze deploy rollback <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
+		return fmt.Errorf("usage: breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
 	}
 	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
 	as := resolveIdentity(p, f)
@@ -1949,11 +2434,11 @@ func cmdDeployRollback(p paths, args []string) error {
 // Same RBAC as a normal deploy: claiming is authorization-equivalent to deploying.
 func cmdDeployClaim(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze deploy claim <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]"); handled {
 		return err
 	}
 	if len(f.rest) < 2 {
-		return fmt.Errorf("usage: breeze deploy claim <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]")
+		return fmt.Errorf("usage: breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]")
 	}
 	if f.env == "" {
 		return fmt.Errorf("--env is required")
@@ -1991,11 +2476,11 @@ func cmdDeployClaim(p paths, args []string) error {
 // role.assign. See engine.GrantEnvironmentAccess.
 func cmdDeployGrant(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze deploy grant <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]"); handled {
 		return err
 	}
 	if len(f.rest) < 1 {
-		return fmt.Errorf("usage: breeze deploy grant <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]")
+		return fmt.Errorf("usage: breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]")
 	}
 	if f.env == "" {
 		return fmt.Errorf("--env is required")
@@ -2037,7 +2522,7 @@ func cmdDeployGrant(p paths, args []string) error {
 // by pipeline/--env. Tier-1 read, same as `role list`/`lock list`/`inventory`.
 func cmdDeployGrantList(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze deploy grants [<pipeline>] [--env NAME] [--json]"); handled {
+	if handled, err := f.rejectUnknownFlags("breeze list grants [<pipeline>] [--env NAME] [--json]"); handled {
 		return err
 	}
 	pipeline := ""
@@ -2045,7 +2530,11 @@ func cmdDeployGrantList(p paths, args []string) error {
 		pipeline = f.rest[0]
 	}
 	payload, _ := json.Marshal(wire.DeployGrantListRequest{Pipeline: pipeline, Environment: f.env})
-	resp, err := call(p, wire.Request{Op: wire.OpDeployGrantList, Payload: payload})
+	req, err := readRequest(p, f, wire.OpDeployGrantList, payload)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
@@ -2081,7 +2570,11 @@ func cmdInventory(p paths, args []string) error {
 	if handled, err := f.rejectUnknownFlags("breeze inventory [--json]"); handled {
 		return err
 	}
-	resp, err := call(p, wire.Request{Op: wire.OpInventory})
+	req, err := readRequest(p, f, wire.OpInventory, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
@@ -2103,7 +2596,7 @@ func cmdInventory(p paths, args []string) error {
 	return nil
 }
 
-// cmdLockCheck implements `breeze lock check <path...>` — a read-only query with no
+// cmdLockCheck implements `breeze check lock <path...>` — a read-only query with no
 // acquire/release lifecycle to manage: it never takes a lock itself, it only reports
 // whether any of the given paths are currently held by someone else. Built for
 // gating an external action (e.g. a Claude Code PreToolUse hook on Edit/Write) on
@@ -2111,13 +2604,17 @@ func cmdInventory(p paths, args []string) error {
 // release anything afterward.
 func cmdLockCheck(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 {
-		return fmt.Errorf("usage: breeze lock check <path...> [--as NAME] [--json]")
+		return fmt.Errorf("usage: breeze check lock <path...> [--as NAME] [--json]")
 	}
 	lockPaths, err := canonicalLockPaths(f.rest)
 	if err != nil {
 		return err
 	}
-	resp, err := call(p, wire.Request{Op: wire.OpLockList})
+	req, err := readRequest(p, f, wire.OpLockList, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
@@ -2162,7 +2659,7 @@ func cmdLockCheck(p paths, as string, f flagSet) error {
 
 func cmdLockExec(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 || len(f.cmdArgs) < 1 {
-		return fmt.Errorf("usage: breeze lock exec <path...> [--shared] [--cpu-quota P] [--memory-max SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>")
+		return fmt.Errorf("usage: breeze exec lock <path...> [--shared] [--cpu-quota P] [--cpu-weight N] [--memory-max SIZE] [--memory-high SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>")
 	}
 	rl, err := f.resourceLimits()
 	if err != nil {
@@ -2178,7 +2675,11 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 	}
 	defer conn.Close()
 
-	payload, _ := json.Marshal(wire.LockExecRequest{Paths: lockPaths, Shared: f.shared})
+	wait, err := f.waitMode()
+	if err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(wire.LockExecRequest{Paths: lockPaths, Shared: f.shared, Wait: wait, Timeout: f.timeout})
 	resp, err := callOnConn(conn, wire.Request{Op: wire.OpLockExec, As: as, Payload: payload})
 	if err != nil {
 		return err

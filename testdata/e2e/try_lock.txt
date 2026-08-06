@@ -1,0 +1,69 @@
+# `exec lock` on a path someone else holds used to block FOREVER: no --wait to opt
+# out of, no --timeout to bound it, no flag of any kind — the exact opposite of
+# `acquire lock`, which fails fast by default and has both. For an agent wrapping a
+# build in `exec lock`, that's a hung session with nothing to act on.
+#
+# It now fails fast like `acquire lock`, blocks only when asked (--wait), and can be
+# bounded (--timeout). A lock conflict also exits 4 rather than the generic 1, so a
+# script can tell "someone else has it, try later" apart from "your command is
+# wrong, it will fail identically forever."
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity a
+exec breeze register identity b
+
+exec touch contended.txt
+exec touch free.txt
+exec breeze acquire lock contended.txt --as a
+stdout 'l1'
+
+# --- exec lock: fails fast instead of hanging ---
+exec sh -c 'breeze exec lock contended.txt --as b -- /bin/echo built; echo exit=$?'
+stdout 'exit=4'
+stderr 'already held by "a"'
+! stdout 'built'
+
+# --try is the same behavior, said out loud at the call site
+exec sh -c 'breeze exec lock contended.txt --try --as b -- /bin/echo built; echo exit=$?'
+stdout 'exit=4'
+
+# --wait is now available, and --timeout bounds it (this used to be unbounded with
+# no way to express either)
+exec sh -c 'breeze exec lock contended.txt --wait --timeout 1s --as b -- /bin/echo built; echo exit=$?'
+stderr 'timed out waiting for lock'
+stdout 'exit=4'
+
+# an uncontended path is unaffected — the command runs and the lock is released
+exec sh -c 'breeze exec lock free.txt --as b -- /bin/echo built; echo exit=$?'
+stdout 'built'
+stdout 'exit=0'
+
+# --- acquire lock: the conflict exit code a try-lock needs ---
+exec sh -c 'breeze acquire lock contended.txt --as b; echo exit=$?'
+stdout 'exit=4'
+
+# a NON-conflict failure keeps the generic 1, which is the whole point of the
+# distinction: retrying this one would fail identically forever
+exec sh -c 'breeze acquire lock --as b; echo exit=$?'
+stdout 'exit=1'
+
+# the branch a script actually writes
+exec sh -c 'if breeze acquire lock contended.txt --as b >/dev/null 2>&1; then echo got-it; elif [ $? -eq 4 ]; then echo busy-skipping; else echo real-error; fi'
+stdout 'busy-skipping'
+
+# --- contradictory flags are named, not silently resolved ---
+exec sh -c 'breeze acquire lock free.txt --try --wait --as b; echo exit=$?'
+stderr 'opposites'
+stdout 'exit=1'
+
+# a timeout with nothing to time out never does what it looks like it does
+exec sh -c 'breeze acquire lock free.txt --timeout 5s --as b; echo exit=$?'
+stderr 'only applies with --wait'
+stdout 'exit=1'
+
+# --- --wait actually gets the lock once the holder releases it ---
+exec breeze release locks --as a
+exec breeze acquire lock contended.txt --wait --timeout 5s --as b
+stdout 'l\d'
+
+exec breeze stop

@@ -176,10 +176,47 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")
 	}
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.tryAcquireLocked(kind, holder, paths, mode, ttl, attached, manualClaim)
+}
 
+// AcquireFileLockOrWait attempts an acquire and, if it conflicts, registers the
+// caller's waiter BEFORE releasing e.mu — returning (nil, false, ch) for the caller
+// to park on. Doing both under one lock hold is the whole point: a caller that
+// tried and then separately registered could have the conflicting lock released in
+// the window between the two, with the wake fired at a waiter list that didn't yet
+// contain it. That lost wake meant blocking until some LATER unrelated release on
+// the same path happened to fire again — i.e. hanging with the lock sitting free,
+// forever for a caller with no timeout (`exec lock` had none at all).
+func (e *Engine) AcquireFileLockOrWait(holder string, rawPaths []string, mode LockMode, ttl time.Duration, attached bool) (*FileLock, bool, <-chan struct{}, error) {
+	return e.acquireOrWait(LockKindFile, holder, canonicalPaths(rawPaths), mode, ttl, attached, false)
+}
+
+// AcquireResourceLockOrWait is AcquireFileLockOrWait's resource-key counterpart,
+// canonicalizing its keys the same way TryAcquireResourceLock does (sorted, never
+// filepath-cleaned).
+func (e *Engine) AcquireResourceLockOrWait(holder string, keys []string, mode LockMode, ttl time.Duration, manualClaim bool) (*FileLock, bool, <-chan struct{}, error) {
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	return e.acquireOrWait(LockKindResource, holder, sorted, mode, ttl, false, manualClaim)
+}
+
+func (e *Engine) acquireOrWait(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached, manualClaim bool) (*FileLock, bool, <-chan struct{}, error) {
+	if len(paths) == 0 {
+		return nil, false, nil, fmt.Errorf("at least one path/key required")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	lock, ok, err := e.tryAcquireLocked(kind, holder, paths, mode, ttl, attached, manualClaim)
+	if ok || err != nil {
+		return lock, ok, nil, err
+	}
+	return nil, false, e.registerWaitersLocked(paths), nil
+}
+
+// tryAcquireLocked is tryAcquire's body; must be called with e.mu held.
+func (e *Engine) tryAcquireLocked(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached, manualClaim bool) (*FileLock, bool, error) {
 	// Reentrant for the SAME holder re-acquiring the exact same path/key set in
 	// the exact same mode (detached only — an attached `lock exec` lock is tied
 	// to one specific connection's lifetime and must never be silently adopted by
@@ -248,13 +285,19 @@ func (e *Engine) WaitChannelsForResourceKeys(keys []string) (<-chan struct{}, er
 // struct{}, error) signature on both public wrappers is kept even though this
 // never actually errors — existing callers already expect two return values.
 func (e *Engine) registerWaiters(keys []string) <-chan struct{} {
-	ch := make(chan struct{})
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.registerWaitersLocked(keys)
+}
+
+// registerWaitersLocked is registerWaiters' body; must be called with e.mu held, so
+// acquireOrWait can register in the SAME critical section as its failed attempt.
+func (e *Engine) registerWaitersLocked(keys []string) <-chan struct{} {
+	ch := make(chan struct{})
 	for _, k := range keys {
 		key := "lock:" + k
 		e.waiters[key] = append(e.waiters[key], ch)
 	}
-	e.mu.Unlock()
 	return ch
 }
 

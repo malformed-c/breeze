@@ -9,6 +9,8 @@ import (
 	"maps"
 	"sync"
 	"time"
+
+	"breeze/internal/hook"
 )
 
 // Engine is the single source of truth for daemon state, guarded by mu. All public
@@ -53,6 +55,16 @@ type Engine struct {
 	operatorSubSeq int
 
 	onChange func(Snapshot)
+
+	// defaultLimits is this DAEMON's machine-level resource-limit floor, loaded
+	// from <state-dir>/defaults.hcl at startup and merged per-field UNDER every
+	// command the engine runs (see EffectiveLimits). Deliberately applied here, at
+	// execution time, rather than baked into pipelines at registration: it has to
+	// cover pipelines registered before it existed, pipelines registered through
+	// the raw JSON path that never saw HCL, and every future pipeline nobody has
+	// written yet. That's the difference between a machine policy and a config
+	// convention — the host it protects doesn't care who forgot.
+	defaultLimits *hook.ResourceLimits
 
 	auditFn  func(AuditEvent)
 	auditSeq int
@@ -238,3 +250,77 @@ func cloneIntMap(m map[string]int) map[string]int {
 }
 
 var ErrNotFound = fmt.Errorf("not found")
+
+// SetDefaultResourceLimits installs this daemon's machine-level limit floor,
+// validating it exactly as a pipeline's own limits are validated — a malformed
+// defaults.hcl is refused at startup, where an admin can see it, rather than
+// silently producing unlimited commands. Passing nil clears it.
+func (e *Engine) SetDefaultResourceLimits(rl *hook.ResourceLimits) error {
+	if err := validateResourceLimits(rl); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if rl.IsZero() {
+		e.defaultLimits = nil
+		return nil
+	}
+	cp := *rl
+	e.defaultLimits = &cp
+	return nil
+}
+
+// DefaultResourceLimits returns this daemon's limit floor, or nil if none is set.
+func (e *Engine) DefaultResourceLimits() *hook.ResourceLimits {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.defaultLimits == nil {
+		return nil
+	}
+	cp := *e.defaultLimits
+	return &cp
+}
+
+// EffectiveLimits merges the daemon's defaults UNDER own, per field: whatever a
+// stage (or its pipeline, resolved at apply time) declared wins, and every field it
+// left unset falls back to the machine default. Per-field rather than
+// all-or-nothing so a stage that only cares about memory still inherits the
+// machine's CPU policy — the common case being a heavy stage that needs a bigger
+// memory ceiling but should still yield CPU like everything else.
+//
+// A stage CAN opt out of a machine default, but only by saying so explicitly
+// (`cpu_quota = "infinity"`), which is visible in `show pipeline` and in review —
+// as opposed to opting out by forgetting, which is what this whole feature exists
+// to prevent.
+func (e *Engine) EffectiveLimits(own *hook.ResourceLimits) *hook.ResourceLimits {
+	e.mu.Lock()
+	def := e.defaultLimits
+	e.mu.Unlock()
+	if def == nil {
+		return own
+	}
+	if own == nil {
+		cp := *def
+		return &cp
+	}
+	merged := *own
+	if merged.CPUQuota == "" {
+		merged.CPUQuota = def.CPUQuota
+	}
+	if merged.CPUWeight == 0 {
+		merged.CPUWeight = def.CPUWeight
+	}
+	if merged.MemoryMax == "" {
+		merged.MemoryMax = def.MemoryMax
+	}
+	if merged.MemoryHigh == "" {
+		merged.MemoryHigh = def.MemoryHigh
+	}
+	if merged.TasksMax == 0 {
+		merged.TasksMax = def.TasksMax
+	}
+	if merged.IOWeight == 0 {
+		merged.IOWeight = def.IOWeight
+	}
+	return &merged
+}

@@ -96,7 +96,7 @@ func runDaemon(p paths, args []string) error {
 		case "--auto-start":
 			autoStart = true
 		default:
-			return fmt.Errorf("usage: breeze daemon [--auto-start] — run the foreground daemon for the current directory's state (see `breeze daemon restart` to replace a running one without blocking your shell); %q is not a recognized flag, refusing to start a daemon for it", args[0])
+			return fmt.Errorf("usage: breeze start daemon [--auto-start] — run the foreground daemon for the current directory's state (see `breeze restart daemon` to replace a running one without blocking your shell); %q is not a recognized flag, refusing to start a daemon for it", args[0])
 		}
 	}
 	d, err := tryBindDaemon(p, autoStart)
@@ -259,6 +259,12 @@ func errResponse(err error) wire.Response {
 	return wire.Response{OK: false, Error: err.Error()}
 }
 
+// conflictResponse is errResponse for the one failure a caller can meaningfully
+// retry — tagged so it doesn't have to be recognized by matching on prose.
+func conflictResponse(err error) wire.Response {
+	return wire.Response{OK: false, Error: err.Error(), Code: wire.CodeLockConflict}
+}
+
 func okResponse(payload any) wire.Response {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -267,10 +273,35 @@ func okResponse(payload any) wire.Response {
 	return wire.Response{OK: true, Payload: data}
 }
 
+// credentialExempt lists the ops that must still be reachable with an invalid
+// As+Token pair. auth.check reports credential validity as DATA — rejecting a bad
+// pair at the door would defeat its only purpose. identity.register is the
+// bootstrap and recovery path: if the daemon's state was reset while a caller's
+// session token file survived, a stale credential must not be able to lock that
+// caller out of re-registering (registering an EXISTING name does its own, stricter
+// check inside the handler regardless).
+var credentialExempt = map[wire.Op]bool{
+	wire.OpAuthCheck:        true,
+	wire.OpIdentityRegister: true,
+}
+
 func (d *daemonServer) dispatch(req wire.Request) wire.Response {
+	// A supplied credential is always verified, even for an op that wouldn't
+	// otherwise need one. Tier-1 reads used to silently ACCEPT AND IGNORE a bogus
+	// --as/--token, so `status stage ... --as nobody --token <64 zeroes>` printed
+	// the same success as a valid one — which made every "did my token work?"
+	// check vacuous, and one was very nearly recorded live as verification. Passing
+	// no credential at all still reads fine: this only rejects a credential that is
+	// actually wrong, never the absence of one.
+	if req.As != "" && req.Token != "" && !credentialExempt[req.Op] {
+		if _, err := d.eng.VerifyToken(req.As, req.Token); err != nil {
+			return errResponse(fmt.Errorf("%w for identity %q — the credential you passed is not valid (check it with `breeze check auth --as %s --token T`)", err, req.As, req.As))
+		}
+	}
+
 	switch req.Op {
 	case wire.OpPing:
-		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime})
+		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits())})
 
 	case wire.OpStop:
 		close(d.stop)
@@ -284,7 +315,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if !ok {
 			return okResponse(wire.WhoAmIResponse{Name: req.As})
 		}
-		return okResponse(wire.WhoAmIResponse{Name: id.Name, Roles: rolesToStrings(id.Roles)})
+		return okResponse(wire.WhoAmIResponse{Name: id.Name, Roles: rolesToStrings(id.Roles), Registered: true})
 
 	case wire.OpAuthCheck:
 		// Deliberately data, not an RPC error: "not authorized" is an expected,
@@ -870,22 +901,24 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 	// Resource-kind acquire (a user-facing mutex over an arbitrary named concept,
 	// e.g. "gpu-0") reuses the exact same acquire/wait machinery as file locks —
 	// only which engine calls get made differs, not the retry/wait loop itself.
-	tryAcquire := func() (*engine.FileLock, bool, error) {
-		return d.eng.TryAcquireLock(req.As, p.Paths, mode, ttl, false)
+	// Acquire-or-register-waiter happens in ONE engine call (see
+	// AcquireFileLockOrWait) rather than a try followed by a separate register:
+	// the gap between those two is a lost-wakeup window, and a caller that lost a
+	// wake there waited for a lock that was already free.
+	acquire := func() (*engine.FileLock, bool, <-chan struct{}, error) {
+		return d.eng.AcquireFileLockOrWait(req.As, p.Paths, mode, ttl, false)
 	}
-	waitChannels := func() (<-chan struct{}, error) { return d.eng.WaitChannelsForPaths(p.Paths) }
 	findConflict := func() []engine.LockConflict { return d.eng.FindConflictingFileLock(p.Paths, mode) }
 	if len(p.Resources) > 0 {
-		tryAcquire = func() (*engine.FileLock, bool, error) {
-			return d.eng.TryAcquireResourceLock(req.As, p.Resources, mode, ttl, false)
+		acquire = func() (*engine.FileLock, bool, <-chan struct{}, error) {
+			return d.eng.AcquireResourceLockOrWait(req.As, p.Resources, mode, ttl, false)
 		}
-		waitChannels = func() (<-chan struct{}, error) { return d.eng.WaitChannelsForResourceKeys(p.Resources) }
 		findConflict = func() []engine.LockConflict { return d.eng.FindConflictingResourceLock(p.Resources, mode) }
 	}
 
 	deadline := time.Now().Add(timeout)
 	for {
-		lock, ok, err := tryAcquire()
+		lock, ok, wait, err := acquire()
 		if err != nil {
 			return errResponse(err)
 		}
@@ -894,23 +927,19 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		}
 		if !p.Wait {
 			if conflicts := findConflict(); len(conflicts) > 0 {
-				return errResponse(lockAcquireConflictErr(conflicts))
+				return conflictResponse(lockAcquireConflictErr(conflicts))
 			}
-			return errResponse(engine.ErrLockConflict)
-		}
-		wait, err := waitChannels()
-		if err != nil {
-			return errResponse(err)
+			return conflictResponse(engine.ErrLockConflict)
 		}
 		remaining := time.Until(deadline)
 		if timeout > 0 && remaining <= 0 {
-			return errResponse(fmt.Errorf("timed out waiting for lock"))
+			return conflictResponse(fmt.Errorf("timed out waiting for lock"))
 		}
 		if timeout > 0 {
 			select {
 			case <-wait:
 			case <-time.After(remaining):
-				return errResponse(fmt.Errorf("timed out waiting for lock"))
+				return conflictResponse(fmt.Errorf("timed out waiting for lock"))
 			}
 		} else {
 			<-wait
@@ -933,9 +962,21 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 		mode = engine.LockExclusive
 	}
 
+	timeout, err := parseOptionalDuration(p.Timeout)
+	if err != nil {
+		enc.Encode(errResponse(err))
+		return
+	}
+
+	// Attached mode used to queue UNCONDITIONALLY here: no wait flag, no timeout,
+	// no way to say "don't" — a contended path meant blocking forever, which for an
+	// agent wrapping a build is a hung session with nothing to act on. It now
+	// defaults to failing fast, exactly like `acquire lock`, and blocks only when
+	// asked to (`--wait`, optionally bounded by `--timeout`).
 	var lock *engine.FileLock
+	deadline := time.Now().Add(timeout)
 	for {
-		l, ok, err := d.eng.TryAcquireLock(req.As, p.Paths, mode, 0, true)
+		l, ok, wait, err := d.eng.AcquireFileLockOrWait(req.As, p.Paths, mode, 0, true)
 		if err != nil {
 			enc.Encode(errResponse(err))
 			return
@@ -944,12 +985,29 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 			lock = l
 			break
 		}
-		wait, err := d.eng.WaitChannelsForPaths(p.Paths)
-		if err != nil {
-			enc.Encode(errResponse(err))
+		if !p.Wait {
+			if conflicts := d.eng.FindConflictingFileLock(p.Paths, mode); len(conflicts) > 0 {
+				enc.Encode(conflictResponse(lockAcquireConflictErr(conflicts)))
+				return
+			}
+			enc.Encode(conflictResponse(engine.ErrLockConflict))
 			return
 		}
-		<-wait
+		remaining := time.Until(deadline)
+		if timeout > 0 && remaining <= 0 {
+			enc.Encode(conflictResponse(fmt.Errorf("timed out waiting for lock")))
+			return
+		}
+		if timeout > 0 {
+			select {
+			case <-wait:
+			case <-time.After(remaining):
+				enc.Encode(conflictResponse(fmt.Errorf("timed out waiting for lock")))
+				return
+			}
+		} else {
+			<-wait
+		}
 	}
 
 	if err := enc.Encode(okResponse(wire.LockAcquireResponse{Lock: lockToWire(*lock)})); err != nil {

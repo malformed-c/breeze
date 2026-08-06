@@ -2,6 +2,17 @@ pipeline "breeze" {
   environments = ["local"]
   briefs_dir   = "/home/engi/git/breeze/.git/breeze/briefs"
 
+  # breeze's own CI, capped the way it recommends: `go test ./...` will happily take
+  # every core on the box, and this box runs other things. A weight rather than a
+  # quota deliberately — CI still gets the whole machine when nothing else wants it,
+  # and yields the moment something does. Inherited by every stage below, so a stage
+  # added later is covered without anyone remembering to cover it.
+  resource_limits {
+    cpu_weight  = 50
+    memory_high = "8G"
+    tasks_max   = 2048
+  }
+
   stage "build" {
     type              = "command"
     concurrency_limit = 2

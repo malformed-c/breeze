@@ -1,35 +1,35 @@
-# `breeze lock release-all` clears every lock (file and resource kinds alike)
+# `breeze release locks` clears every lock (file and resource kinds alike)
 # held by the calling identity in one call, instead of releasing each lock ID
 # by hand — and never touches another identity's locks.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze role assign deployer admin --as admin --token-file admin.token
+exec breeze assign role deployer admin --as admin --token-file admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
-exec breeze lock acquire a.txt --as admin --ttl 5m
-exec breeze lock acquire b.txt --as admin --ttl 5m
-exec breeze deploy claim release deploy --env staging --as admin --token-file admin.token
-exec breeze lock acquire c.txt --as bob --ttl 5m
+exec breeze acquire lock a.txt --as admin --ttl 5m
+exec breeze acquire lock b.txt --as admin --ttl 5m
+exec breeze claim deploy release deploy --env staging --as admin --token-file admin.token
+exec breeze acquire lock c.txt --as bob --ttl 5m
 
-exec breeze lock list --all --json
+exec breeze list locks --all --json
 stdout '"holder":\s*"admin"'
 stdout '"holder":\s*"bob"'
 
-exec breeze lock release-all --as admin
+exec breeze release locks --as admin
 stdout 'released.*a\.txt'
 stdout 'released.*b\.txt'
 stdout 'released.*deploy/deploy/staging'
 ! stdout 'c\.txt'
 
 # admin's locks are gone; bob's own lock survives untouched.
-exec breeze lock list --all --json
+exec breeze list locks --all --json
 ! stdout '"holder":\s*"admin"'
 stdout '"holder":\s*"bob"'
 
 # Releasing again with nothing held is a friendly no-op, not an error.
-exec breeze lock release-all --as admin
+exec breeze release locks --as admin
 stdout 'no locks held'
 
 exec breeze stop

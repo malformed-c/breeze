@@ -71,10 +71,21 @@ type Request struct {
 
 // Response is the single envelope for every reply. Payload is op-specific.
 type Response struct {
-	OK      bool            `json:"ok"`
-	Error   string          `json:"error,omitempty"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	// Code classifies an error for callers that need to BRANCH on it rather than
+	// just report it. Only set where the distinction is actionable — today that's
+	// CodeLockConflict, the difference between "someone else holds this, try again
+	// later" and "your command was wrong, trying again will fail identically."
+	// Matching on the error string is what callers had to do before, and an error
+	// string is prose that gets improved.
+	Code    string          `json:"code,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
+
+// CodeLockConflict marks a failure caused purely by someone else holding a
+// conflicting lock — the one error class a retry can actually resolve.
+const CodeLockConflict = "lock_conflict"
 
 // --- Per-op payloads ---
 
@@ -82,11 +93,23 @@ type PingResponse struct {
 	Pid       int    `json:"pid"`
 	Version   string `json:"version"`
 	BuildTime string `json:"buildTime,omitempty"`
+	// DefaultResourceLimits is this daemon's machine-level limit floor
+	// (<state-dir>/defaults.hcl), applied under every command it runs. Carried on
+	// ping because it's a fact about the DAEMON, not about any pipeline — and
+	// because "what is actually capping my builds" was undiscoverable: an operator
+	// looked for it in --help, found nothing, and wrote a document asserting breeze
+	// couldn't limit anything.
+	DefaultResourceLimits *ResourceLimits `json:"defaultResourceLimits,omitempty"`
 }
 
 type WhoAmIResponse struct {
 	Name  string   `json:"name,omitempty"`
 	Roles []string `json:"roles,omitempty"`
+	// Registered distinguishes a real identity that simply holds no roles from a
+	// name that was never registered at all — whoami used to echo any name back
+	// with an empty roles list, so those two were indistinguishable in exactly the
+	// command whose name promises to tell them apart.
+	Registered bool `json:"registered"`
 }
 
 // AuthCheckRequest asks, without mutating anything, whether the As+Token already
@@ -177,9 +200,15 @@ type LockAcquireResponse struct {
 	Lock LockInfo `json:"lock"`
 }
 
+// LockExecRequest mirrors LockAcquireRequest's Wait/Timeout because attached mode
+// needs exactly the same choice detached mode always had: fail fast if someone else
+// holds it, or queue. It used to have neither and simply blocked forever, with no
+// flag able to say otherwise.
 type LockExecRequest struct {
-	Paths  []string `json:"paths"`
-	Shared bool     `json:"shared,omitempty"`
+	Paths   []string `json:"paths"`
+	Shared  bool     `json:"shared,omitempty"`
+	Wait    bool     `json:"wait,omitempty"`
+	Timeout string   `json:"timeout,omitempty"`
 }
 
 type LockReleaseRequest struct {
@@ -244,10 +273,12 @@ type CommandTemplate struct {
 // ResourceLimits mirrors hook.ResourceLimits over the wire — see its doc
 // comment for what each field controls.
 type ResourceLimits struct {
-	CPUQuota  string `json:"cpuQuota,omitempty"`
-	MemoryMax string `json:"memoryMax,omitempty"`
-	TasksMax  int    `json:"tasksMax,omitempty"`
-	IOWeight  int    `json:"ioWeight,omitempty"`
+	CPUQuota   string `json:"cpuQuota,omitempty"`
+	CPUWeight  int    `json:"cpuWeight,omitempty"`
+	MemoryMax  string `json:"memoryMax,omitempty"`
+	MemoryHigh string `json:"memoryHigh,omitempty"`
+	TasksMax   int    `json:"tasksMax,omitempty"`
+	IOWeight   int    `json:"ioWeight,omitempty"`
 }
 
 type Hook struct {
@@ -280,6 +311,14 @@ type StageDef struct {
 	PostAction     []Hook          `json:"postAction,omitempty"`
 	Timeout        string          `json:"timeout"`
 	Debug          bool            `json:"debug,omitempty"` // exempt from Gate 1 (ordering); RBAC still applies
+	// Needs names this stage's Gate 1 prerequisites, which must be stages declared
+	// earlier in Stages. Deliberately NOT omitempty: the nil/empty distinction is
+	// load-bearing (absent = "the preceding stage", [] = "no prerequisite, a root"),
+	// and omitempty would flatten [] to absent and silently re-chain a root stage.
+	Needs []string `json:"needs"`
+	// Convergence is "all" (default, empty) or "any" — how many of Needs must have
+	// succeeded. See engine.Convergence.
+	Convergence string `json:"convergence,omitempty"`
 }
 
 type Pipeline struct {

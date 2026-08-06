@@ -16,6 +16,11 @@ type paths struct {
 	audit     string
 	daemonLog string
 	identDir  string
+	// defaults is this daemon's optional machine-level config file
+	// (<state-dir>/defaults.hcl) — currently just a resource_limits block applied
+	// as a floor under every command this daemon runs. Read at startup only; a
+	// `breeze restart daemon` re-reads it, which is also how you apply a change.
+	defaults string
 }
 
 // resolvePaths picks breeze's state directory: an explicit BREEZE_DIR env var wins,
@@ -64,6 +69,7 @@ func pathsForDir(dir string) paths {
 		audit:     filepath.Join(dir, "audit.jsonl"),
 		daemonLog: filepath.Join(dir, "daemon.log"),
 		identDir:  filepath.Join(dir, "ident"),
+		defaults:  filepath.Join(dir, "defaults.hcl"),
 	}
 }
 
@@ -188,7 +194,7 @@ func shortCommitForDisplay(commit string) string {
 // daemon's (a long-lived daemon's cwd is arbitrary and unrelated to whichever
 // worktree a caller happens to be sitting in). When the path lives inside a git
 // worktree, it's further reduced to a path relative to that worktree's toplevel —
-// so `breeze lock acquire src/main.go` names the same logical resource regardless
+// so `breeze acquire lock src/main.go` names the same logical resource regardless
 // of which of the repo's worktrees (each its own absolute directory, sharing one
 // breeze daemon per resolvePaths' --git-common-dir rule) it's invoked from. Outside
 // any repo, or for a path that lives outside the current worktree entirely, it falls

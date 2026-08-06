@@ -6,11 +6,11 @@ env BREEZE_DIR=$WORK/state
 env PATH=$WORK/bin:$PATH
 chmod 0755 bin/mess
 
-exec breeze identity register ci
+exec breeze register identity ci
 cp stdout ci.token
 exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
 
-! exec breeze stage start release build abc123 --as ci
+! exec breeze start stage release build abc123 --as ci
 stdout 'build: failed'
 
 exec sleep 0.5

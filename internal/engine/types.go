@@ -127,6 +127,18 @@ type DeployPolicy struct {
 	Target       string
 }
 
+// Convergence decides how many of a stage's Needs must have succeeded before
+// Gate 1 lets it run — the setting that makes a re-converging branch meaningful:
+// "package" can require BOTH test-short and test-race (ConvergeAll), or accept
+// whichever of them ran (ConvergeAny). Naming a single stage in Needs expresses
+// "this specific one" without needing a third mode.
+type Convergence string
+
+const (
+	ConvergeAll Convergence = "all" // every stage in Needs must have succeeded (default)
+	ConvergeAny Convergence = "any" // at least one of them must have
+)
+
 type StageDef struct {
 	Name           string
 	Type           StageType
@@ -137,6 +149,17 @@ type StageDef struct {
 	PreGate        []Hook
 	PostAction     []Hook
 	Timeout        time.Duration
+	// Needs names this stage's Gate 1 prerequisites — the stages it converges on.
+	// nil (unset) means the historical default, "the immediately preceding stage,"
+	// so a pipeline that declares no needs at all behaves exactly like the strict
+	// line breeze has always run. A non-nil EMPTY list means no prerequisite at
+	// all: a root, i.e. a branch that can be triggered independently of the stage
+	// declared before it (that's how paths diverge). Every name must resolve to a
+	// stage declared EARLIER in Stages, which keeps the graph acyclic by
+	// construction — no cycle check needed at run time, unlike EnvironmentDeps.
+	Needs []string
+	// Convergence decides how Needs is evaluated; empty means ConvergeAll.
+	Convergence Convergence
 	// Debug, when true, exempts this stage from Gate 1 (the intra-pipeline
 	// predecessor-succeeded check) — it can be triggered for any commit at any
 	// time, regardless of whether earlier stages have run. RBAC (CommandPolicy/
@@ -213,6 +236,50 @@ func (p *Pipeline) StageIndex(name string) int {
 		}
 	}
 	return -1
+}
+
+// TerminalStages returns the indices of the stages nothing else needs — where the
+// pipeline's chain ends. A linear pipeline has exactly one (its last stage); a
+// pipeline whose branches never re-converge ends at each branch's tip. Only
+// environment-scoped stages (index >= FanOutAt) are considered when the pipeline
+// fans out, since Gate 2's "has this environment finished" question is only ever
+// asked about the per-environment part of the chain.
+func (p *Pipeline) TerminalStages() []int {
+	needed := make(map[int]bool, len(p.Stages))
+	for i := range p.Stages {
+		for _, j := range p.NeedIndices(i) {
+			needed[j] = true
+		}
+	}
+	var out []int
+	for i := range p.Stages {
+		if i >= p.FanOutAt && !needed[i] {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// NeedIndices resolves stage i's Gate 1 prerequisites to stage indices, applying
+// StageDef.Needs' nil-vs-empty convention: nil means "the preceding stage" (the
+// default line), an explicit empty list means "none" (a root). Names are already
+// known to resolve to earlier stages — validatePipeline rejects anything else at
+// registration time — so an unresolvable name here is skipped rather than
+// reported, and can only mean a pipeline registered before that validation.
+func (p *Pipeline) NeedIndices(i int) []int {
+	if p.Stages[i].Needs == nil {
+		if i == 0 {
+			return nil
+		}
+		return []int{i - 1}
+	}
+	out := make([]int, 0, len(p.Stages[i].Needs))
+	for _, name := range p.Stages[i].Needs {
+		if j := p.StageIndex(name); j >= 0 && j < i {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // --- Stage instances ---

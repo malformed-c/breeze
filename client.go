@@ -42,7 +42,7 @@ func startDaemon() error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "daemon", "--auto-start")
+	cmd := exec.Command(exe, "start", "daemon", "--auto-start")
 	cmd.SysProcAttr = daemonSysProcAttr()
 	return cmd.Start()
 }
@@ -69,10 +69,23 @@ func callOnConn(conn net.Conn, req wire.Request) (wire.Response, error) {
 		return wire.Response{}, err
 	}
 	if !resp.OK {
-		return resp, fmt.Errorf("%s", resp.Error)
+		return resp, &rpcError{msg: resp.Error, code: resp.Code}
 	}
 	return resp, nil
 }
+
+// rpcError carries the daemon's machine-readable Response.Code alongside its
+// message, so a caller can branch on WHAT failed without matching on prose. Only
+// the CLI's exit-code selection uses it today (see exitCode): a lock conflict is
+// the one failure where "try again in a moment" is the right response, and a
+// script had no way to tell it apart from a typo'd flag or a dead daemon.
+type rpcError struct {
+	msg  string
+	code string
+}
+
+func (e *rpcError) Error() string { return e.msg }
+func (e *rpcError) Code() string  { return e.code }
 
 func decodePayload[T any](resp wire.Response) (T, error) {
 	var out T

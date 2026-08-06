@@ -1,47 +1,47 @@
-# `breeze pipeline run` drives every stage in order via the same RPCs a manual
-# per-stage CLI call would use, instead of requiring one `stage start`/`approve`
-# call per stage by hand. It stops (never auto-approves) at an approval stage,
-# skips a stage that's already succeeded (so re-running after a manual approval
-# continues from where it left off), and stops immediately on the first stage
-# whose own outcome fails.
+# `breeze run pipeline` drives the whole stage graph via the same RPCs a manual
+# per-stage CLI call would use, instead of requiring one `start stage`/`approve
+# stage` call per stage by hand. It stops (never auto-approves) at an approval
+# stage, skips a stage that's already succeeded (so re-running after a manual
+# approval continues from where it left off), and reports every stage that
+# blocked plus the ones a blocked prerequisite kept it from reaching.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register ci
+exec breeze register identity ci
 cp stdout ci.token
-exec breeze identity register alice
+exec breeze register identity alice
 cp stdout alice.token
-exec breeze role assign deployer ci --as admin --token-file admin.token
-exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze assign role deployer ci --as admin --token-file admin.token
+exec breeze assign role reviewer alice --as admin --token-file admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # A fanned-out pipeline requires --env up front — fails fast, before touching
 # any stage, rather than getting partway through and only then discovering it
 # can't proceed.
-! exec breeze pipeline run release abc123 --as ci --token-file ci.token
+! exec breeze run pipeline release abc123 --as ci --token-file ci.token
 stderr 'fans out'
 
 # First run: build succeeds, then the runner stops at the approval stage
 # instead of trying to approve it itself.
-! exec breeze pipeline run release abc123 --env staging --as ci --token-file ci.token
+! exec breeze run pipeline release abc123 --env staging --as ci --token-file ci.token
 stdout 'build: succeeded'
 stdout 'review: awaiting approval \(0/1, role "reviewer"\)'
-stdout 'breeze stage approve release review abc123'
-! stdout 'deploy'
+stdout 'approve with: breeze approve stage release review abc123'
+stdout 'not reached \(prerequisite unmet\): deploy, test'
 
-exec breeze stage approve release review abc123 --as alice --token-file alice.token
+exec breeze approve stage release review abc123 --as alice --token-file alice.token
 
 # Second run: build and review are both already succeeded, so they're skipped
 # (not re-triggered) — only deploy and test actually run.
-exec breeze pipeline run release abc123 --env staging --as ci --token-file ci.token
+exec breeze run pipeline release abc123 --env staging --as ci --token-file ci.token
 stdout 'build: succeeded \(already\)'
 stdout 'review: succeeded \(already\)'
 stdout 'deploy: succeeded'
 stdout 'test: succeeded'
 stdout 'pipeline "release" complete'
 
-exec breeze pipeline status release abc123 --json
+exec breeze status pipeline release abc123 --json
 stdout '"stage":\s*"deploy"[\s\S]*"status":\s*"succeeded"'
 stdout '"stage":\s*"test"[\s\S]*"status":\s*"succeeded"'
 
@@ -49,9 +49,32 @@ stdout '"stage":\s*"test"[\s\S]*"status":\s*"succeeded"'
 # of trying anything further (there's nothing further to try in this pipeline,
 # but the error still names exactly what stopped it).
 exec breeze apply -f brittle.hcl --as admin --token-file admin.token
-! exec breeze pipeline run brittle def456 --as ci --token-file ci.token
+! exec breeze run pipeline brittle def456 --as ci --token-file ci.token
 stdout 'build: failed'
-stderr 'stopped at "build"'
+stderr 'brittle" incomplete'
+
+# Divergence and convergence: unit and race both need build (so they run in the
+# same round, concurrently), and package converges on both. A failure on one
+# branch does NOT abandon the other — lint still runs — but it does keep the
+# converging stage from being reached.
+exec breeze apply -f diverge.hcl --as admin --token-file admin.token
+! exec breeze run pipeline diverge cafe01 --as ci --token-file ci.token
+stdout 'running 3 stages in parallel: unit, race, lint'
+stdout 'unit: succeeded'
+stdout 'race: failed'
+stdout 'lint: succeeded'
+stdout 'not reached \(prerequisite unmet\): package'
+
+# convergence = "any" on the same graph: unit alone satisfies package, so the
+# failing race branch no longer blocks it.
+exec breeze apply -f converge-any.hcl --as admin --token-file admin.token
+! exec breeze run pipeline converge-any cafe02 --as ci --token-file ci.token
+stdout 'unit: succeeded'
+stdout 'race: failed'
+stdout 'package: succeeded'
+
+exec breeze show pipeline converge-any
+stdout 'package.*requires: unit or race'
 
 exec breeze stop
 
@@ -89,5 +112,66 @@ pipeline "brittle" {
     type    = "command"
     timeout = "10s"
     command = ["/bin/false"]
+  }
+}
+
+-- diverge.hcl --
+pipeline "diverge" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "unit" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "race" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+  stage "lint" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "package" {
+    type    = "command"
+    needs   = ["unit", "race"]
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+}
+
+-- converge-any.hcl --
+pipeline "converge-any" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "unit" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "race" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "10s"
+    command = ["/bin/false"]
+  }
+  stage "package" {
+    type        = "command"
+    needs       = ["unit", "race"]
+    convergence = "any"
+    timeout     = "10s"
+    command     = ["/bin/true"]
   }
 }

@@ -259,7 +259,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "target": target, "actor": actor}
 
-	if gateErr := runPreGates(preGate, params); gateErr != nil {
+	if gateErr := e.runPreGates(preGate, params); gateErr != nil {
 		e.ReleaseLock(lock.ID, actor, true) // the deploy command never ran — release immediately
 		e.mu.Lock()
 		inst.Status = StageGateFailed

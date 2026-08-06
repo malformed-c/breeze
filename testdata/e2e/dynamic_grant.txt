@@ -4,36 +4,36 @@
 # as long as you hold it."
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register mallory
+exec breeze register identity mallory
 cp stdout mallory.token
-exec breeze identity register bob
+exec breeze register identity bob
 cp stdout bob.token
 
-exec breeze role assign deployer mallory --as admin --token-file admin.token
+exec breeze assign role deployer mallory --as admin --token-file admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # mallory is not staging's declared owner (nobody is, here) and not an admin —
 # a grant attempt before claiming anything is rejected.
-! exec breeze deploy grant release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
+! exec breeze grant deploy release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
 stderr 'only environment .* declared owner|admin|currently holding a deploy claim'
 
 # mallory claims the deploy stage's exclusivity for staging.
-exec breeze deploy claim release deploy --env staging --as mallory --token-file mallory.token
+exec breeze claim deploy release deploy --env staging --as mallory --token-file mallory.token
 stdout 'lock l1'
 
 # Now mallory, while holding that claim, CAN grant bob a scoped window.
-exec breeze deploy grant release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
+exec breeze grant deploy release --env staging --to bob --ttl 5m --as mallory --token-file mallory.token
 stdout 'granted bob access to release/staging'
 
 # Release mallory's own claim first — it's exclusive, so bob's actual deploy
 # would otherwise fail on a lock conflict regardless of RBAC/grant correctness.
-exec breeze lock release l1 --as mallory
+exec breeze release lock l1 --as mallory
 
 # bob can now deploy on the strength of the grant alone, despite lacking the
 # deployer role and never being a declared owner.
-exec breeze stage start release deploy abc123 --env staging --as bob --token-file bob.token
+exec breeze start stage release deploy abc123 --env staging --as bob --token-file bob.token
 stdout 'deploy: succeeded'
 
 exec breeze stop

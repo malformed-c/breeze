@@ -1,0 +1,107 @@
+# Resource limits at all three levels, and the discoverability that was the real
+# complaint: an operator went looking for CPU capping in `breeze --help`, found
+# nothing, and wrote a document asserting breeze couldn't limit itself. A limit
+# nobody can find is close to a limit that isn't there.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+
+# --- a malformed limit is refused at APPLY, not discovered mid-run ---
+! exec breeze apply -f typo.hcl --as admin --token-file admin.token
+stderr 'cpu_quota "1400"'
+stderr 'percentage'
+exec breeze list pipelines
+! stdout 'typo'
+
+# --- pipeline-level defaults are inherited per field ---
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+exec breeze show pipeline capped
+
+# a stage with no block of its own inherits the pipeline default entire
+stdout 'build.*\n.*limits: cpu_quota=1400% cpu_weight=50 tasks_max=512'
+
+# a stage that sets some fields keeps those and inherits the rest
+stdout 'heavy.*\n.*limits: cpu_quota=2800% cpu_weight=50 memory_max=16G tasks_max=512'
+
+# --- and they're visible in --json too, as the EFFECTIVE set ---
+exec breeze show pipeline capped --json
+stdout '"cpuWeight":\s*50'
+
+# --- the machine-level floor: applies to every command this daemon runs ---
+exec breeze status
+stdout 'resource limits \(every command this daemon runs\): \(none\)'
+
+cp defaults.hcl $WORK/state/defaults.hcl
+exec breeze restart daemon
+
+exec breeze status
+stdout 'resource limits \(every command this daemon runs\): cpu_weight=20 memory_high=2G'
+
+# it also shows up above the stages it silently applies under
+exec breeze show pipeline capped
+stdout 'machine limits \(this daemon, under every stage below\): cpu_weight=20 memory_high=2G'
+
+# a stage still runs normally under all of it (this asserts the wrapper doesn't
+# break execution; on a host without a usable systemd --user session the stage
+# fails instead, which is why this only checks that a status came back at all)
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze status stage capped build abc123
+stdout 'build'
+
+exec breeze stop
+
+# --- a malformed machine floor stops the daemon rather than silently running
+# every command unlimited: the file exists precisely because someone decided
+# unbounded commands could hurt this machine.
+cp bad-defaults.hcl $WORK/state/defaults.hcl
+! exec breeze status
+stderr 'cpu_quota|defaults.hcl|did not start'
+
+-- pipeline.hcl --
+pipeline "capped" {
+  resource_limits {
+    cpu_quota = "1400%"
+    cpu_weight = 50
+    tasks_max = 512
+  }
+
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "heavy" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    resource_limits {
+      cpu_quota  = "2800%"
+      memory_max = "16G"
+    }
+  }
+}
+
+-- typo.hcl --
+pipeline "typo" {
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    resource_limits {
+      cpu_quota = "1400"
+    }
+  }
+}
+
+-- defaults.hcl --
+resource_limits {
+  cpu_weight  = 20
+  memory_high = "2G"
+}
+
+-- bad-defaults.hcl --
+resource_limits {
+  cpu_quota = "not-a-percentage"
+}

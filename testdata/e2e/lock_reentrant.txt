@@ -5,18 +5,18 @@
 # conflict error now names who holds it.
 env BREEZE_DIR=$WORK/state
 
-exec breeze lock acquire src/main.go --as alice --ttl 30m --json
+exec breeze acquire lock src/main.go --as alice --ttl 30m --json
 stdout '"id":\s*"l1"'
 
 # Re-acquire by the SAME holder: succeeds, same lock ID, no duplicate.
-exec breeze lock acquire src/main.go --as alice --ttl 30m --json
+exec breeze acquire lock src/main.go --as alice --ttl 30m --json
 stdout '"id":\s*"l1"'
-exec breeze lock list --json
+exec breeze list locks --json
 stdout '"id":\s*"l1"'
 ! stdout '"id":\s*"l2"'
 
 # A DIFFERENT holder still conflicts -- and the error now names alice.
-! exec breeze lock acquire src/main.go --as bob --ttl 30m
+! exec breeze acquire lock src/main.go --as bob --ttl 30m
 stderr 'already held by "alice"'
 
 exec breeze stop

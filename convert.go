@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strconv"
+	"strings"
 	"time"
 
 	"breeze/internal/engine"
@@ -33,14 +35,22 @@ func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
 	if w == nil {
 		return nil
 	}
-	return &hook.ResourceLimits{CPUQuota: w.CPUQuota, MemoryMax: w.MemoryMax, TasksMax: w.TasksMax, IOWeight: w.IOWeight}
+	return &hook.ResourceLimits{
+		CPUQuota: w.CPUQuota, CPUWeight: w.CPUWeight,
+		MemoryMax: w.MemoryMax, MemoryHigh: w.MemoryHigh,
+		TasksMax: w.TasksMax, IOWeight: w.IOWeight,
+	}
 }
 
 func resourceLimitsToWire(rl *hook.ResourceLimits) *wire.ResourceLimits {
 	if rl == nil {
 		return nil
 	}
-	return &wire.ResourceLimits{CPUQuota: rl.CPUQuota, MemoryMax: rl.MemoryMax, TasksMax: rl.TasksMax, IOWeight: rl.IOWeight}
+	return &wire.ResourceLimits{
+		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
+		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
+		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
+	}
 }
 
 func hookFromWire(w wire.Hook) (engine.Hook, error) {
@@ -89,13 +99,15 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		return engine.StageDef{}, err
 	}
 	s := engine.StageDef{
-		Name:       w.Name,
-		Type:       engine.StageType(w.Type),
-		Command:    commandTemplateFromWire(w.Command),
-		PreGate:    preGate,
-		PostAction: postAction,
-		Timeout:    d,
-		Debug:      w.Debug,
+		Name:        w.Name,
+		Type:        engine.StageType(w.Type),
+		Command:     commandTemplateFromWire(w.Command),
+		PreGate:     preGate,
+		PostAction:  postAction,
+		Timeout:     d,
+		Debug:       w.Debug,
+		Needs:       w.Needs,
+		Convergence: engine.Convergence(w.Convergence),
 	}
 	if w.CommandPolicy != nil {
 		s.CommandPolicy = &engine.CommandPolicy{RequiredRole: engine.Role(w.CommandPolicy.RequiredRole), MaxConcurrent: w.CommandPolicy.MaxConcurrent}
@@ -117,7 +129,7 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 	w := wire.StageDef{
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
-		Debug: s.Debug,
+		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence),
 	}
 	if s.CommandPolicy != nil {
 		w.CommandPolicy = &wire.CommandPolicy{RequiredRole: string(s.CommandPolicy.RequiredRole), MaxConcurrent: s.CommandPolicy.MaxConcurrent}
@@ -185,4 +197,34 @@ func deployRecordToWire(d engine.DeployRecord) wire.DeployHistoryEntry {
 		Commit: d.Commit, Actor: d.Actor, Seq: d.Seq, StartedAt: d.StartedAt, FinishedAt: d.FinishedAt,
 		ExitCode: d.ExitCode, Outcome: string(d.Outcome), Error: d.Error,
 	}
+}
+
+// describeLimits renders a resource-limit set as one short human line, e.g.
+// `cpu_quota=1400% cpu_weight=50 memory_max=8G`. Used by the daemon log, `breeze
+// status` and `show pipeline` alike, so the same policy always reads the same way
+// wherever it surfaces — the point being that limits are only useful if the person
+// who has to reason about the host can SEE them without parsing JSON.
+func describeLimits(rl *hook.ResourceLimits) string {
+	if rl.IsZero() {
+		return "(none)"
+	}
+	var parts []string
+	add := func(name, value string) {
+		if value != "" {
+			parts = append(parts, name+"="+value)
+		}
+	}
+	add("cpu_quota", rl.CPUQuota)
+	if rl.CPUWeight > 0 {
+		add("cpu_weight", strconv.Itoa(rl.CPUWeight))
+	}
+	add("memory_max", rl.MemoryMax)
+	add("memory_high", rl.MemoryHigh)
+	if rl.TasksMax > 0 {
+		add("tasks_max", strconv.Itoa(rl.TasksMax))
+	}
+	if rl.IOWeight > 0 {
+		add("io_weight", strconv.Itoa(rl.IOWeight))
+	}
+	return strings.Join(parts, " ")
 }

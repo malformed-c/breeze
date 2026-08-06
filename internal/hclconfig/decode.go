@@ -15,6 +15,7 @@ package hclconfig
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/hashicorp/hcl/v2"
@@ -30,15 +31,22 @@ type ConfigHCL struct {
 }
 
 type PipelineHCL struct {
-	Name              string          `hcl:"name,label"`
-	Environments      []string        `hcl:"environments,optional"`
-	EnvDeps           *EnvDepsBlock   `hcl:"environment_deps,block"`
-	DebugEnvironments []string        `hcl:"debug_environments,optional"`
-	EnvOwners         *EnvOwnersBlock `hcl:"environment_owners,block"`
-	BriefsDir         string          `hcl:"briefs_dir,optional"`
-	NotifyTopic       string          `hcl:"notify_topic,optional"`
-	CommandTopic      string          `hcl:"command_topic,optional"`
-	Stages            []StageHCL      `hcl:"stage,block"`
+	Name string `hcl:"name,label"`
+	// ResourceLimits is a pipeline-wide DEFAULT, inherited per-field by every stage
+	// command and every pre_gate/post_action hook that doesn't set that field
+	// itself. This is the whole point of having it at this level: a limit declared
+	// per-stage can be forgotten by the next stage someone adds, and a limit that
+	// can be forgotten isn't a limit — the host it was protecting doesn't care that
+	// the other nine stages were careful.
+	ResourceLimits    *ResourceLimitsHCL `hcl:"resource_limits,block"`
+	Environments      []string           `hcl:"environments,optional"`
+	EnvDeps           *EnvDepsBlock      `hcl:"environment_deps,block"`
+	DebugEnvironments []string           `hcl:"debug_environments,optional"`
+	EnvOwners         *EnvOwnersBlock    `hcl:"environment_owners,block"`
+	BriefsDir         string             `hcl:"briefs_dir,optional"`
+	NotifyTopic       string             `hcl:"notify_topic,optional"`
+	CommandTopic      string             `hcl:"command_topic,optional"`
+	Stages            []StageHCL         `hcl:"stage,block"`
 }
 
 // EnvDepsBlock captures the environment_deps block's attributes dynamically — its
@@ -57,8 +65,15 @@ type EnvOwnersBlock struct {
 }
 
 type StageHCL struct {
-	Name                  string             `hcl:"name,label"`
-	Type                  string             `hcl:"type"`
+	Name string `hcl:"name,label"`
+	Type string `hcl:"type"`
+	// Needs/Convergence author the stage graph. Omitting needs entirely keeps the
+	// default line (this stage requires the one declared before it); needs = []
+	// makes the stage a root that diverges from that line; needs = ["a","b"] makes
+	// it converge on a and b. gohcl preserves the absent-vs-empty distinction
+	// (nil vs []string{}), which is exactly what that convention needs.
+	Needs                 []string           `hcl:"needs,optional"`
+	Convergence           string             `hcl:"convergence,optional"`
 	FansOut               bool               `hcl:"fans_out,optional"`
 	Debug                 bool               `hcl:"debug,optional"`
 	RequiredRole          string             `hcl:"required_role,optional"`
@@ -82,12 +97,16 @@ type HookHCL struct {
 
 // ResourceLimitsHCL configures a cgroup-bounded systemd-run --scope wrapper
 // around a stage/hook's command — see hook.ResourceLimits for what each field
-// controls. All optional; an absent block means no wrapping at all.
+// controls and, in particular, for why a CAP (cpu_quota, memory_max) and a
+// PRIORITY (cpu_weight, io_weight) are different tools. All optional; an absent
+// block, at both the stage and pipeline level, means no wrapping at all.
 type ResourceLimitsHCL struct {
-	CPUQuota  string `hcl:"cpu_quota,optional"`
-	MemoryMax string `hcl:"memory_max,optional"`
-	TasksMax  int    `hcl:"tasks_max,optional"`
-	IOWeight  int    `hcl:"io_weight,optional"`
+	CPUQuota   string `hcl:"cpu_quota,optional"`
+	CPUWeight  int    `hcl:"cpu_weight,optional"`
+	MemoryMax  string `hcl:"memory_max,optional"`
+	MemoryHigh string `hcl:"memory_high,optional"`
+	TasksMax   int    `hcl:"tasks_max,optional"`
+	IOWeight   int    `hcl:"io_weight,optional"`
 }
 
 // RoleHCL is accepted syntactically (so a config file can document the roles a
@@ -131,6 +150,32 @@ func ParseFile(path string) ([]wire.Pipeline, error) {
 		pipelines = append(pipelines, p)
 	}
 	return pipelines, nil
+}
+
+// DefaultsHCL is the daemon-level config file (<state-dir>/defaults.hcl): machine
+// policy rather than pipeline definition, which is why it lives beside the state
+// dir and not in anyone's pipeline file. Currently one block.
+type DefaultsHCL struct {
+	ResourceLimits *ResourceLimitsHCL `hcl:"resource_limits,block"`
+}
+
+// ParseDefaults reads a daemon's defaults.hcl. A missing file is not an error —
+// having no machine-level policy is the normal case — so it returns (nil, nil).
+// A malformed one IS an error: silently ignoring a limits file someone wrote
+// because they were worried about starving their host is the worst possible
+// failure mode for this feature.
+func ParseDefaults(path string) (*wire.ResourceLimits, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg DefaultsHCL
+	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
+		return nil, err
+	}
+	return translateResourceLimits(cfg.ResourceLimits), nil
 }
 
 // resolveRelativePaths rewrites every relative command path and BriefsDir in p to
@@ -185,12 +230,14 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 		return wire.Pipeline{}, err
 	}
 
-	return wire.Pipeline{
+	p := wire.Pipeline{
 		Name: ph.Name, Stages: stages, FanOutAt: fanOutAt,
 		Environments: ph.Environments, EnvironmentDeps: envDeps,
 		DebugEnvironments: ph.DebugEnvironments, EnvironmentOwners: envOwners,
 		BriefsDir: ph.BriefsDir, NotifyTopic: ph.NotifyTopic, CommandTopic: ph.CommandTopic,
-	}, nil
+	}
+	applyDefaultLimits(&p, translateResourceLimits(ph.ResourceLimits))
+	return p, nil
 }
 
 func translateEnvDeps(block *EnvDepsBlock) (map[string][]string, error) {
@@ -244,7 +291,11 @@ func translateEnvOwners(block *EnvOwnersBlock) (map[string]string, error) {
 }
 
 func translateStage(sh StageHCL) (wire.StageDef, error) {
-	sd := wire.StageDef{Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout, Command: commandFromList(sh.Command, sh.ResourceLimits), Debug: sh.Debug}
+	sd := wire.StageDef{
+		Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout,
+		Command: commandFromList(sh.Command, sh.ResourceLimits), Debug: sh.Debug,
+		Needs: sh.Needs, Convergence: sh.Convergence,
+	}
 	switch sh.Type {
 	case "command":
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
@@ -282,5 +333,72 @@ func translateResourceLimits(rl *ResourceLimitsHCL) *wire.ResourceLimits {
 	if rl == nil {
 		return nil
 	}
-	return &wire.ResourceLimits{CPUQuota: rl.CPUQuota, MemoryMax: rl.MemoryMax, TasksMax: rl.TasksMax, IOWeight: rl.IOWeight}
+	return &wire.ResourceLimits{
+		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
+		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
+		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
+	}
+}
+
+// applyDefaultLimits merges a pipeline's default resource_limits into every stage
+// command and every pre_gate/post_action hook, per FIELD: a stage that sets only
+// memory_max still inherits the pipeline's cpu_weight, and a stage that sets
+// nothing inherits the lot. Resolved here, at translation time, rather than in the
+// engine, for the same reason fans_out becomes an index here — HCL is an authoring
+// convenience over the payload the wire protocol already accepts, not a second
+// mechanism the daemon has to know about. It also keeps `breeze apply`'s
+// diff-and-upsert honest: both sides of the comparison are fully resolved, so a
+// re-apply of an unchanged file is still correctly reported as unchanged.
+//
+// The effective (post-inheritance) limits are what lands in the registered
+// pipeline, so `show pipeline` and `--json` show what a stage will ACTUALLY run
+// with, not what its own block happened to spell out.
+func applyDefaultLimits(p *wire.Pipeline, def *wire.ResourceLimits) {
+	if def == nil {
+		return
+	}
+	for i := range p.Stages {
+		// An approval stage runs no command, so limiting one would be noise in
+		// `show pipeline` describing something that never executes. Its hooks are a
+		// different matter — a pre_gate on an approval stage is a real command.
+		if p.Stages[i].Type != "approval" {
+			p.Stages[i].Command.ResourceLimits = mergeLimits(p.Stages[i].Command.ResourceLimits, def)
+		}
+		for j := range p.Stages[i].PreGate {
+			p.Stages[i].PreGate[j].Command.ResourceLimits = mergeLimits(p.Stages[i].PreGate[j].Command.ResourceLimits, def)
+		}
+		for j := range p.Stages[i].PostAction {
+			p.Stages[i].PostAction[j].Command.ResourceLimits = mergeLimits(p.Stages[i].PostAction[j].Command.ResourceLimits, def)
+		}
+	}
+}
+
+// mergeLimits returns own with every unset field filled in from def. An
+// approval-type stage has no command to limit, but merging into its (empty)
+// template is harmless — nothing ever runs it.
+func mergeLimits(own, def *wire.ResourceLimits) *wire.ResourceLimits {
+	if own == nil {
+		cp := *def
+		return &cp
+	}
+	merged := *own
+	if merged.CPUQuota == "" {
+		merged.CPUQuota = def.CPUQuota
+	}
+	if merged.CPUWeight == 0 {
+		merged.CPUWeight = def.CPUWeight
+	}
+	if merged.MemoryMax == "" {
+		merged.MemoryMax = def.MemoryMax
+	}
+	if merged.MemoryHigh == "" {
+		merged.MemoryHigh = def.MemoryHigh
+	}
+	if merged.TasksMax == 0 {
+		merged.TasksMax = def.TasksMax
+	}
+	if merged.IOWeight == 0 {
+		merged.IOWeight = def.IOWeight
+	}
+	return &merged
 }

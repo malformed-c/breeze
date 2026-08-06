@@ -3,33 +3,33 @@
 # along the way.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register alice
+exec breeze register identity alice
 cp stdout alice.token
-exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze assign role reviewer alice --as admin --token-file admin.token
 
 # --dry-run must never mutate: no pipeline registered yet, and it reports "new".
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token --dry-run
 stdout '\+ pipeline release \(new\)'
-exec breeze pipeline list --json
+exec breeze list pipelines --json
 stdout '"pipelines":\s*null|"pipelines":\s*\[\]'
 
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
-exec breeze pipeline show release --json
+exec breeze show pipeline release --json
 stdout '"name":\s*"release"'
 
 # review can't be approved before build succeeds (Gate 1).
-! exec breeze stage approve release review abc123 --as alice --token-file alice.token
+! exec breeze approve stage release review abc123 --as alice --token-file alice.token
 stderr 'prerequisite'
 
-exec breeze stage start release build abc123 --as ci
+exec breeze start stage release build abc123 --as ci
 stdout 'build: succeeded'
 
-exec breeze stage approve release review abc123 --as alice --token-file alice.token
+exec breeze approve stage release review abc123 --as alice --token-file alice.token
 stdout 'review: succeeded'
 
-exec breeze pipeline status release abc123 --json
+exec breeze status pipeline release abc123 --json
 stdout '"stage":\s*"build"[\s\S]*"status":\s*"succeeded"'
 stdout '"stage":\s*"review"[\s\S]*"status":\s*"succeeded"'
 

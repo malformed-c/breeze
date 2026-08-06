@@ -13,7 +13,7 @@ env GIT_COMMITTER_EMAIL=test@example.com
 env GIT_AUTHOR_DATE=2020-01-01T00:00:00Z
 env GIT_COMMITTER_DATE=2020-01-01T00:00:00Z
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
 
 exec git init -q repo
@@ -26,12 +26,12 @@ stdout '\+ pipeline release \(new\)'
 exec breeze apply -f ../pipeline.hcl --as admin --token-file ../admin.token
 
 # Trigger with the SHORT form.
-exec breeze stage start release build 9f2b8e57dc --as ci
+exec breeze start stage release build 9f2b8e57dc --as ci
 stdout 'build: succeeded'
 
 # Status with the FULL form must show the same (already-succeeded) instance —
 # proving both forms resolved to the identical StageKey, not two unrelated ones.
-exec breeze stage status release build 9f2b8e57dc05142602169f739afaa5ec29f411ed --json
+exec breeze status stage release build 9f2b8e57dc05142602169f739afaa5ec29f411ed --json
 stdout '"status":\s*"succeeded"'
 
 # JSON output always shows the full, untruncated commit — never the 12-char

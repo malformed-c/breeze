@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"breeze/internal/hook"
@@ -39,18 +40,17 @@ func keyFor(p *Pipeline, i int, commit, environment string) (StageKey, error) {
 	return StageKey{Commit: commit, Environment: environment}, nil
 }
 
-// predecessorKey implements Gate 1's three cases (see design doc): the shared
-// commit-only instance at the fan-out entry point, same-environment continuation
-// past it, or shared commit-only before it.
-func predecessorKey(p *Pipeline, i int, k StageKey) StageKey {
-	switch {
-	case i == p.FanOutAt:
-		return StageKey{Commit: k.Commit}
-	case i > p.FanOutAt:
-		return StageKey{Commit: k.Commit, Environment: k.Environment}
-	default:
+// parentKey is the StageKey a Gate 1 prerequisite declared at stage index j has,
+// for a dependent instance keyed k. The scope is decided by the PARENT's own
+// position relative to the fan-out point, not the dependent's: a prerequisite
+// before the fan-out is the single shared commit-only instance (which is what
+// makes the fan-out entry stage's check work), one at or past it continues
+// within k's own environment.
+func parentKey(p *Pipeline, j int, k StageKey) StageKey {
+	if j < p.FanOutAt {
 		return StageKey{Commit: k.Commit}
 	}
+	return StageKey{Commit: k.Commit, Environment: k.Environment}
 }
 
 // describeStageState renders a gate-failure reason that reflects what actually
@@ -74,36 +74,65 @@ func describeStageState(inst *StageInstance) string {
 	}
 }
 
-// checkPrerequisite is Gate 1: stage i's predecessor (per predecessorKey) must have
-// succeeded — UNLESS stage i is marked Debug, in which case ordering is deliberately
-// not enforced (RBAC still is, separately). Must be called with e.mu held.
+// checkPrerequisite is Gate 1: stage i's prerequisites (p.NeedIndices, i.e. its
+// declared Needs or the preceding stage by default) must have succeeded — every
+// one of them, or any one, per the stage's Convergence. A stage with no
+// prerequisites (the first stage, or an explicitly rooted branch) always passes,
+// as does one marked Debug, which opts out of ordering entirely (RBAC still
+// applies, separately). Must be called with e.mu held.
 func (e *Engine) checkPrerequisite(p *Pipeline, i int, k StageKey) (bool, string) {
-	if i == 0 || p.Stages[i].Debug {
+	if p.Stages[i].Debug {
 		return true, ""
 	}
-	predKey := predecessorKey(p, i, k)
-	inst := e.getInstance(p.Name, p.Stages[i-1].Name, predKey)
-	if inst == nil || inst.Status != StageSucceeded {
-		return false, fmt.Sprintf("prerequisite %q (%s) %s", p.Stages[i-1].Name, predKey.ShortString(), describeStageState(inst))
+	needs := p.NeedIndices(i)
+	if len(needs) == 0 {
+		return true, ""
 	}
-	return true, ""
+	anyMode := p.Stages[i].Convergence == ConvergeAny
+
+	unmet := make([]string, 0, len(needs))
+	for _, j := range needs {
+		pk := parentKey(p, j, k)
+		inst := e.getInstance(p.Name, p.Stages[j].Name, pk)
+		if inst != nil && inst.Status == StageSucceeded {
+			if anyMode {
+				return true, "" // one satisfied prerequisite is the whole requirement
+			}
+			continue
+		}
+		unmet = append(unmet, fmt.Sprintf("%q (%s) %s", p.Stages[j].Name, pk.ShortString(), describeStageState(inst)))
+	}
+	if len(unmet) == 0 {
+		return true, ""
+	}
+	if anyMode {
+		return false, fmt.Sprintf("no prerequisite of %q has succeeded (convergence=any): %s", p.Stages[i].Name, strings.Join(unmet, "; "))
+	}
+	return false, "prerequisite " + strings.Join(unmet, "; prerequisite ")
 }
 
 // checkEnvironmentDeps is Gate 2: applies ONLY at the fan-out entry stage — every
 // environment k.Environment depends on must have fully completed its chain (succeeded
-// at the pipeline's LAST stage) for this commit. Never re-checked stage-by-stage
-// within an environment afterward. Environments listed in Pipeline.DebugEnvironments
-// are exempt (ad-hoc, unordered access; RBAC still applies separately). Must be
-// called with e.mu held.
+// at every one of the pipeline's TERMINAL stages) for this commit. Never re-checked
+// stage-by-stage within an environment afterward. Environments listed in
+// Pipeline.DebugEnvironments are exempt (ad-hoc, unordered access; RBAC still applies
+// separately). Must be called with e.mu held.
+//
+// "Terminal" rather than "the last declared stage": once branches diverge, a chain
+// can end at several stages at once, and finishing only one of them isn't a finished
+// chain. For a linear pipeline the terminal set is exactly the last stage, so this is
+// the same check it always was.
 func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, string) {
 	if i != p.FanOutAt || k.Environment == "" || slices.Contains(p.DebugEnvironments, k.Environment) {
 		return true, ""
 	}
-	lastStage := p.Stages[len(p.Stages)-1].Name
 	for _, dep := range p.EnvironmentDeps[k.Environment] {
-		inst := e.getInstance(p.Name, lastStage, StageKey{Commit: k.Commit, Environment: dep})
-		if inst == nil || inst.Status != StageSucceeded {
-			return false, fmt.Sprintf("environment %q depends on %q, whose full chain (last stage %q) %s for this commit", k.Environment, dep, lastStage, describeStageState(inst))
+		for _, t := range p.TerminalStages() {
+			name := p.Stages[t].Name
+			inst := e.getInstance(p.Name, name, StageKey{Commit: k.Commit, Environment: dep})
+			if inst == nil || inst.Status != StageSucceeded {
+				return false, fmt.Sprintf("environment %q depends on %q, whose full chain (terminal stage %q) %s for this commit", k.Environment, dep, name, describeStageState(inst))
+			}
 		}
 	}
 	return true, ""
@@ -354,7 +383,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 
-	if err := runPreGates(preGate, params); err != nil {
+	if err := e.runPreGates(preGate, params); err != nil {
 		e.ReleaseLock(lock.ID, actor, true) // the command never ran — release immediately
 		e.mu.Lock()
 		inst.Status = StageGateFailed
@@ -462,11 +491,15 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		}
 	}
 
-	if stage.ApprovalPolicy.BlockPredecessorActor && i > 0 {
-		predKey := predecessorKey(p, i, key)
-		if pred := e.getInstance(pipelineName, p.Stages[i-1].Name, predKey); pred != nil && pred.Actor == actor {
-			e.mu.Unlock()
-			return nil, gateErr("actor %q triggered the preceding %q stage and cannot also approve this one", actor, p.Stages[i-1].Name)
+	// Conflict of interest is checked against EVERY prerequisite, not just one:
+	// on a converging stage, having driven any one of the branches it reviews is
+	// the same conflict as having driven a sole predecessor.
+	if stage.ApprovalPolicy.BlockPredecessorActor {
+		for _, j := range p.NeedIndices(i) {
+			if pred := e.getInstance(pipelineName, p.Stages[j].Name, parentKey(p, j, key)); pred != nil && pred.Actor == actor {
+				e.mu.Unlock()
+				return nil, gateErr("actor %q triggered the preceding %q stage and cannot also approve this one", actor, p.Stages[j].Name)
+			}
 		}
 	}
 
@@ -481,7 +514,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		preGate := stage.PreGate
 		params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 		e.mu.Unlock()
-		if err := runPreGates(preGate, params); err != nil {
+		if err := e.runPreGates(preGate, params); err != nil {
 			e.mu.Lock()
 			if _, ok := e.instances[ik]; !ok {
 				e.touchCommitSeq(pipelineName, commit)
@@ -781,7 +814,7 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
-		ResourceLimits: tmpl.ResourceLimits,
+		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
 	}, params)
 	e.unregisterRunningCancel(runKey)
 	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —

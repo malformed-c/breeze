@@ -26,6 +26,15 @@ func (e *Engine) RegisterIdentity(name, messAgent string) (token string, err err
 	if name == "" {
 		return "", fmt.Errorf("identity name required")
 	}
+	// A flag-shaped name is never intentional — it's the tail of the `identity
+	// register --help` footgun, which registered a real identity literally named
+	// "--help" and printed its (live, unowned) token to somebody's scrollback. The
+	// CLI's parseFlags now stops that at the front door; this closes the same door
+	// at the engine, so no other path (a raw wire call, a future command) can
+	// re-create the junk.
+	if name[0] == '-' {
+		return "", fmt.Errorf("identity name %q looks like a flag, not a name — refusing to register it", name)
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err

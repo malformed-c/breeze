@@ -6,26 +6,26 @@
 # reformat itself.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # build fails outright (/bin/false) — the RPC itself still succeeds, reporting
 # StageFailed as data.
-! exec breeze stage start release build 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
+! exec breeze start stage release build 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
 stdout 'build: failed'
 ! stdout 'cancelled'
 
 # test is blocked because build FAILED — the message must say so explicitly,
 # with the commit shown short, not in full.
-! exec breeze stage start release test 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
+! exec breeze start stage release test 98229189fcee04765b9b6f19c1ca64c67c9e749d --as ci
 stderr 'prerequisite "build" \(98229189fcee\) failed'
 ! stderr '98229189fcee04765b9b6f19c1ca64c67c9e749d'
 
 # On a commit that's never been touched at all, the message must say so —
 # "has not run yet", not "failed" (it never even ran) and not the generic
 # "has not succeeded".
-! exec breeze stage start release test deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --as ci
+! exec breeze start stage release test deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --as ci
 stderr 'prerequisite "build" \(deadbeefdead\) has not run yet'
 
 exec breeze stop

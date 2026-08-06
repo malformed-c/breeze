@@ -314,3 +314,213 @@ pipeline "simple" {
 		t.Fatalf("expected FanOutAt == len(stages) when no stage sets fans_out, got %d", pipelines[0].FanOutAt)
 	}
 }
+
+// needs/convergence author the stage graph. The absent-vs-empty distinction is
+// load-bearing — an omitted needs means "the stage declared before this one",
+// `needs = []` means "no prerequisite at all" — so this pins gohcl's decoding of
+// both, not just the happy path of a populated list.
+func TestParseFileStageGraph(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "diverge" {
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "unit" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "race" {
+    type    = "command"
+    needs   = ["build"]
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "package" {
+    type        = "command"
+    needs       = ["unit", "race"]
+    convergence = "any"
+    timeout     = "1m"
+    command     = ["/bin/true"]
+  }
+  stage "audit" {
+    type    = "command"
+    needs   = []
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	stages := pipelines[0].Stages
+	if stages[0].Needs != nil {
+		t.Fatalf("an omitted needs must stay nil (meaning: the preceding stage), got %#v", stages[0].Needs)
+	}
+	if len(stages[1].Needs) != 1 || stages[1].Needs[0] != "build" {
+		t.Fatalf("unit.needs = %#v", stages[1].Needs)
+	}
+	if len(stages[3].Needs) != 2 || stages[3].Convergence != "any" {
+		t.Fatalf("package = needs %#v convergence %q", stages[3].Needs, stages[3].Convergence)
+	}
+	if stages[4].Needs == nil || len(stages[4].Needs) != 0 {
+		t.Fatalf("needs = [] must decode to an EMPTY, non-nil slice (a root stage), got %#v", stages[4].Needs)
+	}
+}
+
+// A pipeline-level resource_limits block is a DEFAULT every stage and hook
+// inherits per field — the point being that a limit declared once per stage can be
+// forgotten by the next stage someone adds, and a forgettable limit isn't one.
+func TestParseFilePipelineDefaultLimitsInherit(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "capped" {
+  resource_limits {
+    cpu_weight  = 50
+    memory_high = "4G"
+    tasks_max   = 512
+  }
+
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    pre_gate {
+      command = ["/bin/true"]
+      timeout = "10s"
+    }
+  }
+  stage "heavy" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    resource_limits {
+      memory_high = "16G"
+      cpu_quota   = "2800%"
+    }
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	stages := pipelines[0].Stages
+
+	// A stage with no block of its own inherits the whole default...
+	build := stages[0].Command.ResourceLimits
+	if build == nil || build.CPUWeight != 50 || build.MemoryHigh != "4G" || build.TasksMax != 512 {
+		t.Fatalf("build should inherit the pipeline default, got %+v", build)
+	}
+	// ...including its hooks, which run commands too.
+	gate := stages[0].PreGate[0].Command.ResourceLimits
+	if gate == nil || gate.CPUWeight != 50 || gate.TasksMax != 512 {
+		t.Fatalf("a pre_gate hook should inherit the pipeline default, got %+v", gate)
+	}
+	// A stage that sets some fields keeps exactly those and inherits the rest.
+	heavy := stages[1].Command.ResourceLimits
+	switch {
+	case heavy == nil:
+		t.Fatalf("heavy lost its limits entirely")
+	case heavy.MemoryHigh != "16G":
+		t.Fatalf("heavy's own memory_high must win, got %+v", heavy)
+	case heavy.CPUQuota != "2800%":
+		t.Fatalf("heavy's own cpu_quota must survive, got %+v", heavy)
+	case heavy.CPUWeight != 50 || heavy.TasksMax != 512:
+		t.Fatalf("heavy must still inherit what it didn't set, got %+v", heavy)
+	}
+}
+
+// No pipeline-level block means nothing is invented: a stage without limits keeps
+// nil, so an unlimited pipeline stays exactly as unwrapped as before.
+func TestParseFileNoDefaultLimitsInventsNothing(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "plain" {
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if rl := pipelines[0].Stages[0].Command.ResourceLimits; rl != nil {
+		t.Fatalf("expected no limits at all, got %+v", rl)
+	}
+}
+
+// defaults.hcl is the daemon's machine-level policy. A missing one is normal; a
+// malformed one must be an error, because silently ignoring a limits file someone
+// wrote out of concern for their host is the worst possible failure here.
+func TestParseDefaults(t *testing.T) {
+	missing, err := ParseDefaults(filepath.Join(t.TempDir(), "defaults.hcl"))
+	if err != nil || missing != nil {
+		t.Fatalf("a missing defaults.hcl must be (nil, nil), got %+v %v", missing, err)
+	}
+
+	dir := t.TempDir()
+	good := filepath.Join(dir, "defaults.hcl")
+	if err := os.WriteFile(good, []byte("resource_limits {\n  cpu_weight = 50\n  memory_high = \"4G\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rl, err := ParseDefaults(good)
+	if err != nil {
+		t.Fatalf("ParseDefaults: %v", err)
+	}
+	if rl == nil || rl.CPUWeight != 50 || rl.MemoryHigh != "4G" {
+		t.Fatalf("got %+v", rl)
+	}
+
+	bad := filepath.Join(dir, "bad.hcl")
+	if err := os.WriteFile(bad, []byte("resource_limits {\n  nonsense = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseDefaults(bad); err == nil {
+		t.Fatalf("a malformed defaults.hcl must be an error, never silently ignored")
+	}
+}
+
+// An approval stage runs no command, so inheriting a limit it can never apply
+// would just be noise in `show pipeline`. Its hooks still inherit — a pre_gate on
+// an approval stage is a real command.
+func TestPipelineDefaultLimitsSkipApprovalCommands(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "gated" {
+  resource_limits {
+    cpu_weight = 50
+  }
+
+  stage "build" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    pre_gate {
+      command = ["/bin/true"]
+      timeout = "10s"
+    }
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	review := pipelines[0].Stages[1]
+	if review.Command.ResourceLimits != nil {
+		t.Fatalf("an approval stage has no command to limit, got %+v", review.Command.ResourceLimits)
+	}
+	if rl := review.PreGate[0].Command.ResourceLimits; rl == nil || rl.CPUWeight != 50 {
+		t.Fatalf("an approval stage's pre_gate DOES run a command and must inherit, got %+v", rl)
+	}
+}

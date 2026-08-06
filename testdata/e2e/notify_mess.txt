@@ -7,17 +7,17 @@ env BREEZE_DIR=$WORK/state
 env PATH=$WORK/bin:$PATH
 chmod 0755 bin/mess
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register alice
-exec breeze identity register ci
-exec breeze role assign reviewer alice --as admin --token-file admin.token
+exec breeze register identity alice
+exec breeze register identity ci
+exec breeze assign role reviewer alice --as admin --token-file admin.token
 
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # ci triggers build; the next stage (review) requires "reviewer" -> alice should be
 # notified, but NOT ci (the actor notifying itself about its own action).
-exec breeze stage start release build abc123 --as ci
+exec breeze start stage release build abc123 --as ci
 
 # The notify callback fires asynchronously (fire-and-forget, no RPC signal) — give it
 # a moment before checking what the fake mess script recorded.

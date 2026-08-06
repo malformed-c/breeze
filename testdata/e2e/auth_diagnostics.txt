@@ -1,0 +1,96 @@
+# Every one of these is a diagnostic that used to be silent, and each silence cost
+# real time in a live incident: a credential could only be tested by attempting a
+# privileged MUTATION (reads accepted any token), whoami echoed any name back so an
+# unregistered identity looked like a registered zero-role one, `role assign` failed
+# with a bare "not found" and succeeded with no output at all, and `<group> --help`
+# — the first thing anyone types — was the one level of the CLI that never answered.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze register identity ci
+cp stdout ci.token
+
+# --- role assign: name what's missing, and confirm what happened ---
+! exec breeze assign role deployer no-such-identity --as admin --token-file admin.token
+stderr 'identity "no-such-identity" is not registered'
+stderr 'breeze register identity no-such-identity'
+
+exec breeze assign role deployer ci --as admin --token-file admin.token
+stdout 'assigned role "deployer" to "ci"'
+exec breeze revoke role deployer ci --as admin --token-file admin.token
+stdout 'revoked role "deployer" from "ci"'
+exec breeze assign role deployer ci --as admin --token-file admin.token
+
+# --- whoami: registered-with-no-roles vs never-registered ---
+exec breeze register identity zero-role
+exec breeze whoami --as zero-role
+stdout 'zero-role roles='
+! stdout 'NOT registered'
+exec breeze whoami --as definitely-not-registered-zzq
+stdout 'NOT registered'
+
+# --- a supplied credential is verified even where the op doesn't need one ---
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# public read, no credential: unchanged
+exec breeze status stage demo build abc123
+stdout 'ready|has not run'
+
+# valid credential: same answer
+exec breeze status stage demo build abc123 --as ci --token-file ci.token
+stdout 'ready|has not run'
+
+# bogus token: an error now, not a silently-identical success
+! exec breeze status stage demo build abc123 --as ci --token-file zeros.token
+stderr 'not valid'
+! exec breeze status stage demo build abc123 --as no-such-agent-zzq --token-file zeros.token
+stderr 'not valid'
+
+# an unreadable --token-file says so rather than being treated as "no token"
+! exec breeze status stage demo build abc123 --as ci --token-file no-such-file.token
+stderr 'no-such-file.token'
+
+# --- check auth: the read-only "is this credential valid" probe ---
+exec breeze check auth --as ci --token-file ci.token
+stdout 'credential is valid'
+! exec breeze check auth --as ci --token-file zeros.token
+stdout 'NOT ok'
+exec breeze check auth --as ci --token-file ci.token --role deployer
+stdout 'holds role "deployer"'
+! exec breeze check auth --as ci --token-file ci.token --role admin
+stdout 'does not hold role "admin"'
+
+# --- <group|verb> --help answers, exits 0, and mutates nothing ---
+exec breeze stage --help
+stdout 'breeze start stage'
+exec breeze lock --help
+stdout 'breeze acquire lock'
+exec breeze list --help
+stdout 'breeze list pipelines'
+exec breeze role -h
+stdout 'breeze assign role'
+
+# the junk-identity class: no CLI path can create a flag-shaped identity — parseFlags
+# refuses it as a flag, and the engine refuses the name outright if anything ever gets
+# past that (see TestRegisterIdentityRejectsFlagShapedName), so nothing lands in the
+# registry either way.
+exec breeze register identity --help
+stdout 'usage: breeze register identity'
+! exec breeze register identity -- --help
+stderr 'usage: breeze register identity'
+exec breeze list roles
+! stdout '\-\-help'
+
+exec breeze stop
+
+-- zeros.token --
+0000000000000000000000000000000000000000000000000000000000000000
+-- pipeline.hcl --
+pipeline "demo" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true", "{commit}"]
+  }
+}

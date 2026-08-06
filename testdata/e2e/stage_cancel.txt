@@ -1,4 +1,4 @@
-# breeze stage cancel is the manual escape hatch for a stuck Running/Awaiting
+# breeze cancel stage is the manual escape hatch for a stuck Running/Awaiting
 # instance (e.g. one left behind by a daemon restart mid-run, see
 # TestShutdownCancelsRunningStages for the automatic case this complements) --
 # force it to a terminal, retryable Failed state.
@@ -14,24 +14,24 @@
 # be alive at test end and `wait` below would hang for the sleep's full duration.
 env BREEZE_DIR=$WORK/state
 
-exec breeze identity register admin
+exec breeze register identity admin
 cp stdout admin.token
-exec breeze identity register ci
+exec breeze register identity ci
 cp stdout ci.token
-exec breeze role assign builder ci --as admin --token-file admin.token
+exec breeze assign role builder ci --as admin --token-file admin.token
 exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 # Start a slow build in the background, wait for it to actually reach Running.
 # It's expected to exit non-zero once cancelled below (the run ends Failed) --
 # `!` before the background invocation tells `wait` not to treat that as a
 # testscript failure.
-! exec breeze stage start release build abc123 --as ci --token-file ci.token &build&
+! exec breeze start stage release build abc123 --as ci --token-file ci.token &build&
 exec sleep 0.3
-exec breeze stage status release build abc123 --json
+exec breeze status stage release build abc123 --json
 stdout '"status":\s*"running"'
 
 # ci (holds "builder", the role gating this stage) cancels the stuck run.
-exec breeze stage cancel release build abc123 --as ci --reason stuck-cancelling --token-file ci.token
+exec breeze cancel stage release build abc123 --as ci --reason stuck-cancelling --token-file ci.token
 stdout 'build: failed \(cancelled\)'
 
 # The background process should be genuinely dead very quickly now (not stuck
@@ -39,12 +39,12 @@ stdout 'build: failed \(cancelled\)'
 # not just the state mutation, actually happened.
 wait build
 
-! exec breeze stage status release build abc123 --json
+! exec breeze status stage release build abc123 --json
 stdout '"status":\s*"failed"'
 stdout '"error":\s*"stuck-cancelling"'
 
 # Now retriggerable — the whole point of clearing a stuck instance.
-exec breeze stage start release build newcommit --as ci --token-file ci.token
+exec breeze start stage release build newcommit --as ci --token-file ci.token
 stdout 'build: succeeded'
 
 exec breeze stop

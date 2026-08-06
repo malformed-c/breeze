@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"breeze/internal/engine"
+	"breeze/internal/hclconfig"
 	"breeze/internal/wire"
 )
 
@@ -25,7 +26,7 @@ import (
 //     it and spawning a brand-new detached process of its own — added specifically
 //     because bare `breeze daemon` blocking with no built-in way to background it
 //     made "just restart it" error-prone in practice (reported live: an agent
-//     trying to check usage via `breeze daemon --help` ended up stuck in a
+//     trying to check usage via `breeze start daemon --help` ended up stuck in a
 //     foreground daemon it had to separately kill). Falls back to a fresh detached
 //     start if nothing is running yet — there's nothing to ask in that case.
 //   - "--background"/"-d": start a fresh detached daemon directly, for a first
@@ -56,7 +57,7 @@ func startDaemonDetached(p paths) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "daemon")
+	cmd := exec.Command(exe, "start", "daemon")
 	cmd.SysProcAttr = daemonSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
@@ -172,6 +173,25 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	} else {
 		eng.Load(snap)
 	}
+	if err := loadDefaultLimits(eng, p); err != nil {
+		// Refusing to start is deliberate. This file exists precisely because
+		// someone decided unbounded commands could hurt this machine; silently
+		// starting without the limits they asked for is the one outcome nobody
+		// wants, and it would look exactly like a working daemon.
+		//
+		// Logged as well as returned: a detached/auto-started daemon's stderr goes
+		// nowhere, so the client only ever sees "daemon did not start (see
+		// <log>)" — and pointing someone at a log that then says nothing about why
+		// is its own small betrayal. Everything acquired above is released so a
+		// corrected file can just be started again.
+		err = fmt.Errorf("loading %s: %w", p.defaults, err)
+		log.Printf("refusing to start: %v", err)
+		ln.Close()
+		os.Remove(p.sock)
+		syscall.Flock(fd, syscall.LOCK_UN)
+		syscall.Close(fd)
+		return nil, err
+	}
 
 	saver := newSnapshotWriter(p.state)
 	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd, saver: saver}
@@ -215,4 +235,30 @@ func waitForDialState(sock string, wantUp bool, timeout time.Duration) bool {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return false
+}
+
+// loadDefaultLimits reads this daemon's optional <state-dir>/defaults.hcl and
+// installs its resource_limits as the machine-level floor under every command the
+// engine runs. Absent file: nothing to do, the overwhelmingly common case. Present
+// but malformed, or present with an invalid limit: an error, surfaced by the caller
+// as a refusal to start.
+//
+// Read once at startup, so `breeze restart daemon` is how a change takes effect —
+// the same reload story as a pipeline's CommandTopic, and a deliberate one: a limit
+// that changed underneath a half-finished pipeline run would make two stages of the
+// same run answer to different policies.
+func loadDefaultLimits(eng *engine.Engine, p paths) error {
+	wl, err := hclconfig.ParseDefaults(p.defaults)
+	if err != nil {
+		return err
+	}
+	if wl == nil {
+		return nil
+	}
+	rl := resourceLimitsFromWire(wl)
+	if err := eng.SetDefaultResourceLimits(rl); err != nil {
+		return err
+	}
+	log.Printf("machine-level resource limits loaded from %s: %s", p.defaults, describeLimits(rl))
+	return nil
 }

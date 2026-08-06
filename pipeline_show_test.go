@@ -36,6 +36,37 @@ func TestStageRequiresText(t *testing.T) {
 	}
 }
 
+// A diverging/converging graph must render the condition Gate 1 actually applies:
+// "+" between prerequisites that must ALL succeed, "or" when any one will do, and
+// an explicit marker for a stage that was deliberately rooted off the chain.
+func TestStageRequiresTextGraph(t *testing.T) {
+	pl := wire.Pipeline{
+		FanOutAt: 5,
+		Stages: []wire.StageDef{
+			{Name: "build"},
+			{Name: "unit", Needs: []string{"build"}},
+			{Name: "race", Needs: []string{"build"}},
+			{Name: "package", Needs: []string{"unit", "race"}},
+			{Name: "ship", Needs: []string{"unit", "race"}, Convergence: "any"},
+			{Name: "audit", Needs: []string{}},
+		},
+	}
+	cases := []struct {
+		index int
+		want  string
+	}{
+		{1, "build"},
+		{3, "unit + race"},
+		{4, "unit or race"},
+		{5, "(none — branch root)"},
+	}
+	for _, c := range cases {
+		if got := stageRequiresText(pl, c.index); got != c.want {
+			t.Errorf("stageRequiresText(%d) = %q, want %q", c.index, got, c.want)
+		}
+	}
+}
+
 func TestSortedKeys(t *testing.T) {
 	m := map[string][]string{"prod": {"staging"}, "canary": {}, "staging": nil}
 	want := []string{"canary", "prod", "staging"}
