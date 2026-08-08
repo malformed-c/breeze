@@ -26,12 +26,12 @@ stdout '"name":\s*"carol"[\s\S]*"builder"'
 # A wrong EXPLICIT token still overrides (and fails) rather than silently
 # falling back to the bound one.
 ! exec breeze assign role reviewer carol --token-file wrong.token
-stderr 'authentication failed'
+stderr 'token rejected'
 
 # Switching --as to an identity the session ISN'T bound to must NOT silently
 # reuse admin's bound token to authenticate as carol.
 ! exec breeze assign role reviewer carol --as carol
-stderr 'this operation requires --as and --token'
+stderr 'requires an identity AND its token'
 
 exec breeze stop
 

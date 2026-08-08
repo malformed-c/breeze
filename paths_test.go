@@ -319,3 +319,53 @@ func runIn(t *testing.T, dir string, name string, args ...string) {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
 	}
 }
+
+// `stage start <pipeline> <stage> HEAD` used to record against the literal string
+// "HEAD": the stage ran, reported success, and stored its result under a key
+// belonging to no commit — so `stage status <the-real-sha>` read "ready" and a
+// deployer correctly refused a commit that had in fact just passed its gate. Two
+// agents hit that in one day. Any commit-ish git can resolve now becomes the sha.
+func TestResolveCommitResolvesCommitIshRefs(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
+	}
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "first")
+	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "second")
+	runIn(t, repo, "git", "tag", "v9.9.9")
+
+	restore := chdir(t, repo)
+	defer restore()
+
+	head := strings.TrimSpace(mustOutput(t, "git", "rev-parse", "HEAD"))
+	parent := strings.TrimSpace(mustOutput(t, "git", "rev-parse", "HEAD~1"))
+
+	for _, c := range []struct{ raw, want string }{
+		{"HEAD", head},
+		{"HEAD~1", parent},
+		{"v9.9.9", head}, // a tag is a commit-ish too, and the pipeline is sha-keyed
+		{head[:8], head}, // the abbreviated-sha case that already worked
+		{head, head},     // a full sha short-circuits without shelling out
+	} {
+		if got := resolveCommit(c.raw); got != c.want {
+			t.Errorf("resolveCommit(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+
+	// A key git can't resolve is still passed through untouched — the daemon has no
+	// git awareness, and synthetic keys are a supported way to drive a pipeline.
+	for _, raw := range []string{"livetest-1", "not-a-ref-at-all"} {
+		if got := resolveCommit(raw); got != raw {
+			t.Errorf("resolveCommit(%q) = %q, want it passed through unchanged", raw, got)
+		}
+	}
+}
+
+func mustOutput(t *testing.T, name string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(name, args...).Output()
+	if err != nil {
+		t.Fatalf("%s %v: %v", name, args, err)
+	}
+	return string(out)
+}

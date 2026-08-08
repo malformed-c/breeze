@@ -295,7 +295,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 	// actually wrong, never the absence of one.
 	if req.As != "" && req.Token != "" && !credentialExempt[req.Op] {
 		if _, err := d.eng.VerifyToken(req.As, req.Token); err != nil {
-			return errResponse(fmt.Errorf("%w for identity %q — the credential you passed is not valid (check it with `breeze check auth --as %s --token T`)", err, req.As, req.As))
+			return errResponse(tokenRejected(req.As))
 		}
 	}
 
@@ -502,13 +502,22 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+		// Silently ignoring --force on a stage that has no gates to force would be
+		// the worst kind of no-op: the caller believes a gate was skipped.
+		if p.Force && pipeline.Stages[i].Type != engine.StageDeploy {
+			return errResponse(fmt.Errorf("--force applies to deploy stages only; %q is a %s stage (for a command stage, `debug = true` in the pipeline is the standing exemption from ordering)", p.Stage, pipeline.Stages[i].Type))
+		}
 		var inst *engine.StageInstance
 		var err error
 		switch pipeline.Stages[i].Type {
 		case engine.StageCommand:
 			inst, err = d.eng.StartCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
 		case engine.StageDeploy:
-			inst, err = d.eng.StartDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			if p.Force {
+				inst, err = d.eng.ForceDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			} else {
+				inst, err = d.eng.StartDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			}
 		default:
 			return errResponse(fmt.Errorf("stage %q is not a command/deploy stage; use stage.approve", p.Stage))
 		}
@@ -802,13 +811,33 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 
 // requireAdmin enforces the Tier-2 gate: As+Token must both be present and verify,
 // and the resulting identity must hold the "admin" role. Used by every admin-only op.
+// tokenRejected is the single wording for a credential the daemon won't accept. It
+// says the one thing the caller doesn't already know (what could have made a token
+// they believed in stop working) and then how to get a working one. It deliberately
+// does NOT suggest `breeze check auth`: that would only repeat this same answer,
+// and advice whose outcome is the message you're already reading is worse than no
+// advice. The ambiguity is called out rather than papered over — VerifyToken
+// refuses to distinguish an unknown identity from a wrong token (anti-enumeration),
+// so "I definitely registered that name" is not evidence against this message.
+func tokenRejected(name string) error {
+	return fmt.Errorf("token rejected for %q — either it's the wrong token, or %q's token was rotated or revoked since you got it (an unregistered name is deliberately indistinguishable from a bad token here). To mint a fresh one: `breeze register identity %s --as %s --token <current>`, or have an admin do it with --force",
+		name, name, name, name)
+}
+
 func (d *daemonServer) requireAdmin(req wire.Request) error {
 	id, err := d.requireTier2(req)
 	if err != nil {
 		return err
 	}
 	if !id.HasRole("admin") {
-		return fmt.Errorf("requires admin role")
+		held := "no roles at all"
+		if len(id.Roles) > 0 {
+			held = "holds " + strings.Join(rolesToStrings(id.Roles), ", ")
+		}
+		// "requires admin role" named neither who was refused nor what they had,
+		// which is the same silence `assign role`'s bare "not found" had: true, and
+		// useless for deciding what to do next.
+		return fmt.Errorf("identity %q lacks the \"admin\" role this operation requires (%s) — an existing admin can grant it with `breeze assign role admin %s`", id.Name, held, id.Name)
 	}
 	return nil
 }
@@ -843,7 +872,7 @@ func (d *daemonServer) requireTier2ForStage(req wire.Request, stage engine.Stage
 // Tier-1 only. Returns the verified identity on success.
 func (d *daemonServer) requireTier2(req wire.Request) (*engine.Identity, error) {
 	if req.As == "" || req.Token == "" {
-		return nil, fmt.Errorf("this operation requires --as and --token")
+		return nil, fmt.Errorf("this operation requires an identity AND its token: pass --as NAME with --token T or --token-file PATH (a session that ran `breeze register identity` is bound to both and can omit them)")
 	}
 	return d.eng.VerifyToken(req.As, req.Token)
 }

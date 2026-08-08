@@ -358,6 +358,7 @@ type DeployOutcome string
 const (
 	DeploySucceeded     DeployOutcome = "succeeded"
 	DeployRolledBack    DeployOutcome = "rolled_back" // succeeded via RollbackDeployStage, not a forward deploy
+	DeployForced        DeployOutcome = "forced"      // succeeded with the ordering gates deliberately skipped (--force)
 	DeployFailed        DeployOutcome = "failed"
 	DeployRejectedStale DeployOutcome = "rejected_stale"
 	DeployRejectedLock  DeployOutcome = "rejected_lock"

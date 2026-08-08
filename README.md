@@ -239,16 +239,25 @@ Three stage types:
 Everything (a build script, a CI check, a Slack ping) is just an admin-configured
 command — breeze has zero built-in knowledge of git, GitHub, or any CI system.
 
-#### Short commit SHAs
+#### Short commit SHAs and other commit-ish arguments
 
-Any `<commit>` CLI argument accepts either a full SHA or an abbreviated prefix (4+
-hex chars) — the CLI expands it client-side via `git rev-parse` (in whatever repo
-your current directory is inside) before sending it to the daemon, so `start stage
+Any `<commit>` CLI argument accepts a full SHA, an abbreviated prefix, or anything
+else git resolves to a commit — `HEAD`, `HEAD~2`, a branch name, a tag. The CLI
+resolves it client-side via `git rev-parse` (in whatever repo your current directory
+is inside) before sending it to the daemon, so `start stage
 build abc1234` and `status stage build abc1234def...` for the same commit always
 resolve to the identical stage instance. This is a CLI-side convenience only: the
 daemon itself has no git awareness and treats a commit as an opaque string, so
-anything that isn't a plausible abbreviated SHA (a version tag, a synthetic key
-like `livetest-1`) passes through unchanged. Human-readable output (plain-text, not
+anything git can't resolve (a synthetic key like `livetest-1`) passes through
+unchanged.
+
+Resolving `HEAD` and friends rather than passing them through is a fix, not a
+convenience: `stage start <pipeline> <stage> HEAD` used to record against the
+literal string `"HEAD"`, so the stage ran, printed `succeeded`, and stored its
+result under a key belonging to no commit — `stage status <the-real-sha>` then read
+`ready`, and a deployer correctly refused a commit whose gate had just passed. Two
+agents hit that in one day; the cheerful green is what made it expensive, since
+nothing prompts you to doubt a success. Human-readable output (plain-text, not
 `--json`) shows commits truncated to 12 characters for readability; `--json` output
 always shows the full value, since callers may need to pass it back verbatim.
 
@@ -721,6 +730,35 @@ stopped:
   race: stage failed
   not reached (prerequisite unmet): package
 ```
+
+### Forcing a deploy past its gates
+
+```sh
+breeze start stage release deploy abc123 --env prod --force \
+  --brief "sev1: prod is down and the review board is asleep" --as ci --token T
+```
+
+Break glass. `--force` skips exactly three things — Gate 1 (so an **unapproved**
+commit can go out), Gate 2 (environment dependencies) and the monotonic staleness
+rule — and skips nothing else: the actor still needs the deploy role, the run still
+takes the `(target, environment)` exclusivity lock, and the stage's `pre_gate` hooks
+still run and can still stop it. A written `--brief` is **required**; the record is
+the entire point, and a forced deploy nobody gave a reason for is the one every
+post-mortem asks about.
+
+It's recorded as `Outcome: forced` in `list deploys`, with its own
+`stage.deploy.forced` audit line naming the actor and the reason, and it becomes the
+new baseline for the staleness rule (whatever was forced out is what's live).
+
+**This grants no authority that didn't already exist.** `rollback deploy` has always
+skipped the same three gates for anyone holding the deploy role, so "deploy an
+unreviewed commit" was already reachable by calling it a rollback. What `--force`
+adds is an honest name and an honest record, instead of a forward deploy filed in
+the history as a rollback. If you want deploys to be genuinely un-forceable, the
+lever is RBAC — don't hand out the deploy role — not the absence of this flag.
+
+`--force` on a command or approval stage is an error rather than a silent no-op; for
+a command stage the standing equivalent is `debug = true` in the pipeline.
 
 ### Rolling back
 

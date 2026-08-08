@@ -50,8 +50,8 @@ func TestBogusCredentialIsRejectedOnATier1Read(t *testing.T) {
 	if resp.OK {
 		t.Fatalf("a bogus token must be rejected, not accepted and ignored")
 	}
-	if !strings.Contains(resp.Error, "not valid") {
-		t.Fatalf("the rejection should say the credential is invalid, got %q", resp.Error)
+	if !strings.Contains(resp.Error, "token rejected") {
+		t.Fatalf("the rejection should name what was rejected and how to recover, got %q", resp.Error)
 	}
 	// Same for a name that was never registered.
 	if resp := d.dispatch(wire.Request{Op: wire.OpPipelineList, As: "no-such-agent-zzq", Token: zeros}); resp.OK {

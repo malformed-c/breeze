@@ -257,7 +257,15 @@ breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]
 
 Any `<commit>` argument accepts a short (4+ hex char) or full SHA — the CLI expands
 it client-side against your cwd's git repo before sending it, so a short and full
-form for the same commit always hit the same stage instance. Plain-text output
+form for the same commit always hit the same stage instance.
+**Commit-ish arguments resolve to a SHA.** `HEAD`, `HEAD~2`, a branch, a tag and an
+abbreviated sha all resolve client-side before the daemon sees them; anything git
+can't resolve (a synthetic key) passes through. This was a real trap: `stage start
+... HEAD` used to record against the literal string `"HEAD"` and report success, so
+`stage status <the-real-sha>` read `ready` and a deployer refused a commit that had
+just passed. If you see a stage instance keyed to something that isn't a sha, it
+came from a breeze older than this.
+ Plain-text output
 shows commits truncated to 12 chars; `--json` always shows the full value.
 
 `start stage`/`approve` only need `--token` if the target stage actually has a
@@ -343,6 +351,24 @@ instance a full-SHA `start stage` created. Only `approve` — never
 deploy/rollback/cancel via chat. Subscriptions are established once at daemon
 startup, so a newly added `command_topic` needs a `breeze restart daemon` to
 take effect.
+
+### Forcing a deploy past its gates
+
+```sh
+breeze start stage <pipeline> <deploy-stage> <commit> --env NAME --force \
+  --brief "why this is going out without its gates" --as <who> --token-file <path>
+```
+
+Break glass. Skips Gate 1 (so an UNAPPROVED commit can go out), Gate 2 and the
+staleness rule — and nothing else: the deploy role is still required, the
+(target,environment) lock is still taken, `pre_gate` hooks still run and can still
+stop it. `--brief` is mandatory. Recorded as `outcome: forced` in `list deploys`
+plus its own audit line, and it becomes the new staleness baseline.
+
+It grants no authority `rollback deploy` didn't already grant (same three gates,
+same role) — it just stops a forward deploy from being filed in the history as a
+rollback. If deploys should be un-forceable, the lever is not handing out the deploy
+role. `--force` on a non-deploy stage is an error, not a no-op.
 
 ### Rolling back a bad deploy
 

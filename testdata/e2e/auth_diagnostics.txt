@@ -43,9 +43,9 @@ stdout 'ready|has not run'
 
 # bogus token: an error now, not a silently-identical success
 ! exec breeze status stage demo build abc123 --as ci --token-file zeros.token
-stderr 'not valid'
+stderr 'token rejected'
 ! exec breeze status stage demo build abc123 --as no-such-agent-zzq --token-file zeros.token
-stderr 'not valid'
+stderr 'token rejected'
 
 # an unreadable --token-file says so rather than being treated as "no token"
 ! exec breeze status stage demo build abc123 --as ci --token-file no-such-file.token

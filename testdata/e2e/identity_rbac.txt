@@ -24,6 +24,6 @@ stdout '"name":\s*"alice"[\s\S]*"reviewer"'
 
 # A non-admin can't assign roles.
 ! exec breeze assign role reviewer alice --as alice --token-file alice.token
-stderr 'requires admin'
+stderr 'lacks the .admin. role'
 
 exec breeze stop

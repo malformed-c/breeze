@@ -229,6 +229,12 @@ func usage() {
 
 -- stages --
   start stage   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  start stage   <pipeline> <deploy-stage> <commit> --env NAME --force --brief "why"
+                                         # break glass: deploy skipping the review,
+                                         # environment-dependency and staleness gates.
+                                         # Keeps RBAC, the (target,environment) lock and
+                                         # pre-gate hooks; requires a written reason, and
+                                         # is recorded as outcome "forced" in deploy history
   approve stage <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
   status stage  <pipeline> <stage> <commit> [--env NAME] [--json]
   wait stage    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
@@ -2216,7 +2222,7 @@ func cmdStage(p paths, args []string) error {
 		op := wire.OpStageStart
 		var payload []byte
 		if sub == "start" {
-			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
+			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief, Force: f.force})
 		} else {
 			op = wire.OpStageApprove
 			payload, _ = json.Marshal(wire.StageApproveRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})

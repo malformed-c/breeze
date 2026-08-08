@@ -138,9 +138,10 @@ func detectGitToplevel() (string, bool) {
 // tag, anything a caller with no git repo at all might use) is never mistaken
 // for a ref and silently resolved to something unrelated.
 func looksLikeAbbreviatedSHA(s string) bool {
-	if len(s) < 4 || len(s) >= 40 {
-		return false
-	}
+	return len(s) >= 4 && len(s) < 40 && isHex(s)
+}
+
+func isHex(s string) bool {
 	for _, r := range s {
 		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
 			return false
@@ -168,13 +169,36 @@ func expandCommit(ref string) (string, bool) {
 // or error a command, since breeze's commit key has to keep working for non-git
 // callers exactly as before.
 func resolveCommit(raw string) string {
-	if !looksLikeAbbreviatedSHA(raw) {
+	if raw == "" || isFullSHA(raw) {
 		return raw
 	}
+	// Anything git can resolve to a commit becomes that commit's SHA — an
+	// abbreviated sha, but also HEAD, HEAD~2, a branch name, a tag. This used to be
+	// gated on "looks like an abbreviated sha", which quietly made `stage start
+	// <pipeline> <stage> HEAD` record against the literal STRING "HEAD": the stage
+	// ran, printed "succeeded", and stored its result under a key belonging to no
+	// commit. `stage status <the-actual-sha>` then read "ready", so a gate that had
+	// just passed looked untested and a deployer correctly refused it — and a
+	// phantom "HEAD" instance accumulated in `breeze operator` for every person who
+	// did it. Two agents hit that in one day; the cheerful green is what made it
+	// expensive, since nothing prompts you to doubt a success.
+	//
+	// Anything git DOESN'T resolve still passes through untouched, so a synthetic
+	// key ("livetest-1") and a caller outside any git repo both keep working —
+	// the daemon has no git awareness and treats a commit as an opaque string.
 	if full, ok := expandCommit(raw); ok {
 		return full
 	}
 	return raw
+}
+
+// isFullSHA short-circuits the common case (a caller passing an exact 40-char sha)
+// without shelling out to git at all.
+func isFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	return isHex(s)
 }
 
 // shortCommitForDisplay truncates a commit string to a 12-char prefix for

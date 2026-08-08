@@ -1,0 +1,65 @@
+# --force is the break-glass forward deploy: it skips the review, environment-
+# dependency and staleness gates and NOTHING else. It grants no authority that
+# didn't already exist — `rollback deploy` has always skipped the same three for
+# anyone holding the deploy role — but it names the decision honestly and records
+# it as "forced" instead of filing a forward deploy in the history as a rollback.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze assign role deployer ci --as admin --token-file admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# A normal deploy is correctly gated on the review that hasn't happened.
+! exec breeze start stage svc deploy abc123 --env prod --as ci --token-file ci.token
+stderr 'prerequisite "review"'
+
+# --force without a written reason is refused: the record is the whole point.
+! exec breeze start stage svc deploy abc123 --env prod --force --as ci --token-file ci.token
+stderr 'requires a written reason'
+
+# With one, it goes out.
+exec breeze start stage svc deploy abc123 --env prod --force --brief 'sev1: prod is down, review board asleep' --as ci --token-file ci.token
+stdout 'deploy: succeeded'
+
+# Recorded as forced — distinguishable from both a normal deploy and a rollback.
+exec breeze list deploys svc deploy --env prod --json
+stdout '"outcome":\s*"forced"'
+
+# It is not a way around authorization.
+exec breeze register identity nobody
+cp stdout nobody.token
+! exec breeze start stage svc deploy def456 --env prod --force --brief 'trying it on' --as nobody --token-file nobody.token
+stderr 'lacks required role'
+
+# ...nor a flag you can wave at a stage that has no ordering gates to skip: a
+# silent no-op there would leave the caller believing a gate was bypassed.
+! exec breeze start stage svc build abc123 --force --brief 'why' --as ci --token-file ci.token
+stderr 'applies to deploy stages only'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "svc" {
+  environments = ["prod"]
+
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+  stage "deploy" {
+    type          = "deploy"
+    fans_out      = true
+    required_role = "deployer"
+    timeout       = "10s"
+    command       = ["/bin/true", "{commit}", "{environment}"]
+  }
+}

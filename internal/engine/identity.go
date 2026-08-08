@@ -9,7 +9,10 @@ import (
 
 // ErrAuth is returned for any identity/token failure. Deliberately generic — it never
 // distinguishes "unknown identity" from "wrong token," to avoid identity enumeration.
-var ErrAuth = fmt.Errorf("authentication failed")
+// The daemon wraps this into something actionable before it reaches a human (see
+// tokenRejected); the bare text is the sentinel, and reaches a caller directly only
+// on the identity.register rotation path, so it says what that caller needs.
+var ErrAuth = fmt.Errorf("authentication failed: wrong token for that identity, or it was rotated/revoked since")
 
 // RegisterIdentity mints a new random token for name, stores only its hash, and
 // returns the plaintext token for the caller to print exactly once. Re-registering an

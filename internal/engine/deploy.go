@@ -32,7 +32,30 @@ func deployHistoryKey(pipeline, stage, environment string) string {
 // duration of the run, reusing the exact same lock engine as file locks — not a
 // second exclusivity implementation.
 func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
-	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, false)
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployNormal)
+}
+
+// ForceDeployStage is the break-glass forward deploy: it skips Gate 1 (so an
+// unapproved commit can go out), Gate 2 and the staleness rule, and skips NOTHING
+// else — the actor still needs the deploy role, still takes the (target,environment)
+// exclusivity lock, and the stage's pre-gate hooks still run and can still stop it.
+//
+// This grants no authority that didn't already exist: RollbackDeployStage has always
+// skipped the same three gates for anyone holding the deploy role, so "deploy an
+// unreviewed commit" was reachable by calling it a rollback. What --force adds is an
+// honest name and an honest record — Outcome: DeployForced, its own audit line, and
+// a required reason — instead of a forward deploy filed in the history as a
+// rollback. brief is mandatory here for exactly that reason: the record is the
+// entire point, and a forced deploy nobody wrote a reason for is the one every
+// post-mortem asks about.
+func (e *Engine) ForceDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+	if strings.TrimSpace(brief) == "" {
+		return nil, gateErr("a forced deploy requires a written reason: pass --brief \"why this is going out without its gates\"")
+	}
+	e.mu.Lock()
+	e.audit("stage.deploy.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
+	e.mu.Unlock()
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployForce)
 }
 
 // RollbackDeployStage re-deploys commit to environment, deliberately bypassing Gate
@@ -52,7 +75,7 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 // and history records this explicitly as Outcome: DeployRolledBack, not
 // DeploySucceeded, so the audit trail shows it was a deliberate rollback.
 func (e *Engine) RollbackDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
-	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, true)
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployRollback)
 }
 
 // ClaimDeployLock lets actor reserve a deploy stage's (target,environment)
@@ -140,7 +163,26 @@ func conflictErr(subject, verb string, held *FileLock) error {
 		subject, verb, held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
 }
 
-func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, isRollback bool) (*StageInstance, error) {
+// DeployOverride names WHY a deploy is skipping gates it would normally have to
+// pass. Every override skips exactly the same set — Gate 1 (the predecessor, i.e.
+// the review approval), Gate 2 (environment dependencies) and the monotonic
+// ordering rule — and none of them ever skips RBAC, the (target,environment)
+// exclusivity lock, or the stage's own pre-gate hooks. They differ only in what
+// gets RECORDED, which is the entire reason they're separate values rather than a
+// bool: a rollback and a break-glass forward deploy are different decisions, and
+// six months later the deploy history is the only thing that remembers which one
+// someone made.
+type DeployOverride int
+
+const (
+	DeployNormal   DeployOverride = iota // every gate applies
+	DeployRollback                       // deliberately going backwards; see RollbackDeployStage
+	DeployForce                          // break glass: forward, but the gates are being skipped on purpose
+)
+
+func (o DeployOverride) skipsGates() bool { return o != DeployNormal }
+
+func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, override DeployOverride) (*StageInstance, error) {
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
@@ -171,7 +213,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		}
 	}
 
-	if !isRollback {
+	if !override.skipsGates() {
 		if ok, reason := e.checkPrerequisite(p, i, key); !ok {
 			e.mu.Unlock()
 			return nil, gateErr("%s", reason)
@@ -196,7 +238,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	// as an explicit rollback (one-off override): neither respects staleness
 	// rejection, and neither updates lastDeployedSeq via the normal "only ever
 	// increases" rule. RBAC (checked above) still fully applies either way.
-	skipOrdering := isRollback || slices.Contains(p.DebugEnvironments, environment)
+	skipOrdering := override.skipsGates() || slices.Contains(p.DebugEnvironments, environment)
 
 	if !skipOrdering && commitSeq < e.lastDeployedSeq[lastSeqKey] {
 		e.deployHistory[histKey] = append(e.deployHistory[histKey], DeployRecord{
@@ -308,12 +350,20 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	} else {
 		inst.Status = StageSucceeded
 		switch {
-		case isRollback:
+		case override == DeployRollback:
 			// Set unconditionally, not just-if-greater: the rollback target is now
 			// genuinely the live state, even though its seq may be LOWER than what
 			// was previously recorded — that's the whole point of rolling back.
 			e.lastDeployedSeq[lastSeqKey] = commitSeq
 			outcome = DeployRolledBack
+		case override == DeployForce:
+			// Same reasoning: whatever was just forced out IS what's live now, so it
+			// becomes the baseline the next ordering check measures against —
+			// including when it's older than what it replaced. Leaving the old,
+			// higher seq in place would silently re-arm the staleness gate against
+			// the commit that is actually deployed.
+			e.lastDeployedSeq[lastSeqKey] = commitSeq
+			outcome = DeployForced
 		case !skipOrdering && commitSeq > e.lastDeployedSeq[lastSeqKey]:
 			e.lastDeployedSeq[lastSeqKey] = commitSeq
 		}

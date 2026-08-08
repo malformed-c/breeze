@@ -391,6 +391,10 @@ type StageStartRequest struct {
 	Commit      string `json:"commit"`
 	Environment string `json:"environment,omitempty"`
 	Brief       string `json:"brief,omitempty"`
+	// Force is the break-glass forward deploy (deploy-type stages only): skip the
+	// review/env-dependency/staleness gates, keeping RBAC, the exclusivity lock and
+	// pre-gate hooks. Requires Brief. See engine.ForceDeployStage.
+	Force bool `json:"force,omitempty"`
 }
 type StageStartResponse struct {
 	Instance StageInstance `json:"instance"`
