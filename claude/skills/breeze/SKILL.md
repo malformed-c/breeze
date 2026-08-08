@@ -367,7 +367,14 @@ plus its own audit line, and it becomes the new staleness baseline.
 
 It grants no authority `rollback deploy` didn't already grant (same three gates,
 same role) — it just stops a forward deploy from being filed in the history as a
-rollback. If deploys should be un-forceable, the lever is not handing out the deploy
+rollback.
+
+**If a flag seems not to work, check the daemon's age before concluding it means
+something else.** A daemon older than a flag used to silently drop it, so `--force`
+came back as an ordinary gate refusal — an agent read that as "--force is for
+unsticking stuck instances" and hand-deployed around breeze. The CLI now refuses
+instead, naming `breeze restart daemon`. Note the daemon does the gating, so a
+current binary talking to a stale daemon is the case to watch. If deploys should be un-forceable, the lever is not handing out the deploy
 role. `--force` on a non-deploy stage is an error, not a no-op.
 
 ### Rolling back a bad deploy

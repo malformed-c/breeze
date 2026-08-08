@@ -2069,6 +2069,29 @@ func (r *pipelineRun) summarize() error {
 // deps: ...") were only inferable from HCL declaration order, so a stage attempt
 // that was correctly rejected still felt unanticipated. --json still returns the
 // raw wire.Pipeline (unchanged) for tooling; this is the plain-text default.
+// requireDaemonFeature refuses to send a request carrying a flag the daemon on the
+// other end cannot honor, naming the fix. encoding/json drops an unknown field
+// without a word, so without this check a flag against an older daemon behaves
+// EXACTLY like not passing it — which is how `--force` came back as a plain gate
+// refusal and got read as "--force doesn't mean that", followed by a hand-deploy
+// around breeze entirely. Failing loudly costs one ping; failing silently cost an
+// agent its trust in the flag.
+func requireDaemonFeature(p paths, feature, flag string) error {
+	resp, err := call(p, wire.Request{Op: wire.OpPing})
+	if err != nil {
+		return err
+	}
+	ping, err := decodePayload[wire.PingResponse](resp)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(ping.Features, feature) {
+		return nil
+	}
+	return fmt.Errorf("this daemon (pid %d, built %s) predates %s and would IGNORE it, refusing the request rather than doing something other than what you asked — restart it onto the current binary with `breeze restart daemon` (or `breeze restart daemons` for every daemon on this machine)",
+		ping.Pid, versionString(ping.Version, ping.BuildTime), flag)
+}
+
 // machineLimits asks the daemon for its machine-level limit floor, best-effort: a
 // failure here must never turn a working `show pipeline` into an error, so it
 // degrades to "no floor known" rather than propagating.
@@ -2222,6 +2245,11 @@ func cmdStage(p paths, args []string) error {
 		op := wire.OpStageStart
 		var payload []byte
 		if sub == "start" {
+			if f.force {
+				if err := requireDaemonFeature(p, wire.FeatureForceDeploy, "--force"); err != nil {
+					return err
+				}
+			}
 			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief, Force: f.force})
 		} else {
 			op = wire.OpStageApprove
@@ -2684,6 +2712,13 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 	wait, err := f.waitMode()
 	if err != nil {
 		return err
+	}
+	// Same trap, opposite direction: an old daemon ignores Wait and queues forever,
+	// so a caller who asked to fail fast would hang instead.
+	if wait || f.timeout != "" || f.tryLock {
+		if err := requireDaemonFeature(p, wire.FeatureLockTryWait, "--try/--wait/--timeout on `exec lock`"); err != nil {
+			return err
+		}
 	}
 	payload, _ := json.Marshal(wire.LockExecRequest{Paths: lockPaths, Shared: f.shared, Wait: wait, Timeout: f.timeout})
 	resp, err := callOnConn(conn, wire.Request{Op: wire.OpLockExec, As: as, Payload: payload})

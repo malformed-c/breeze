@@ -760,6 +760,17 @@ lever is RBAC — don't hand out the deploy role — not the absence of this fla
 `--force` on a command or approval stage is an error rather than a silent no-op; for
 a command stage the standing equivalent is `debug = true` in the pipeline.
 
+**A daemon that predates a flag refuses the request instead of ignoring it.** New
+request fields are dropped by `encoding/json` without a word, so `--force` against an
+older daemon used to behave *exactly* like not passing it — a plain gate refusal,
+indistinguishable from the flag meaning something else. That is not hypothetical: an
+agent hit it, concluded `--force` was for unsticking a stuck instance rather than
+bypassing gates, and started hand-deploying around breeze. Daemons now advertise what
+they can honor (`ping`'s `features`), and the CLI refuses to send a flag the daemon
+would drop, naming the fix (`breeze restart daemon`, or `breeze restart daemons` for
+every daemon on the machine). The same check covers `exec lock`'s `--try/--wait/
+--timeout`, where an old daemon would queue forever instead of failing fast.
+
 ### Rolling back
 
 ```sh
@@ -1203,6 +1214,13 @@ authority it already legitimately holds. Concretely:
   cover pipelines registered before it existed and ones registered through the raw
   JSON path — and deliberately isn't baked into the stored definition, which would
   make every re-apply look like a diff.
+- Version skew is handled by **advertised features, not version comparison**
+  (`wire.Features()`): a daemon says what it can honor, and the CLI refuses to send
+  anything else. Comparing build timestamps would be fragile (an ad-hoc `go build`
+  has none) and, worse, would still be guessing — a feature list is the daemon
+  answering for itself. The rule this encodes: a flag must never be silently
+  dropped, because a silently-dropped flag is indistinguishable from a flag that
+  means something other than what you thought.
 - Credential verification is **one check in `dispatch`**, not per-op: if a request
   carries both `As` and `Token`, they must verify, whatever the op. Doing it per-op
   is what produced the gap in the first place — every Tier-1 read simply never

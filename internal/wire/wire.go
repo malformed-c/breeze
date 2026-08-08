@@ -83,6 +83,16 @@ type Response struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// Feature names for PingResponse.Features. Add one whenever a NEW request field
+// would otherwise be silently ignored by a daemon that predates it.
+const (
+	FeatureForceDeploy = "force-deploy"  // StageStartRequest.Force
+	FeatureLockTryWait = "lock-try-wait" // LockExecRequest.Wait/Timeout
+)
+
+// Features is what a daemon built from this source advertises.
+func Features() []string { return []string{FeatureForceDeploy, FeatureLockTryWait} }
+
 // CodeLockConflict marks a failure caused purely by someone else holding a
 // conflicting lock — the one error class a retry can actually resolve.
 const CodeLockConflict = "lock_conflict"
@@ -93,6 +103,15 @@ type PingResponse struct {
 	Pid       int    `json:"pid"`
 	Version   string `json:"version"`
 	BuildTime string `json:"buildTime,omitempty"`
+	// Features names what this daemon can actually honor. A request field an older
+	// daemon doesn't know is silently DROPPED by encoding/json — so `--force`
+	// against a daemon that predates it produced a gate refusal identical to not
+	// passing it at all, and a peer agent reasonably concluded the flag meant
+	// something else and hand-deployed around breeze entirely. A flag that looks
+	// accepted and does nothing is the worst kind of silence. Clients check here
+	// before sending anything the daemon might not understand; an old daemon
+	// returns no features, which is exactly the right answer.
+	Features []string `json:"features,omitempty"`
 	// DefaultResourceLimits is this daemon's machine-level limit floor
 	// (<state-dir>/defaults.hcl), applied under every command it runs. Carried on
 	// ping because it's a fact about the DAEMON, not about any pipeline — and

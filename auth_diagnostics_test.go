@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -142,5 +143,29 @@ func TestHelpForCommand(t *testing.T) {
 	}
 	if _, ok := helpForCommand([]string{"frobnicate", "--help"}); ok {
 		t.Errorf("an unknown command has no help to give here")
+	}
+}
+
+// A request field an older daemon doesn't know is dropped by encoding/json without
+// a word, so a new flag against an old daemon behaves EXACTLY like not passing it.
+// That is how `--force` came back as a plain gate refusal, got read as "--force
+// doesn't mean that", and ended in a hand-deploy around breeze entirely. Clients
+// check these before sending such a flag; a daemon that predates the feature
+// advertises nothing, which is the correct answer.
+func TestPingAdvertisesFeatures(t *testing.T) {
+	d := newDispatchServer(t)
+	resp := d.dispatch(wire.Request{Op: wire.OpPing})
+	out, err := decodePayload[wire.PingResponse](resp)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, want := range []string{wire.FeatureForceDeploy, wire.FeatureLockTryWait} {
+		if !slices.Contains(out.Features, want) {
+			t.Errorf("ping should advertise %q, got %v", want, out.Features)
+		}
+	}
+	// Every advertised feature must be one a client can actually ask about.
+	if len(wire.Features()) == 0 {
+		t.Fatalf("wire.Features() is empty, so no client check can ever succeed")
 	}
 }
