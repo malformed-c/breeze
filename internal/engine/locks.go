@@ -190,9 +190,21 @@ func (e *Engine) lockOnKeyLocked(key string) *FileLock {
 // Meanwhile the fleet acquires exactly that name as a FILE lock (`acquire lock
 // guards-sweep`), so a stage declaring requires_lock = "guards-sweep" would have
 // refused the one person legitimately holding it while letting everyone else past.
-// A gate whose refusals are anti-correlated with the thing it guards is worse than
-// no gate. Found because periapsis-fable asked an unrelated question about restarts
-// and named the lock's kind in passing.
+//
+// That is not a WEAK gate, it is an INVERTED one: every refusal wrong and every pass
+// wrong in the same run, 0% accuracy, still shaped exactly like a guard. And the
+// population it blocks is the population with standing to report it — the people
+// doing the right thing — while everyone bypassing the lock sails through with
+// nothing to complain about. An inverted check therefore accrues a reputation for
+// being strict rather than a bug report, which is why this is written down here and
+// not only in a changelog (coordinator's framing, sharper than my own).
+//
+// Two things about how it was caught, both worth imitating. The cause was a REASONED
+// canonicalization I never spent one line checking — comfortable reasoning is where
+// the cheap check gets skipped, not hard reasoning. And no test of mine could have
+// found it, because the tests and the gate shared the assumption; it took
+// periapsis-fable asking about lock kinds for an unrelated reason. Cross-subsystem
+// questions have value neither subsystem can generate on its own.
 //
 // This is still an EXACT key match, not a heuristic — the whole point of the gate is
 // that two actors naming the same string are talking about the same thing.

@@ -121,9 +121,14 @@ func restartDaemon(p paths, force bool) error {
 func restartViaConn(p paths, conn net.Conn, force bool) error {
 	// A daemon too old to know about the guard restarts regardless, so the caller
 	// who was relying on being stopped gets nothing — the same silent-noop shape as
-	// a dropped --force. WARNED and not refused, deliberately: refusing would make
-	// it impossible to restart an old daemon onto a new binary, so the safety check
-	// would block its own rollout. One line on stderr, then proceed.
+	// a dropped --force. WARNED and not refused, deliberately: refusing would guard
+	// the very path by which the guard arrives. A check whose precondition is that
+	// the check is already deployed can never be deployed — a one-way latch, and the
+	// wrong side of it is the side you cannot get off (coordinator's framing).
+	//
+	// Not a dead branch: all three of tonight's restarts printed this, which is the
+	// record stating, at the moment it mattered, that the protection the operator
+	// believed was in force was not there yet. One line on stderr, then proceed.
 	if !force {
 		// A fresh dial, NOT this conn: the daemon serves one request per connection,
 		// so probing on the connection the restart is about to use consumes it.

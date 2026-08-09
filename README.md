@@ -321,6 +321,10 @@ The check *answered*, and the next command ran regardless. A check whose answer
 nothing consumes is not a check, it is a print statement. breeze owns both halves, so
 it couples them — the same argument as `requires_lock`, applied to the restart path.
 
+Against a daemon too old to have the guard, the client **warns** rather than refuses.
+Refusing would guard the very path by which the guard arrives: a check whose
+precondition is that the check is already deployed can never be deployed.
+
 #### What retention keeps
 
 A daemon's state grows with every stage run, so older runs have their captured
