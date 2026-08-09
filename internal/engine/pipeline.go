@@ -88,6 +88,13 @@ func validatePipeline(p *Pipeline) error {
 			if s.ApprovalPolicy == nil {
 				return fmt.Errorf("pipeline %q stage %q: approval stage requires ApprovalPolicy", p.Name, s.Name)
 			}
+			// An approval executes nothing, so there is no work to serialize and the
+			// requirement would silently never be enforced. Refused here rather than
+			// ignored at run time: a lock requirement that quietly does nothing is
+			// worse than no lock requirement, because the config says it is protected.
+			if s.RequiresLock != "" {
+				return fmt.Errorf("pipeline %q stage %q: requires_lock is not meaningful on an approval stage — approving runs no command, so there is nothing to serialize; put it on the command or deploy stage that does the work", p.Name, s.Name)
+			}
 			if s.ApprovalPolicy.RequiredApprovals < 1 {
 				return fmt.Errorf("pipeline %q stage %q: requiredApprovals must be >= 1", p.Name, s.Name)
 			}

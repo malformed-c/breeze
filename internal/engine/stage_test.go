@@ -599,3 +599,42 @@ func TestEveryReadPathMarksStoredInstancesAsRecorded(t *testing.T) {
 		}
 	}
 }
+
+// A projection can only ever come out as "ready" or "gate_failed": it is computing
+// what the GATES would say, and a gate never returns "succeeded" — only a completed
+// run produces that word. So `succeeded [no run recorded for this commit]` is not a
+// rendering choice to argue about, it is a contradiction, and every sighting of it
+// was the bug where a real record failed to be marked as one.
+//
+// That mattered: two agents drew OPPOSITE wrong conclusions from one such line on a
+// night one of them was deciding whether to deploy — one read it as a real pass, the
+// other as proof the annotation was broken. The bracket is a disclaimer and the
+// status word is the headline, and a skimmer takes the headline (trail-main's
+// framing). Rather than rely on that staying true by construction, pin it: if a
+// future path ever hands back an unrecorded instance carrying a run's verdict, this
+// fails here instead of in someone's deploy decision.
+func TestAProjectionNeverCarriesARunsVerdict(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	// Every stage, every key that has never run — across stage types and both sides
+	// of the fan-out point.
+	for _, c := range []struct{ stage, env string }{
+		{"build", ""}, {"review", ""}, {"deploy", "staging"}, {"deploy", "prod"}, {"test", "staging"},
+	} {
+		got, err := e.StageStatus("release", c.stage, "never-ran", c.env)
+		if err != nil {
+			t.Fatalf("status %s/%s: %v", c.stage, c.env, err)
+		}
+		if got.Recorded {
+			t.Fatalf("%s/%s: an untouched key must not be a record", c.stage, c.env)
+		}
+		switch got.Status {
+		case StageReady, StageGateFailed:
+			// Honest as projections: neither is a word a run produces.
+		default:
+			t.Errorf("%s/%s: a projection reported %q — only a completed run may emit that, and a reader takes the status word over the bracket beside it",
+				c.stage, c.env, got.Status)
+		}
+	}
+}

@@ -115,7 +115,7 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		Timeout:     d,
 		Debug:       w.Debug,
 		Needs:       w.Needs,
-		Convergence: engine.Convergence(w.Convergence),
+		Convergence: engine.Convergence(w.Convergence), RequiresLock: w.RequiresLock,
 	}
 	if w.Transform != nil {
 		h, err := hookFromWire(*w.Transform)
@@ -144,7 +144,7 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 	w := wire.StageDef{
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
-		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence),
+		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence), RequiresLock: s.RequiresLock,
 	}
 	if s.Transform != nil {
 		t := hookToWire(*s.Transform)

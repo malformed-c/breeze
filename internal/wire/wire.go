@@ -88,10 +88,13 @@ type Response struct {
 const (
 	FeatureForceDeploy = "force-deploy"  // StageStartRequest.Force
 	FeatureLockTryWait = "lock-try-wait" // LockExecRequest.Wait/Timeout
+	FeatureStageLock   = "stage-lock"    // StageDef.RequiresLock
 )
 
 // Features is what a daemon built from this source advertises.
-func Features() []string { return []string{FeatureForceDeploy, FeatureLockTryWait} }
+func Features() []string {
+	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock}
+}
 
 // CodeLockConflict marks a failure caused purely by someone else holding a
 // conflicting lock — the one error class a retry can actually resolve.
@@ -353,6 +356,12 @@ type StageDef struct {
 	// Convergence is "all" (default, empty) or "any" — how many of Needs must have
 	// succeeded. See engine.Convergence.
 	Convergence string `json:"convergence,omitempty"`
+	// RequiresLock is the resource lock the caller must already hold for this stage
+	// to start. See engine.StageDef.RequiresLock. Advertised as FeatureStageLock:
+	// an older daemon drops the field silently on apply, which would register a
+	// pipeline that LOOKS serialized and is not — the failure mode the feature
+	// exists to prevent, reintroduced by version skew.
+	RequiresLock string `json:"requiresLock,omitempty"`
 }
 
 type Pipeline struct {

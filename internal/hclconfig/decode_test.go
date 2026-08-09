@@ -609,3 +609,36 @@ func TestParseDefaultsIsTheSameAtBothLevels(t *testing.T) {
 		t.Fatalf("an absent file must be (nil, nil), got %+v %v", rl, err)
 	}
 }
+
+// requires_lock has to survive the HCL round trip, because the whole feature is a
+// declaration in a file: if the key decodes to "" the pipeline registers looking
+// serialized and enforces nothing, which is the failure mode it was added to
+// prevent.
+func TestParseFileStageRequiresLock(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "guarded" {
+  stage "sweep" {
+    type          = "command"
+    requires_lock = "guards-sweep"
+    timeout       = "1m"
+    command       = ["/bin/true"]
+  }
+  stage "unguarded" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	stages := pipelines[0].Stages
+	if stages[0].RequiresLock != "guards-sweep" {
+		t.Fatalf("sweep.requires_lock = %q, want %q", stages[0].RequiresLock, "guards-sweep")
+	}
+	if stages[1].RequiresLock != "" {
+		t.Fatalf("a stage that does not declare one must stay empty, got %q", stages[1].RequiresLock)
+	}
+}

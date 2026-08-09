@@ -1,0 +1,89 @@
+# A stage can declare the lock its caller must already hold. The incident: twice in
+# one day, four hours apart, by two agents who had each read the other's write-up —
+#
+#   breeze acquire lock guards-sweep    # refused, someone else has it
+#   breeze start stage p verify-guards  # ran anyway
+#
+# The shell does not couple those two lines, so the serialization only held while
+# whoever typed it remembered, at exactly the moment they were busy. breeze owns both
+# the lock table and the stage start, so it couples them instead.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze register identity peri
+cp stdout peri.token
+exec breeze register identity trail
+cp stdout trail.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# The requirement is legible BEFORE you trip over it. `stage status` deliberately
+# cannot answer it (no actor in a status query, so "do you hold it" has no answer),
+# which is exactly why it has to be visible here.
+exec breeze show pipeline guarded
+stdout 'requires lock: guards-sweep'
+
+# Holding nothing: refused, and told to acquire rather than to wait, because nobody
+# else has it either.
+! exec breeze start stage guarded sweep abc123 --as peri --token-file peri.token
+stderr 'requires the resource lock "guards-sweep"'
+stderr 'nobody else does'
+
+# Holding it: runs.
+exec breeze acquire lock --resource guards-sweep --as peri
+exec breeze start stage guarded sweep abc123 --as peri --token-file peri.token
+stdout 'succeeded'
+
+# A second actor is refused while peri holds it, and is told WHO has it — "wait for
+# them" and "you forgot to acquire" are different situations needing different next
+# moves, so the refusal distinguishes them.
+! exec breeze start stage guarded sweep def456 --as trail --token-file trail.token
+stderr 'held by "peri"'
+
+# Released: the next caller must still acquire it. The gate is about holding the
+# lock, not about being the last person who did.
+exec breeze release locks --as peri
+! exec breeze start stage guarded sweep def456 --as trail --token-file trail.token
+stderr 'requires the resource lock "guards-sweep"'
+exec breeze acquire lock --resource guards-sweep --as trail
+exec breeze start stage guarded sweep def456 --as trail --token-file trail.token
+stdout 'succeeded'
+
+# A stage that does not declare one is completely unaffected — this gate is inert
+# for every pipeline written before it existed.
+exec breeze start stage guarded plain abc123 --as trail --token-file trail.token
+stdout 'succeeded'
+
+# A lock requirement on an approval stage would never be enforced, so the config
+# would claim a protection that does not exist. Refused where someone is looking at
+# the file and can fix it.
+! exec breeze apply -f bad.hcl --as admin --token-file admin.token
+stderr 'requires_lock is not meaningful on an approval stage'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "guarded" {
+  stage "sweep" {
+    type          = "command"
+    requires_lock = "guards-sweep"
+    timeout       = "10s"
+    command       = ["/bin/true"]
+  }
+  stage "plain" {
+    type    = "command"
+    needs   = []
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+}
+
+-- bad.hcl --
+pipeline "wrong" {
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+    requires_lock      = "guards-sweep"
+  }
+}

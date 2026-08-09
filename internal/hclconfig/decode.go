@@ -75,6 +75,7 @@ type StageHCL struct {
 	// (nil vs []string{}), which is exactly what that convention needs.
 	Needs                 []string           `hcl:"needs,optional"`
 	Convergence           string             `hcl:"convergence,optional"`
+	RequiresLock          string             `hcl:"requires_lock,optional"`
 	FansOut               bool               `hcl:"fans_out,optional"`
 	Debug                 bool               `hcl:"debug,optional"`
 	RequiredRole          string             `hcl:"required_role,optional"`
@@ -329,7 +330,7 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 	sd := wire.StageDef{
 		Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout,
 		Command: cmd, Debug: sh.Debug,
-		Needs: sh.Needs, Convergence: sh.Convergence,
+		Needs: sh.Needs, Convergence: sh.Convergence, RequiresLock: sh.RequiresLock,
 	}
 	switch sh.Type {
 	case "command":

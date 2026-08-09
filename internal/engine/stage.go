@@ -156,6 +156,42 @@ func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, str
 	return true, ""
 }
 
+// checkRequiredLock is Gate 3: a stage declaring RequiresLock starts only for a
+// caller who ALREADY holds that resource lock. Stages without one always pass, so
+// this is inert for every pipeline that hasn't opted in. Must be called with e.mu
+// held.
+//
+// The refusal names the current holder when there is one, because that is the
+// question the caller is about to ask anyway ("then who is sweeping?"), and because
+// "someone else is already doing this" is a different situation from "you forgot to
+// acquire it" — the first means wait, the second means acquire.
+//
+// Note the deliberate asymmetry with the other gates: this one is NOT evaluated by
+// StageStatus. A status query has no actor, so "does the caller hold the lock" has
+// no answer there, and today's lesson was that a question with no answer must not be
+// rendered as a verdict. `pipeline show` prints the requirement instead.
+//
+// It is a RESOURCE lock (`acquire lock --resource NAME`), matched by exact key, not a
+// file lock: "guards-sweep" names a job, not a path, and a file lock would canonicalize
+// it against the daemon's working directory. Nothing here falls back to fuzzy matching
+// if the caller acquired the other kind — a tool whose job is preventing collisions
+// must not adopt a heuristic that could cause one. The refusal names the exact command
+// instead, so the wrong kind fails loudly rather than passing a gate it did not satisfy.
+func (e *Engine) checkRequiredLock(s StageDef, actor string) (bool, string) {
+	if s.RequiresLock == "" {
+		return true, ""
+	}
+	if e.lockHeldByLocked(actor, s.RequiresLock) != nil {
+		return true, ""
+	}
+	if held := e.lockOnKeyLocked(s.RequiresLock); held != nil {
+		return false, fmt.Sprintf("stage %q requires the resource lock %q, which is held by %q — wait for them, or `breeze acquire lock --resource %s --wait`",
+			s.Name, s.RequiresLock, held.Holder, s.RequiresLock)
+	}
+	return false, fmt.Sprintf("stage %q requires the resource lock %q, which %q does not hold and nobody else does — acquire it first: `breeze acquire lock --resource %s`",
+		s.Name, s.RequiresLock, actor, s.RequiresLock)
+}
+
 // registerRunningCancel/unregisterRunningCancel let a goroutine currently blocked
 // in hook.Run advertise a way to interrupt it — called WITHOUT e.mu held (they take
 // the lock themselves), bracketing the hook.Run call the same way a defer would.
@@ -354,6 +390,10 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 			e.mu.Unlock()
 			return nil, gateErr("actor %q lacks required role %q", actor, stage.CommandPolicy.RequiredRole)
 		}
+	}
+	if ok, reason := e.checkRequiredLock(stage, actor); !ok {
+		e.mu.Unlock()
+		return nil, gateErr("%s", reason)
 	}
 	if max := stage.CommandPolicy.MaxConcurrent; max > 0 && e.runningCount(pipelineName, stageName) >= max {
 		e.mu.Unlock()

@@ -1670,6 +1670,16 @@ func cmdApply(p paths, args []string) error {
 		return nil
 	}
 
+	// A dropped requires_lock is the one skew failure that is worse than the bug it
+	// fixes: the config says the stage is serialized, apply reports success, and the
+	// daemon runs it for anyone. Checked before registering anything, so a multi-
+	// pipeline apply doesn't half-land.
+	if declaresStageLock(toApply) {
+		if err := requireDaemonFeature(p, wire.FeatureStageLock, "requires_lock on a stage"); err != nil {
+			return err
+		}
+	}
+
 	as := resolveIdentity(p, f)
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
@@ -1682,6 +1692,19 @@ func cmdApply(p paths, args []string) error {
 		}
 	}
 	return nil
+}
+
+// declaresStageLock reports whether any pipeline about to be applied depends on the
+// daemon understanding requires_lock.
+func declaresStageLock(pls []wire.Pipeline) bool {
+	for _, pl := range pls {
+		for _, s := range pl.Stages {
+			if s.RequiresLock != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stageRequiredRole returns the RequiredRole a stage's own policy declares (across
@@ -2183,6 +2206,12 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 		// pipeline-level default has already been merged in at apply time.
 		if rl := resourceLimitsFromWire(s.Command.ResourceLimits); !rl.IsZero() {
 			fmt.Printf("  %-12s  %-9s  limits: %s\n", "", "", describeLimits(rl))
+		}
+		// Shown here because `stage status` deliberately does NOT evaluate it — a
+		// status query has no actor, so "do you hold the lock" has no answer there.
+		// This is the one place the requirement is legible before you trip over it.
+		if s.RequiresLock != "" {
+			fmt.Printf("  %-12s  %-9s  requires lock: %s (caller must already hold it)\n", "", "", s.RequiresLock)
 		}
 		if i == pl.FanOutAt {
 			for _, env := range sortedKeys(pl.EnvironmentDeps) {

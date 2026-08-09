@@ -183,6 +183,26 @@ type StageDef struct {
 	// ApprovalPolicy/DeployPolicy.RequiredRole) still applies unconditionally —
 	// this only removes the ordering constraint, not authorization.
 	Debug bool
+	// RequiresLock, when set, refuses to start this stage unless the caller ALREADY
+	// holds a resource lock on that key. It turns a convention people have to
+	// remember into a precondition the daemon enforces.
+	//
+	// The case it exists for, twice in one day four hours apart, by two agents who
+	// had each read the other's post-mortem:
+	//
+	//	breeze lock acquire guards-sweep    # fails — someone else holds it
+	//	breeze start stage periapsis verify-guards <sha>   # runs anyway
+	//
+	// The shell does not couple the second line to the first, so the serialization
+	// only holds if whoever types it remembers, at exactly the moment they are busy.
+	// breeze owns both the lock table and the stage start, so it can couple them.
+	//
+	// Refuses rather than queues, deliberately: a queue would hide the collision,
+	// and the collision is the information — you wanted to know that someone else
+	// was already sweeping. Requested by coordinator, who declined to file it off
+	// the first incident and waited for the second to show it did not generalize
+	// past the person who wrote the fix.
+	RequiresLock string
 }
 
 type Pipeline struct {

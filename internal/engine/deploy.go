@@ -228,6 +228,16 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		e.mu.Unlock()
 		return nil, gateErr("actor %q lacks required role %q (and no active grant for %s/%s/%s)", actor, stage.DeployPolicy.RequiredRole, pipelineName, environment, target)
 	}
+	// Outside the skipsGates block, with RBAC, on purpose. --force exists to bypass
+	// ORDERING — "I know test hasn't run, deploy anyway" — and a lock is not
+	// ordering. Forcing past it would mean running concurrently with whoever holds
+	// it, which is the exact collision the requirement was declared to prevent, so
+	// the escape hatch for "someone else is deploying right now" has to be releasing
+	// or waiting for the lock, not overriding the gate that noticed.
+	if ok, reason := e.checkRequiredLock(stage, actor); !ok {
+		e.mu.Unlock()
+		return nil, gateErr("%s", reason)
+	}
 
 	e.touchCommitSeq(pipelineName, commit)
 	commitSeq := e.commitSeq[pipelineName+"/"+commit]

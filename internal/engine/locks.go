@@ -144,6 +144,12 @@ func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockM
 func (e *Engine) lockHeldBy(holder, key string) *FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.lockHeldByLocked(holder, key)
+}
+
+// lockHeldByLocked is lockHeldBy for a caller that already holds e.mu — the gate
+// checks run under the lock they took to read the pipeline.
+func (e *Engine) lockHeldByLocked(holder, key string) *FileLock {
 	for _, l := range e.locks {
 		if l.Kind == LockKindResource && l.Holder == holder && slices.Contains(l.Paths, key) {
 			return l

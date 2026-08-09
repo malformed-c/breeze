@@ -294,6 +294,62 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### Requiring a lock — `requires_lock`
+
+A stage can declare the lock its caller must **already hold**:
+
+```hcl
+stage "verify-guards" {
+  type          = "command"
+  requires_lock = "guards-sweep"   # refuse to start unless the caller holds it
+  timeout       = "20m"
+  command       = ["./scripts/verify-guards.sh", "{commit}"]
+}
+```
+
+This exists because the two-command version does not hold. Twice in one day, four
+hours apart, two agents ran:
+
+```sh
+breeze acquire lock --resource guards-sweep --as me   # refused — someone else has it
+breeze start stage periapsis verify-guards <sha>      # ran anyway
+```
+
+Nothing in the shell couples the second line to the first, so the serialization only
+holds while whoever types it remembers — and the second of the two had read the
+first's post-mortem, agreed with it, and written up why it mattered. breeze owns both
+the lock table and the stage start, so it couples them instead of asking people to.
+
+It **refuses**, it does not queue: a queue would hide the collision, and the collision
+is the information you wanted. The refusal distinguishes the two cases, because they
+need different next moves —
+
+```
+stage "verify-guards" requires the resource lock "guards-sweep", which is held by
+"peri-sonnet-5" — wait for them, or `breeze acquire lock --resource guards-sweep --wait`
+
+stage "verify-guards" requires the resource lock "guards-sweep", which "trail" does not
+hold and nobody else does — acquire it first: `breeze acquire lock --resource guards-sweep`
+```
+
+Details worth knowing:
+
+- It is a **resource** lock (`acquire lock --resource NAME`), matched by exact key —
+  `guards-sweep` names a job, not a path, and a file lock would be canonicalized
+  against the daemon's working directory. Acquiring the other kind fails the gate
+  loudly rather than passing it by a fuzzy match.
+- `--force` does **not** bypass it. Force skips *ordering* gates ("test hasn't run,
+  deploy anyway"); a lock is not ordering, and forcing past it would run concurrently
+  with the holder — the exact collision the requirement was declared to prevent.
+- `breeze status stage` deliberately does **not** evaluate it: a status query has no
+  actor, so "do you hold the lock" has no answer there, and an unanswerable question
+  must not be rendered as a verdict. `breeze show pipeline` prints the requirement.
+- On an **approval** stage it is rejected at `breeze apply`: approving runs no
+  command, so there is nothing to serialize, and a lock requirement that quietly does
+  nothing is worse than none — the config would claim a protection that does not exist.
+- Applying a pipeline that declares one against a daemon too old to understand it is
+  refused rather than silently registered unserialized.
+
 The graph composes with the environment fan-out below: a prerequisite declared before
 the fan-out point is the single shared commit-only instance, one at or after it is
 scoped to the dependent's own environment. `breeze run pipeline` executes the graph
