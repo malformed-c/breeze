@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"breeze/internal/wire"
@@ -66,7 +68,14 @@ func call(p paths, req wire.Request) (wire.Response, error) {
 		return wire.Response{}, err
 	}
 	defer conn.Close()
-	return callOnConn(conn, req)
+	resp, err := callOnConn(conn, req)
+	// An rpcError is the daemon ANSWERING with a refusal — that is a result, and it
+	// must pass through untouched. Only a transport-level failure gets enriched.
+	var rpcErr *rpcError
+	if err != nil && !errors.As(err, &rpcErr) {
+		return resp, transportFailure(p, err)
+	}
+	return resp, err
 }
 
 func callOnConn(conn net.Conn, req wire.Request) (wire.Response, error) {
@@ -105,4 +114,52 @@ func decodePayload[T any](resp wire.Response) (T, error) {
 	}
 	err := json.Unmarshal(resp.Payload, &out)
 	return out, err
+}
+
+// transportFailure turns a bare transport symptom into an answer. When the daemon
+// dies (or is torn down) mid-request, callOnConn surfaces whatever the socket said
+// — "EOF", "connection reset by peer" — and that is the least useful true statement
+// available: the actual reason is already written in the daemon log, and the caller
+// is left to guess whether their request took effect.
+//
+// Two real incidents, both tonight. A malformed defaults.hcl makes the daemon refuse
+// to start, but it binds the socket first, so a client that connects in that window
+// is told "connection reset by peer" instead of the parse error sitting in the log.
+// And a deploy that SUCCEEDED printed "breeze: EOF", which led to advice to never
+// retry on a transport error — correct advice, and a workaround for a client that
+// cannot distinguish "the daemon died" from "the daemon answered and the connection
+// dropped".
+//
+// So this says both things it actually knows: the request's fate is UNDETERMINED
+// (never "failed" — that would be the same guess in the other direction), and here
+// is the daemon's own last word.
+func transportFailure(p paths, err error) error {
+	msg := fmt.Sprintf("lost the connection to the daemon before it answered (%v) — the request may or may not have taken effect, so check `breeze status`/`breeze operator` rather than assuming either", err)
+	if tail := lastLogLines(p.daemonLog, 3); tail != "" {
+		return fmt.Errorf("%s\nlast lines of %s:\n%s", msg, p.daemonLog, tail)
+	}
+	return fmt.Errorf("%s (see %s)", msg, p.daemonLog)
+}
+
+// lastLogLines returns the final n non-empty lines of path, indented, or "" if the
+// file can't be read. Best-effort by design: this runs on an error path and must
+// never turn one failure into two.
+func lastLogLines(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, "  "+l)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
