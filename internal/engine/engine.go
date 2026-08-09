@@ -74,6 +74,10 @@ type Engine struct {
 	// that started it — see StageInstance.OutputDir.
 	runDir string
 
+	// limitSources names the files defaultLimits was assembled from, most specific
+	// first — reported by `breeze status` so nobody has to guess which one is in play.
+	limitSources []string
+
 	auditFn  func(AuditEvent)
 	auditSeq int
 
@@ -281,6 +285,20 @@ func (e *Engine) SetDefaultResourceLimits(rl *hook.ResourceLimits) error {
 	return nil
 }
 
+// SetLimitSources records which files the floor came from, for reporting.
+func (e *Engine) SetLimitSources(paths []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.limitSources = paths
+}
+
+// LimitSources returns the files this daemon's floor came from, most specific first.
+func (e *Engine) LimitSources() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.limitSources...)
+}
+
 // DefaultResourceLimits returns this daemon's limit floor, or nil if none is set.
 func (e *Engine) DefaultResourceLimits() *hook.ResourceLimits {
 	e.mu.Lock()
@@ -307,6 +325,21 @@ func (e *Engine) EffectiveLimits(own *hook.ResourceLimits) *hook.ResourceLimits 
 	e.mu.Lock()
 	def := e.defaultLimits
 	e.mu.Unlock()
+	if def == nil {
+		return own
+	}
+	if own == nil {
+		cp := *def
+		return &cp
+	}
+	return MergeResourceLimits(own, def)
+}
+
+// MergeResourceLimits fills every field own leaves unset from def, most specific
+// winning. One function for every level of the stack — stage over pipeline over
+// per-daemon over machine-wide — so "more specific wins, per field" is defined
+// exactly once and cannot drift between them.
+func MergeResourceLimits(own, def *hook.ResourceLimits) *hook.ResourceLimits {
 	if def == nil {
 		return own
 	}

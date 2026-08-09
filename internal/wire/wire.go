@@ -119,6 +119,11 @@ type PingResponse struct {
 	// looked for it in --help, found nothing, and wrote a document asserting breeze
 	// couldn't limit anything.
 	DefaultResourceLimits *ResourceLimits `json:"defaultResourceLimits,omitempty"`
+	// LimitSources names the files those limits came from, most specific first.
+	// Without it "where is this cap coming from?" is answered by guessing which of
+	// two possible files exists — the same undiscoverability that had someone
+	// document that breeze could not limit anything at all.
+	LimitSources []string `json:"limitSources,omitempty"`
 }
 
 type WhoAmIResponse struct {

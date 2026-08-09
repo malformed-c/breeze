@@ -628,14 +628,29 @@ pipeline "release" {
 ```
 
 ```hcl
-# 3. machine-level: <state-dir>/defaults.hcl (e.g. .git/breeze/defaults.hcl)
+# 3. per-daemon: <state-dir>/defaults.hcl (e.g. .git/breeze/defaults.hcl)
+#    everything THIS repo's daemon runs
 resource_limits {
-  cpu_weight  = 20     # everything this daemon runs yields to the rest of the box
+  memory_high = "16G"  # this repo's CI is memory-hungry
+}
+
+# 4. machine-wide: ~/.config/breeze/defaults.hcl ($XDG_CONFIG_HOME honoured)
+#    everything EVERY daemon on this host runs, including repos nobody has
+#    configured and repos that don't exist yet
+resource_limits {
+  cpu_weight  = 20     # this box also runs things that must stay responsive
   memory_high = "2G"
+  tasks_max   = 1024
 }
 ```
 
-The machine-level file is **daemon policy, not pipeline config**: it applies to every
+The two files exist because they answer different questions: per-daemon says *"this
+repo's CI is heavy"*, machine-wide says *"this box also runs a control plane"* — and
+the second can't be expressed by editing every repo, because the next repo won't have
+been edited. `breeze status` names which files a daemon actually loaded, and tells you
+where to put one when there is none.
+
+The daemon-level files are **daemon policy, not pipeline config**: it applies to every
 command this daemon runs, including pipelines registered before it existed and ones
 registered through the raw JSON path that never saw HCL. That's the difference
 between a policy and a convention — the host it protects doesn't care who forgot. It

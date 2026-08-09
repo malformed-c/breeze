@@ -327,17 +327,41 @@ func waitForDialState(sock string, wantUp bool, timeout time.Duration) bool {
 // that changed underneath a half-finished pipeline run would make two stages of the
 // same run answer to different policies.
 func loadDefaultLimits(eng *engine.Engine, p paths) error {
-	wl, err := hclconfig.ParseDefaults(p.defaults)
+	// Two files, merged per field, most specific winning: this daemon's own
+	// defaults.hcl over the machine-wide one. A repo can raise its own memory
+	// ceiling without opting out of the host's CPU policy, and a host policy
+	// applies to repos nobody has configured — including ones that don't exist yet,
+	// which is the only version of "machine-wide" that means anything.
+	global, err := hclconfig.ParseDefaults(p.globalDefaults)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", p.globalDefaults, err)
 	}
-	if wl == nil {
+	local, err := hclconfig.ParseDefaults(p.defaults)
+	if err != nil {
+		return fmt.Errorf("%s: %w", p.defaults, err)
+	}
+	if global == nil && local == nil {
 		return nil
 	}
-	rl := resourceLimitsFromWire(wl)
+	rl := engine.MergeResourceLimits(resourceLimitsFromWire(local), resourceLimitsFromWire(global))
 	if err := eng.SetDefaultResourceLimits(rl); err != nil {
 		return err
 	}
-	log.Printf("machine-level resource limits loaded from %s: %s", p.defaults, describeLimits(rl))
+	var sources []string
+	if local != nil {
+		sources = append(sources, p.defaults)
+	}
+	if global != nil {
+		sources = append(sources, p.globalDefaults)
+	}
+	eng.SetLimitSources(sources)
+	switch {
+	case global != nil && local != nil:
+		log.Printf("resource limit floor: %s (from %s over %s)", describeLimits(rl), p.defaults, p.globalDefaults)
+	case global != nil:
+		log.Printf("resource limit floor: %s (machine-wide, from %s)", describeLimits(rl), p.globalDefaults)
+	default:
+		log.Printf("resource limit floor: %s (from %s)", describeLimits(rl), p.defaults)
+	}
 	return nil
 }

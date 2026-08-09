@@ -795,8 +795,13 @@ func cmdStatus(p paths, args []string) error {
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
 	// Machine-level limits are daemon policy an operator has to be able to see
 	// without reading a config file they may not know exists.
-	fmt.Printf("resource limits (every command this daemon runs): %s\n",
-		describeLimits(resourceLimitsFromWire(ping.DefaultResourceLimits)))
+	limits := describeLimits(resourceLimitsFromWire(ping.DefaultResourceLimits))
+	if len(ping.LimitSources) > 0 {
+		limits += " (from " + strings.Join(ping.LimitSources, ", then ") + ")"
+	} else {
+		limits += " — set one in " + p.defaults + " for this daemon, or " + p.globalDefaults + " for every daemon on this machine"
+	}
+	fmt.Printf("resource limits (every command this daemon runs): %s\n", limits)
 	return nil
 }
 
@@ -2441,10 +2446,15 @@ func cmdStage(p paths, args []string) error {
 			return stageFailureErr(out.Instance.Status)
 		}
 		if out.TimedOut {
-			fmt.Printf("%s: %s (timed out waiting for resolution)\n", out.Instance.Stage, out.Instance.Status)
+			fmt.Printf("%s: %s (timed out waiting for resolution)\n", out.Instance.Stage, statusLine(out.Instance))
 			return fmt.Errorf("timed out")
 		}
-		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		// A waiting agent gets the discriminator in the line it is already reading,
+		// rather than having to issue a second query to find out WHICH kind of
+		// failure it just woke up to. `wait` is what coordination scripts watch —
+		// requested by coordinator for exactly that reason.
+		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
+		printSummary(out.Instance)
 		return stageFailureErr(out.Instance.Status)
 	case "cancel":
 		token, err := resolveTokenAuto(p, f, as)

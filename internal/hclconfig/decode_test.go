@@ -590,3 +590,22 @@ pipeline "svc" {
 		t.Errorf("a stage without a transform block must not get one")
 	}
 }
+
+// The machine-wide file and a daemon's own file are the same format; what matters
+// is that a missing one is silently fine and a malformed one never is, at either
+// level. A limits file someone wrote because they were worried about their host is
+// the last thing that should be ignored for being unparseable.
+func TestParseDefaultsIsTheSameAtBothLevels(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "global.hcl")
+	if err := os.WriteFile(global, []byte("resource_limits {\n  cpu_weight = 20\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rl, err := ParseDefaults(global)
+	if err != nil || rl == nil || rl.CPUWeight != 20 {
+		t.Fatalf("global defaults: %+v %v", rl, err)
+	}
+	if rl, err := ParseDefaults(filepath.Join(dir, "absent.hcl")); err != nil || rl != nil {
+		t.Fatalf("an absent file must be (nil, nil), got %+v %v", rl, err)
+	}
+}

@@ -16,6 +16,15 @@ type paths struct {
 	audit     string
 	daemonLog string
 	identDir  string
+	// globalDefaults is the MACHINE-wide config file, shared by every daemon on this
+	// host (~/.config/breeze/defaults.hcl, honouring $XDG_CONFIG_HOME). The
+	// per-directory `defaults` file below overrides it per field.
+	//
+	// Both exist because they answer different questions. Per-daemon says "this
+	// repo's CI is heavy"; machine-wide says "this box also runs a control plane" —
+	// and the second cannot be expressed by editing every repo, because the next
+	// repo won't have been edited.
+	globalDefaults string
 	// runs holds one directory per in-flight stage run, containing its stdout and
 	// stderr as files. On disk rather than in memory so a run's output survives the
 	// daemon being replaced — see StageInstance.OutputDir.
@@ -66,15 +75,16 @@ func resolvePaths() (paths, error) {
 // a git repo detectable from the current cwd.
 func pathsForDir(dir string) paths {
 	return paths{
-		dir:       dir,
-		sock:      filepath.Join(dir, "breeze.sock"),
-		lockfile:  filepath.Join(dir, "breeze.lock"),
-		state:     filepath.Join(dir, "state.json"),
-		audit:     filepath.Join(dir, "audit.jsonl"),
-		daemonLog: filepath.Join(dir, "daemon.log"),
-		identDir:  filepath.Join(dir, "ident"),
-		runs:      filepath.Join(dir, "runs"),
-		defaults:  filepath.Join(dir, "defaults.hcl"),
+		dir:            dir,
+		sock:           filepath.Join(dir, "breeze.sock"),
+		lockfile:       filepath.Join(dir, "breeze.lock"),
+		state:          filepath.Join(dir, "state.json"),
+		audit:          filepath.Join(dir, "audit.jsonl"),
+		daemonLog:      filepath.Join(dir, "daemon.log"),
+		identDir:       filepath.Join(dir, "ident"),
+		runs:           filepath.Join(dir, "runs"),
+		globalDefaults: globalDefaultsPath(),
+		defaults:       filepath.Join(dir, "defaults.hcl"),
 	}
 }
 
@@ -249,4 +259,20 @@ func canonicalLockPaths(raw []string) ([]string, error) {
 		out[i] = rel
 	}
 	return out, nil
+}
+
+// globalDefaultsPath is the machine-wide config file every breeze daemon on this
+// host reads: $XDG_CONFIG_HOME/breeze/defaults.hcl, or ~/.config/breeze/defaults.hcl.
+// Deliberately NOT under any repo's state directory — a limit that only applies to
+// the repos someone remembered to configure is not a machine policy, and the box it
+// protects doesn't care which checkout the load came from.
+func globalDefaultsPath() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return filepath.Join(dir, "breeze", "defaults.hcl")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "breeze", "defaults.hcl")
 }

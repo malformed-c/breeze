@@ -128,3 +128,29 @@ func TestMachineFloorReachesStageCommands(t *testing.T) {
 		t.Fatalf("stage commands must inherit the machine floor, got %+v", got)
 	}
 }
+
+// One merge function serves every level of the stack — stage over pipeline over
+// per-daemon over machine-wide — so "more specific wins, per field" is defined once
+// and cannot drift between them.
+func TestMergeResourceLimitsIsPerField(t *testing.T) {
+	machine := &hook.ResourceLimits{CPUWeight: 20, MemoryHigh: "4G", TasksMax: 1024}
+	perDaemon := &hook.ResourceLimits{MemoryHigh: "16G"}
+
+	got := MergeResourceLimits(perDaemon, machine)
+	switch {
+	case got.MemoryHigh != "16G":
+		t.Fatalf("the more specific value must win: %+v", got)
+	case got.CPUWeight != 20 || got.TasksMax != 1024:
+		t.Fatalf("unset fields must be inherited: %+v", got)
+	}
+	// Either side absent is the identity, and neither input is mutated.
+	if got := MergeResourceLimits(nil, machine); got.CPUWeight != 20 {
+		t.Fatalf("nil own must take the default whole: %+v", got)
+	}
+	if got := MergeResourceLimits(perDaemon, nil); got.MemoryHigh != "16G" || got.CPUWeight != 0 {
+		t.Fatalf("nil default must leave own alone: %+v", got)
+	}
+	if machine.MemoryHigh != "4G" || perDaemon.CPUWeight != 0 {
+		t.Fatalf("merging must not mutate its inputs")
+	}
+}

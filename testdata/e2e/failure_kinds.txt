@@ -35,6 +35,11 @@ stdout 'fine: succeeded'
 ! exec breeze start stage svc chatty abc123 --as ci --token-file ci.token --tail 3
 stdout 'last 3 of \d+ lines'
 
+# `wait` carries the kind too — it's what coordination scripts watch, so the
+# discriminator has to be in the line they already read rather than one query later.
+! exec breeze wait stage svc redcheck abc123 --timeout 30s
+stdout 'redcheck: failed \(command_failed\)'
+
 exec breeze stop
 
 -- pipeline.hcl --

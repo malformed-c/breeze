@@ -582,10 +582,15 @@ specific winning:
 1. a stage's own `resource_limits` block (or a `pre_gate`/`post_action` hook's),
 2. a pipeline-level `resource_limits` block — inherited by every stage and hook in
    it, so the next stage someone adds can't forget it,
-3. `<state-dir>/defaults.hcl` — machine policy applied by the DAEMON to every
-   command it runs, including pipelines that predate it. Read at startup (restart
-   to reload); a malformed one makes the daemon refuse to start rather than
-   silently run everything unlimited.
+3. `<state-dir>/defaults.hcl` — every command THIS repo's daemon runs, including
+   pipelines that predate the file.
+4. `~/.config/breeze/defaults.hcl` — every command EVERY daemon on this host runs,
+   including repos nobody configured and repos that don't exist yet. This is the one
+   to reach for when the concern is the machine rather than the project.
+
+Both are read at startup (restart to reload); a malformed one makes the daemon
+refuse to start rather than silently run everything unlimited. `breeze status` names
+which files are actually in effect.
 
 Know the difference before choosing: a CAP (`cpu_quota`, `memory_max`) applies even
 on an idle box; a PRIORITY (`cpu_weight`, `io_weight`) only bites under contention,
