@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -484,5 +485,108 @@ func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 	}
 	if flags&syscall.FD_CLOEXEC == 0 {
 		t.Fatalf("the lock fd is NOT close-on-exec: every stage command the daemon forks would inherit the flock, and one surviving runner would block every future daemon start for this directory")
+	}
+}
+
+// registerRunningStage puts a Running instance in d's engine, standing in for a real
+// in-flight run without needing a live child process.
+func registerRunningStage(t *testing.T, d *daemonServer, pipeline, stage, commit, actor string) {
+	t.Helper()
+	p := engine.Pipeline{
+		Name:     pipeline,
+		Stages:   []engine.StageDef{{Name: stage, Type: engine.StageCommand, Timeout: time.Minute, Command: engine.CommandTemplate{Path: "/bin/sleep", Args: []string{"30"}}, CommandPolicy: &engine.CommandPolicy{}}},
+		FanOutAt: 1,
+	}
+	if err := d.eng.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register pipeline: %v", err)
+	}
+	// A real start through the real path, left in flight — no test-only hook into
+	// the engine, so what's asserted is what a live daemon would actually see.
+	go d.eng.StartCommandStage(pipeline, stage, commit, "", actor, "")
+	deadline := time.Now().Add(3 * time.Second)
+	for d.eng.RunningStageCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("stage never reached running")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func restartRequest(t *testing.T, d *daemonServer, force bool) wire.Response {
+	t.Helper()
+	serverConn, clientConn := net.Pipe()
+	go d.handleConn(serverConn)
+	payload, _ := json.Marshal(wire.RestartRequest{Force: force})
+	if err := json.NewEncoder(clientConn).Encode(wire.Request{Op: wire.OpRestart, Payload: payload}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	var resp wire.Response
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	clientConn.Close()
+	return resp
+}
+
+// The incident, committed by the author of the fix for the identical failure one
+// hour after shipping it:
+//
+//	breeze operator | rg 'running now' -A3   # printed: deploy ... running 37s
+//	breeze restart daemon                     # ran anyway
+//
+// The check ANSWERED and the next command ran regardless, on someone else's
+// production deploy. A check whose answer nothing consumes is not a check, it is a
+// print statement — so the daemon consumes it, since it owns both halves.
+func TestRestartRefusesWhileStagesAreRunning(t *testing.T) {
+	d := newTestDaemon()
+	registerRunningStage(t, d, "periapsis", "deploy", "a54c4822b9a8", "peri-sonnet-5")
+
+	resp := restartRequest(t, d, false)
+	if resp.OK {
+		t.Fatal("a restart must be refused while a stage is running")
+	}
+	// It must name what it would interrupt: a count sends you off to run the very
+	// command whose answer was already ignored once.
+	for _, want := range []string{"deploy", "a54c4822", "peri-sonnet-5", "--force"} {
+		if !strings.Contains(resp.Error, want) {
+			t.Errorf("refusal must mention %q, got:\n%s", want, resp.Error)
+		}
+	}
+	if d.restarting.Load() {
+		t.Fatal("a refused restart must not flag the daemon as restarting")
+	}
+	select {
+	case <-d.stop:
+		t.Fatal("a refused restart must not close the stop channel")
+	default:
+	}
+}
+
+func TestRestartForcedProceedsWithStagesRunning(t *testing.T) {
+	d := newTestDaemon()
+	registerRunningStage(t, d, "periapsis", "deploy", "a54c4822b9a8", "peri-sonnet-5")
+
+	if resp := restartRequest(t, d, true); !resp.OK {
+		t.Fatalf("--force must still restart: %+v", resp)
+	}
+	// The ack is deliberately sent BEFORE the shutdown is flagged (the client must
+	// not be waiting on a connection that is about to be torn down), so wait on the
+	// signal rather than racing the store.
+	select {
+	case <-d.stop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a forced restart must trigger the shutdown path")
+	}
+	if !d.restarting.Load() {
+		t.Fatal("a forced restart must flag the daemon as restarting")
+	}
+}
+
+// An idle daemon must restart with no ceremony — this guard exists to protect other
+// people's work, not to add a flag to every deploy script.
+func TestRestartUnguardedWhenIdle(t *testing.T) {
+	d := newTestDaemon()
+	if resp := restartRequest(t, d, false); !resp.OK {
+		t.Fatalf("an idle daemon must restart without --force: %+v", resp)
 	}
 }

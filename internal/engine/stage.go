@@ -171,20 +171,20 @@ func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, str
 // no answer there, and today's lesson was that a question with no answer must not be
 // rendered as a verdict. `pipeline show` prints the requirement instead.
 //
-// It is a RESOURCE lock (`acquire lock --resource NAME`), matched by exact key, not a
-// file lock: "guards-sweep" names a job, not a path, and a file lock would canonicalize
-// it against the daemon's working directory. Nothing here falls back to fuzzy matching
-// if the caller acquired the other kind — a tool whose job is preventing collisions
-// must not adopt a heuristic that could cause one. The refusal names the exact command
-// instead, so the wrong kind fails loudly rather than passing a gate it did not satisfy.
+// Matched by exact key and by key ALONE — either kind of lock on that name satisfies
+// it. This shipped resource-only, on my reasoning that a file lock of a bare name gets
+// canonicalized to an absolute path and so could not match. That was a checkable claim
+// and it was false, and the fleet holds exactly these names as file locks, so the gate
+// would have refused the one person legitimately holding the lock. See
+// anyLockHeldByLocked for the full account.
 func (e *Engine) checkRequiredLock(s StageDef, actor string) (bool, string) {
 	if s.RequiresLock == "" {
 		return true, ""
 	}
-	if e.lockHeldByLocked(actor, s.RequiresLock) != nil {
+	if e.anyLockHeldByLocked(actor, s.RequiresLock) != nil {
 		return true, ""
 	}
-	if held := e.lockOnKeyLocked(s.RequiresLock); held != nil {
+	if held := e.anyLockOnKeyLocked(s.RequiresLock); held != nil {
 		return false, fmt.Sprintf("stage %q requires the resource lock %q, which is held by %q — wait for them, or `breeze acquire lock --resource %s --wait`",
 			s.Name, s.RequiresLock, held.Holder, s.RequiresLock)
 	}

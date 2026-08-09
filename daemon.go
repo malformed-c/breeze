@@ -251,6 +251,32 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		return
 	}
 	if req.Op == wire.OpRestart {
+		// Refuse while stages are running, unless forced. Adoption means a restart is
+		// safe for the RUN, so this guard is not about survival — it is about consent:
+		// someone else's stage is someone else's to interrupt, and on a machine
+		// several agents drive, the stage that is running is usually not yours.
+		//
+		// It exists because the two-step version does not hold, which I proved
+		// personally an hour after shipping requires_lock for the identical failure:
+		//
+		//	breeze operator | rg 'running now' -A3   # printed: running 37s
+		//	breeze restart daemon                     # ran anyway
+		//
+		// I checked, the check ANSWERED, and the next command ran regardless, on
+		// someone else's production deploy. No amount of care closes a gap between a
+		// check and an action that are not coupled — a check whose answer nothing
+		// consumes is not a check, it is a print statement. breeze owns both halves
+		// here, so it couples them, exactly as requires_lock does for stage starts.
+		var rr wire.RestartRequest
+		if len(req.Payload) > 0 {
+			json.Unmarshal(req.Payload, &rr) // absent/garbled payload = not forced, the safe reading
+		}
+		if !rr.Force {
+			if running := d.eng.RunningStages(); len(running) > 0 {
+				enc.Encode(errResponse(fmt.Errorf("%s", restartRefusal(running))))
+				return
+			}
+		}
 		// Ack first — the client (waiting on this exact response) must not block
 		// on a connection that's about to be torn down along with everything else.
 		// Only after that do we flag the restart and trigger the same clean-stop
@@ -1162,4 +1188,20 @@ func parseOptionalDuration(s string) (time.Duration, error) {
 		return 0, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// restartRefusal renders the running stages a restart would interrupt. It lists them
+// rather than counting them: a count tells you to go and look, and "go and look" is
+// the step that failed. Whoever reads this should not need a second command to decide.
+func restartRefusal(running []engine.StageInstance) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "refusing to restart: %d stage(s) running right now, and a restart interrupts whoever is watching them\n", len(running))
+	now := time.Now()
+	for _, inst := range running {
+		fmt.Fprintf(&b, "  %s/%s %s  actor=%s  running %s\n",
+			inst.Pipeline, inst.Stage, inst.Key.ShortString(), inst.Actor, now.Sub(inst.StartedAt).Round(time.Second))
+	}
+	b.WriteString("adoption would carry them across (they survive a restart), so this is about consent, not safety — " +
+		"if they are yours or you have asked, `breeze restart daemon --force`")
+	return b.String()
 }

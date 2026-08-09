@@ -133,3 +133,57 @@ func TestForceDoesNotBypassARequiredLock(t *testing.T) {
 		t.Errorf("the refusal must name the lock, got %q", err)
 	}
 }
+
+// The gate shipped resource-only, and the fleet acquires these names as FILE locks
+// (`breeze acquire lock guards-sweep`). So a stage declaring requires_lock would have
+// refused the one actor legitimately holding it and let everyone else through — a
+// gate whose refusals are anti-correlated with the thing it guards. Found from a live
+// daemon's state.json, where the held lock read:
+//
+//	l2723  kind=file  holder=peri-sonnet-5  paths=[guards-sweep]
+//
+// Kind is not part of what a lock name means: LockKind's own contract calls it
+// "purely a display/filter tag, not a behavioral difference".
+func TestEitherKindOfLockSatisfiesTheGate(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		acquire func(e *Engine) error
+	}{
+		{"resource", func(e *Engine) error {
+			_, _, err := e.TryAcquireResourceLock("ci", []string{"guards-sweep"}, LockExclusive, time.Minute, true)
+			return err
+		}},
+		{"file", func(e *Engine) error {
+			_, _, err := e.TryAcquireLock("ci", []string{"guards-sweep"}, LockExclusive, time.Minute, false)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := New()
+			lockedPipeline(t, e)
+			if err := c.acquire(e); err != nil {
+				t.Fatalf("acquire: %v", err)
+			}
+			if _, err := e.StartCommandStage("release", "build", "abc", "", "ci", ""); err != nil {
+				t.Fatalf("a %s lock on the required key must satisfy the gate: %v", c.name, err)
+			}
+		})
+	}
+}
+
+// And the refusal must name a holder of either kind, or it sends the caller looking
+// for a conflict the daemon can see and will not mention.
+func TestRefusalNamesAFileLockHolderToo(t *testing.T) {
+	e := New()
+	lockedPipeline(t, e)
+	if _, _, err := e.TryAcquireLock("peri", []string{"guards-sweep"}, LockExclusive, time.Minute, false); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	_, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
+	if err == nil {
+		t.Fatal("a file lock held by someone else must still block the stage")
+	}
+	if !strings.Contains(err.Error(), "peri") {
+		t.Errorf("the refusal must name the holder whatever the lock kind, got %q", err)
+	}
+}

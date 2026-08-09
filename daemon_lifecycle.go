@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 	"time"
 
@@ -39,7 +40,7 @@ func cmdDaemon(p paths, args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
 		case "restart":
-			return restartDaemon(p)
+			return restartDaemon(p, parseFlags(args[1:]).force)
 		case "--background", "-d":
 			return startDaemonDetached(p)
 		}
@@ -103,13 +104,13 @@ const restartWaitBudget = 20 * time.Second
 // CLI process killing it and spawning a separate new one to track. If nothing is
 // currently live for this directory, there's nothing to ask — starts a fresh
 // detached daemon instead, same as --background.
-func restartDaemon(p paths) error {
+func restartDaemon(p paths, force bool) error {
 	conn, err := net.DialTimeout("unix", p.sock, 200*time.Millisecond)
 	if err != nil {
 		return startDaemonDetached(p) // nothing running; closest equivalent is a fresh detached start
 	}
 	defer conn.Close()
-	return restartViaConn(p, conn)
+	return restartViaConn(p, conn, force)
 }
 
 // restartViaConn asks an ALREADY-DIALED live daemon to restart in place — factored
@@ -117,8 +118,24 @@ func restartDaemon(p paths) error {
 // ask-and-wait logic for each daemon it discovers via the registry, without ever
 // falling through to starting a brand-new one for an entry that's actually dead
 // (that's update-all's job to skip, not start).
-func restartViaConn(p paths, conn net.Conn) error {
-	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart}); err != nil {
+func restartViaConn(p paths, conn net.Conn, force bool) error {
+	// A daemon too old to know about the guard restarts regardless, so the caller
+	// who was relying on being stopped gets nothing — the same silent-noop shape as
+	// a dropped --force. WARNED and not refused, deliberately: refusing would make
+	// it impossible to restart an old daemon onto a new binary, so the safety check
+	// would block its own rollout. One line on stderr, then proceed.
+	if !force {
+		// A fresh dial, NOT this conn: the daemon serves one request per connection,
+		// so probing on the connection the restart is about to use consumes it.
+		if resp, err := call(p, wire.Request{Op: wire.OpPing}); err == nil {
+			if ping, derr := decodePayload[wire.PingResponse](resp); derr == nil && !slices.Contains(ping.Features, wire.FeatureRestartGuard) {
+				fmt.Fprintf(os.Stderr, "warning: this daemon (pid %d, built %s) predates the running-stage guard, so it will restart even if stages are in flight — check `breeze operator` first\n",
+					ping.Pid, versionString(ping.Version, ping.BuildTime))
+			}
+		}
+	}
+	payload, _ := json.Marshal(wire.RestartRequest{Force: force})
+	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart, Payload: payload}); err != nil {
 		return fmt.Errorf("asking the existing daemon to restart: %w", err)
 	}
 	// The client's patience has to exceed the daemon's own shutdown budget, or a

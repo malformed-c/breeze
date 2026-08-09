@@ -178,6 +178,42 @@ func (e *Engine) lockOnKeyLocked(key string) *FileLock {
 	return nil
 }
 
+// anyLockHeldByLocked and anyLockOnKeyLocked are the kind-AGNOSTIC forms, used by
+// the requires_lock gate. They exist because kind is not part of what a lock name
+// means: LockKind's own contract says it is "purely a display/filter tag, not a
+// behavioral difference", and a gate that filtered on it contradicted that.
+//
+// It was not a theoretical distinction. The gate shipped resource-only on the
+// reasoning that a file lock on a bare name would be canonicalized to an absolute
+// path and so could never match — a checkable claim that is false:
+// filepath.Clean("guards-sweep") is "guards-sweep", stored identically either way.
+// Meanwhile the fleet acquires exactly that name as a FILE lock (`acquire lock
+// guards-sweep`), so a stage declaring requires_lock = "guards-sweep" would have
+// refused the one person legitimately holding it while letting everyone else past.
+// A gate whose refusals are anti-correlated with the thing it guards is worse than
+// no gate. Found because periapsis-fable asked an unrelated question about restarts
+// and named the lock's kind in passing.
+//
+// This is still an EXACT key match, not a heuristic — the whole point of the gate is
+// that two actors naming the same string are talking about the same thing.
+func (e *Engine) anyLockHeldByLocked(holder, key string) *FileLock {
+	for _, l := range e.locks {
+		if l.Holder == holder && slices.Contains(l.Paths, key) {
+			return l
+		}
+	}
+	return nil
+}
+
+func (e *Engine) anyLockOnKeyLocked(key string) *FileLock {
+	for _, l := range e.locks {
+		if slices.Contains(l.Paths, key) {
+			return l
+		}
+	}
+	return nil
+}
+
 func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode LockMode, ttl time.Duration, attached, manualClaim bool) (*FileLock, bool, error) {
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")

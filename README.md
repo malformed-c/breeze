@@ -294,6 +294,33 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### Restarting while work is in flight
+
+`breeze restart daemon` **refuses** while stages are running, and names them:
+
+```
+refusing to restart: 1 stage(s) running right now, and a restart interrupts whoever is watching them
+  periapsis/deploy a54c4822b9a8  actor=peri-sonnet-5  running 37s
+adoption would carry them across (they survive a restart), so this is about consent,
+not safety — if they are yours or you have asked, `breeze restart daemon --force`
+```
+
+Adoption means a restart is safe for the *run*, so this guard is not about survival.
+It is about consent: on a machine several agents drive, the stage that is running is
+usually not yours.
+
+It exists because the two-step version does not hold — proven by the author of
+`requires_lock`, one hour after shipping it, against someone else's production deploy:
+
+```sh
+breeze operator | rg 'running now' -A3   # printed: deploy ... running 37s
+breeze restart daemon                     # ran anyway
+```
+
+The check *answered*, and the next command ran regardless. A check whose answer
+nothing consumes is not a check, it is a print statement. breeze owns both halves, so
+it couples them — the same argument as `requires_lock`, applied to the restart path.
+
 #### What retention keeps
 
 A daemon's state grows with every stage run, so older runs have their captured
@@ -360,10 +387,12 @@ hold and nobody else does — acquire it first: `breeze acquire lock --resource 
 
 Details worth knowing:
 
-- It is a **resource** lock (`acquire lock --resource NAME`), matched by exact key —
-  `guards-sweep` names a job, not a path, and a file lock would be canonicalized
-  against the daemon's working directory. Acquiring the other kind fails the gate
-  loudly rather than passing it by a fuzzy match.
+- Matched by **exact key, and by key alone** — either a file lock or a resource lock
+  on that name satisfies it. (This shipped resource-only, on the reasoning that a
+  file lock of a bare name gets canonicalized to an absolute path. That was checkable
+  and false: `filepath.Clean("guards-sweep")` is `guards-sweep`. Since the fleet holds
+  exactly these names as file locks, the gate would have refused the one person
+  legitimately holding the lock and let everyone else through.)
 - `--force` does **not** bypass it. Force skips *ordering* gates ("test hasn't run,
   deploy anyway"); a lock is not ordering, and forcing past it would run concurrently
   with the holder — the exact collision the requirement was declared to prevent.

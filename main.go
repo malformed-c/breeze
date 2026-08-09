@@ -134,10 +134,14 @@ func usage() {
                                          already running here (auto-start never does)
   start daemon --background | -d        start detached (first start you don't want
                                          to block on) instead of the foreground default
-  restart daemon                        ask the running daemon to restart itself in
+  restart daemon [--force]              ask the running daemon to restart itself in
                                          place (same pid); falls back to a fresh
-                                         detached start if nothing's running yet
-  restart daemons                       restart every breeze daemon this machine's
+                                         detached start if nothing's running yet.
+                                         REFUSES while stages are running — adoption
+                                         would carry them, so this is about not
+                                         interrupting whoever is watching them;
+                                         --force if they're yours or you've asked
+  restart daemons [--force]             restart every breeze daemon this machine's
                                          discovery registry knows about — picks up
                                          whatever binary is already on disk, never
                                          rebuilds anything
@@ -818,7 +822,7 @@ func cmdOperator(p paths, args []string) error {
 		return cmdOperatorNotify(p, args[1:])
 	}
 	if len(args) > 0 && args[0] == "update-all" {
-		return cmdOperatorUpdateAll()
+		return cmdOperatorUpdateAll(parseFlags(args[1:]).force)
 	}
 	f := parseFlags(args)
 	if handled, err := f.rejectUnknownFlags("breeze operator [--pipeline NAME] [--env NAME] [--json] | notify | update-all"); handled {
@@ -965,7 +969,7 @@ func printGroupedByPipeline[T any](items []T, pipelineOf func(T) string, printIt
 // stopped some other way. Ignores p (breeze operator update-all's targets come
 // entirely from the registry, not the caller's own resolved directory) but keeps
 // the same signature shape as other operator subcommands for consistency.
-func cmdOperatorUpdateAll() error {
+func cmdOperatorUpdateAll(force bool) error {
 	regPath, err := registryPath()
 	if err != nil {
 		return err
@@ -990,7 +994,7 @@ func cmdOperatorUpdateAll() error {
 			dead[e.Dir] = true
 			continue
 		}
-		err := restartViaConn(ep, conn)
+		err := restartViaConn(ep, conn, force)
 		conn.Close()
 		if err != nil {
 			fmt.Printf("%s: restart failed: %v\n", e.Dir, err)

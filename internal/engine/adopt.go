@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -219,6 +220,22 @@ func (e *Engine) RunningStageCount() int {
 		}
 	}
 	return n
+}
+
+// RunningStages returns a copy of every currently-executing instance, so the restart
+// path can name what it would be restarting under rather than only counting it. A
+// count tells you to go and look; a list is the thing you were going to look at.
+func (e *Engine) RunningStages() []StageInstance {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []StageInstance
+	for _, inst := range e.instances {
+		if inst.Status == StageRunning {
+			out = append(out, *inst)
+		}
+	}
+	slices.SortFunc(out, func(a, b StageInstance) int { return a.StartedAt.Compare(b.StartedAt) })
+	return out
 }
 
 // cleanupRunDir removes a finished run's directory. Safe only once the run has

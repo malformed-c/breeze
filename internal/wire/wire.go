@@ -89,11 +89,17 @@ const (
 	FeatureForceDeploy = "force-deploy"  // StageStartRequest.Force
 	FeatureLockTryWait = "lock-try-wait" // LockExecRequest.Wait/Timeout
 	FeatureStageLock   = "stage-lock"    // StageDef.RequiresLock
+	// FeatureRestartGuard means this daemon REFUSES a restart while stages are
+	// running unless asked to force it. Advertised so a client can warn when the
+	// protection it is relying on isn't there — deliberately a warning and not a
+	// refusal, because refusing would make it impossible to restart an old daemon
+	// onto a new binary, i.e. the safety check would block its own rollout.
+	FeatureRestartGuard = "restart-guard" // RestartRequest.Force
 )
 
 // Features is what a daemon built from this source advertises.
 func Features() []string {
-	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock}
+	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard}
 }
 
 // CodeLockConflict marks a failure caused purely by someone else holding a
@@ -101,6 +107,14 @@ func Features() []string {
 const CodeLockConflict = "lock_conflict"
 
 // --- Per-op payloads ---
+
+// RestartRequest asks the daemon to re-exec in place. Force skips the running-stage
+// guard: adoption carries running stages across a restart, so forcing is safe for
+// the RUN — the guard is about consent, not survival. Someone else's stage is
+// someone else's to interrupt.
+type RestartRequest struct {
+	Force bool `json:"force,omitempty"`
+}
 
 type PingResponse struct {
 	Pid       int    `json:"pid"`
