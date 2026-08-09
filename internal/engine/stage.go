@@ -29,6 +29,18 @@ func (e *Engine) getInstance(pipeline, stage string, key StageKey) *StageInstanc
 	return inst
 }
 
+// putInstance is the write half of the same invariant: materializing an instance
+// into the map is precisely the event that makes it a record, so it is stamped
+// here rather than by whoever happens to return it. Both halves are needed —
+// stamping on read alone still misses a caller that materializes an instance and
+// returns the pointer it already holds without going back through the map, which
+// is what `stage approve` does.
+func (e *Engine) putInstance(pipeline, stage string, key StageKey, inst *StageInstance) *StageInstance {
+	inst.Recorded = true
+	e.instances[instanceKey(pipeline, stage, key)] = inst
+	return inst
+}
+
 // keyFor determines the correct StageKey for stage index i given a caller-supplied
 // commit/environment: pre-fan-out stages are always commit-only (any environment the
 // caller passed is ignored — there is exactly one shared instance); at-or-past the
@@ -389,7 +401,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		// nothing new had to be invented to say when that is.
 		Deadline: e.now().Add(timeout),
 	}
-	e.instances[instanceKey(pipelineName, stageName, key)] = inst
+	e.putInstance(pipelineName, stageName, key, inst)
 	e.changed()
 	e.mu.Unlock()
 
@@ -548,7 +560,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 			e.mu.Lock()
 			if _, ok := e.instances[ik]; !ok {
 				e.touchCommitSeq(pipelineName, commit)
-				e.instances[ik] = &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, StartedAt: e.now(), FinishedAt: e.now(), Error: err.Error()}
+				e.putInstance(pipelineName, stageName, key, &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, StartedAt: e.now(), FinishedAt: e.now(), Error: err.Error()})
 			}
 			e.audit("stage.gate_failed", actor, err.Error())
 			e.changed()
@@ -566,8 +578,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 	inst, ok := e.instances[ik]
 	if !ok {
 		e.touchCommitSeq(pipelineName, commit)
-		inst = &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageAwaiting, StartedAt: e.now()}
-		e.instances[ik] = inst
+		inst = e.putInstance(pipelineName, stageName, key, &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageAwaiting, StartedAt: e.now()})
 	}
 
 	if inst.HasApprovalFrom(actor) {

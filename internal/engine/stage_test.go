@@ -576,6 +576,18 @@ func TestEveryReadPathMarksStoredInstancesAsRecorded(t *testing.T) {
 		"wait": func() (*StageInstance, error) {
 			return e.WaitForStage("release", "build", "ran", "", 5*time.Second)
 		},
+		// approve materializes the instance and returns the pointer it already
+		// holds, without going back through the map — so a read-side stamp alone
+		// left this one lying. Found by running the real pipeline, not the tests.
+		"approve": func() (*StageInstance, error) {
+			if _, err := e.RegisterIdentity("alice", ""); err != nil {
+				return nil, err
+			}
+			if err := e.AssignRole("alice", "reviewer"); err != nil {
+				return nil, err
+			}
+			return e.ApproveStage("release", "review", "ran", "", "alice", "brief")
+		},
 	}
 	for name, get := range paths {
 		inst, err := get()

@@ -291,7 +291,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		Pipeline: pipelineName, Stage: stageName, Key: key,
 		Status: StageRunning, StartedAt: now, Actor: actor, Brief: brief,
 	}
-	e.instances[instanceKey(pipelineName, stageName, key)] = inst
+	e.putInstance(pipelineName, stageName, key, inst)
 	e.changed()
 	timeout := stage.Timeout
 	tmpl := stage.Command

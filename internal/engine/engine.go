@@ -226,7 +226,7 @@ func (e *Engine) Load(snap Snapshot) {
 	e.instances = make(map[string]*StageInstance, len(snap.StageInstances))
 	for i := range snap.StageInstances {
 		inst := snap.StageInstances[i]
-		e.instances[instanceKey(inst.Pipeline, inst.Stage, inst.Key)] = &inst
+		e.putInstance(inst.Pipeline, inst.Stage, inst.Key, &inst)
 	}
 	e.deployHistory = make(map[string][]DeployRecord, len(snap.DeployHistory))
 	for k, v := range snap.DeployHistory {
