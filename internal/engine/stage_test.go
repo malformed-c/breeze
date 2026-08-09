@@ -510,3 +510,47 @@ func TestRBACRequiredRoleEnforced(t *testing.T) {
 		t.Fatalf("expected actor with required role to succeed: %v", err)
 	}
 }
+
+// StageStatus answers for a key that has never run by computing what the GATES
+// would say. That projection is useful and must stay — but it renders an absence as
+// a value, and "gate_failed: prerequisite has not run yet" is a perfectly sensible
+// sentence about a commit that does not exist in the caller's repo at all. Four
+// agents spent a day quoting stage statuses at each other as evidence; none of those
+// quotes said whether they described a record or a guess.
+func TestStageStatusMarksProjectionsAsNotRecorded(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	// Nothing has run: the answer is a projection of the gates.
+	got, err := e.StageStatus("release", "build", "never-ran", "")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if got.Recorded {
+		t.Fatalf("a key with no instance must not claim to be a record: %+v", got)
+	}
+	if got.Status != StageReady {
+		t.Fatalf("status = %s, want ready", got.Status)
+	}
+
+	// A gate failure is still a projection, which is the confusing case.
+	projected, err := e.StageStatus("release", "review", "never-ran", "")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if projected.Recorded || projected.Status != StageGateFailed {
+		t.Fatalf("expected an unrecorded gate_failed projection, got %+v", projected)
+	}
+
+	// An instance that really ran is marked as a record.
+	if _, err := e.StartCommandStage("release", "build", "really-ran", "", "ci", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	real, err := e.StageStatus("release", "build", "really-ran", "")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !real.Recorded {
+		t.Fatalf("a stored instance must be marked as recorded: %+v", real)
+	}
+}

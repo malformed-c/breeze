@@ -1823,7 +1823,7 @@ func cmdPipeline(p paths, args []string) error {
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze status pipeline <name> <commit> [--json]")
 		}
-		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: resolveCommit(f.rest[1])})
+		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: resolveCommitVerbose(f.rest[1])})
 		req, err := readRequest(p, f, wire.OpPipelineStatus, payload)
 		if err != nil {
 			return err
@@ -2281,10 +2281,19 @@ func sortedKeys(m map[string][]string) []string {
 // Reported from a real case: 74 of 78 guards passed and the run timed out, which at
 // a glance read exactly like a guard had gone red.
 func statusLine(inst wire.StageInstance) string {
-	if inst.FailureKind == "" || inst.Status != "failed" {
-		return inst.Status
+	s := inst.Status
+	if inst.FailureKind != "" && inst.Status == "failed" {
+		s += " (" + inst.FailureKind + ")"
 	}
-	return inst.Status + " (" + inst.FailureKind + ")"
+	// An answer about a key that has never run is a projection of the gates, not a
+	// report — and reads exactly like one unless it says so. "gate_failed:
+	// prerequisite has not run yet" is a sensible sentence about a commit that does
+	// not exist in this repo at all, which is how an abbreviated sha typed in the
+	// wrong directory becomes a plausible verdict.
+	if !inst.Recorded {
+		s += "  [no run recorded for this commit — this is what the gates would say if you triggered it]"
+	}
+	return s
 }
 
 // printOutput shows what the stage actually printed, tail-first, WITHOUT needing
@@ -2375,7 +2384,7 @@ func cmdStage(p paths, args []string) error {
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: breeze %s stage <pipeline> <stage> <commit> [--env NAME] ...", sub)
 	}
-	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
+	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommitVerbose(f.rest[2])
 	as := resolveIdentity(p, f)
 
 	switch sub {
@@ -2596,7 +2605,7 @@ func cmdDeployRollback(p paths, args []string) error {
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
 	}
-	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommit(f.rest[2])
+	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommitVerbose(f.rest[2])
 	as := resolveIdentity(p, f)
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {

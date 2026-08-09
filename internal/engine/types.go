@@ -424,6 +424,11 @@ type StageInstance struct {
 	Deadline time.Time
 	Actor    string
 	Brief    string
+	// Recorded distinguishes a real instance from a PROJECTION. StageStatus answers
+	// for a key that has never run by computing what the gates would say, which is
+	// useful — but indistinguishable from a verdict about a run that happened, and
+	// therefore renders an absence as a value. Set only on stored instances.
+	Recorded bool
 	// Summary is a stage's transform output (see StageDef.Transform) — a short
 	// human-readable rendering of what the raw output means. Empty when the stage
 	// has no transform, which is every stage that doesn't opt in.

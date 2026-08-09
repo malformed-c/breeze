@@ -183,6 +183,21 @@ func expandCommit(ref string) (string, bool) {
 // repo, ambiguous, unknown ref), passes through unchanged — this must never block
 // or error a command, since breeze's commit key has to keep working for non-git
 // callers exactly as before.
+// resolveCommitVerbose is resolveCommit plus a warning when an abbreviated sha
+// could NOT be expanded here. That combination — a short sha typed in a directory
+// whose repo doesn't contain it — reaches the daemon as an opaque key matching no
+// instance, and comes back as a confident projection of what the gates would say.
+// It is how a pasted status quote silently depends on which directory it was run
+// from, and how the author of this function fooled himself with one while holding
+// the evidence that it was wrong.
+func resolveCommitVerbose(raw string) string {
+	out := resolveCommit(raw)
+	if out == raw && looksLikeAbbreviatedSHA(raw) {
+		fmt.Fprintf(os.Stderr, "breeze: %q could not be resolved to a commit in this directory's repo, so it was sent as-is — if you meant a commit in another repo, run this from there or pass the full sha\n", raw)
+	}
+	return out
+}
+
 func resolveCommit(raw string) string {
 	if raw == "" || isFullSHA(raw) {
 		return raw

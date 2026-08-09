@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"breeze/internal/wire"
@@ -95,5 +96,21 @@ func TestStageTimeoutText(t *testing.T) {
 		if got := stageTimeoutText(c.stage); got != c.want {
 			t.Errorf("stageTimeoutText(%+v) = %q, want %q", c.stage, got, c.want)
 		}
+	}
+}
+
+// The marker has to reach the human line, since that is what people paste at each
+// other as evidence.
+func TestStatusLineDistinguishesProjectionFromRecord(t *testing.T) {
+	projected := statusLine(wire.StageInstance{Status: "gate_failed", Recorded: false})
+	if !strings.Contains(projected, "no run recorded") {
+		t.Fatalf("a projection must say so, got %q", projected)
+	}
+	recorded := statusLine(wire.StageInstance{Status: "failed", FailureKind: "timed_out", Recorded: true})
+	if strings.Contains(recorded, "no run recorded") {
+		t.Fatalf("a real record must not be labelled a projection, got %q", recorded)
+	}
+	if !strings.Contains(recorded, "timed_out") {
+		t.Fatalf("the failure kind must survive, got %q", recorded)
 	}
 }

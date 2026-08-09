@@ -422,6 +422,9 @@ type StageInstance struct {
 	FailureKind string `json:"failureKind,omitempty"`
 	Actor       string `json:"actor,omitempty"`
 	Brief       string `json:"brief,omitempty"`
+	// Recorded is false when this describes what the gates WOULD say rather than a
+	// run that happened — see engine.StageInstance.Recorded.
+	Recorded bool `json:"recorded"`
 	// Summary is the stage transform's output — a short rendering of what the raw
 	// output means, when the stage defines one. See engine.StageDef.Transform.
 	Summary string `json:"summary,omitempty"`

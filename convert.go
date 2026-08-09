@@ -206,8 +206,8 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 		Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
 		Status: string(s.Status), Approvals: approvals, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
 		ExitCode: s.ExitCode, Stdout: string(s.Stdout), Stderr: string(s.Stderr), Error: s.Error,
-		FailureKind: string(s.FailureKind),
-		Actor:       s.Actor, Brief: s.Brief, Summary: s.Summary,
+		FailureKind: string(s.FailureKind), Recorded: s.Recorded,
+		Actor: s.Actor, Brief: s.Brief, Summary: s.Summary,
 	}
 }
 

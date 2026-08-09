@@ -623,8 +623,17 @@ func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string
 	}
 	if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
 		cp := *inst
+		cp.Recorded = true
 		return &cp, nil
 	}
+	// No instance for this key: everything below is a PROJECTION of what the gates
+	// would say if this were triggered, not a report of anything that happened. The
+	// distinction has to travel with the answer — an unknown key rendering as
+	// "gate_failed: prerequisite \"test\" has not run yet" is a perfectly sensible
+	// sentence about a commit that was never even resolvable here, and it fooled the
+	// author of this comment while he was holding the evidence that it was wrong.
+	// Four agents spent the day pasting stage statuses at each other as evidence;
+	// none of those quotes carried whether they described a record or a guess.
 	if ok, reason := e.checkPrerequisite(p, i, key); !ok {
 		return &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, Error: reason}, nil
 	}
