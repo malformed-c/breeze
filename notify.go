@@ -46,7 +46,12 @@ func notifierStatus() string {
 // breeze's side — so the second went unnoticed indefinitely. Failure and recovery
 // are now logged once per transition (not per notification, which would be noise)
 // and surfaced by `breeze status`.
-func runMessBestEffort(messPath string, args ...string) {
+//
+// undelivered describes WHAT was being delivered, in the operator's terms ("the
+// verify-guards outcome to \"claude-verify\""), so the alert below can name the
+// specific thing nobody was told rather than only reporting that the channel is
+// unwell. Empty for sends that are themselves alerts.
+func runMessBestEffort(messPath, undelivered string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, messPath, args...)
@@ -63,9 +68,9 @@ func runMessBestEffort(messPath string, args ...string) {
 		reason = oneLineMess(reason)
 	}
 	messHealth.mu.Lock()
-	defer messHealth.mu.Unlock()
+	newlyFailing := reason != "" && !messHealth.failing
 	switch {
-	case reason != "" && !messHealth.failing:
+	case newlyFailing:
 		messHealth.failing, messHealth.reason = true, reason
 		log.Printf("mess notifications are failing: %s — stage outcomes are unaffected, but nobody is being told about them", reason)
 	case reason != "":
@@ -74,6 +79,42 @@ func runMessBestEffort(messPath string, args ...string) {
 		messHealth.failing, messHealth.reason = false, ""
 		log.Printf("mess notifications are working again")
 	}
+	messHealth.mu.Unlock()
+
+	if newlyFailing {
+		alertHumanNotifierBroken(messPath, reason, undelivered)
+	}
+}
+
+// alertHumanNotifierBroken tells the operator, once per failure transition, that
+// notifications have stopped — through mess itself, to "user", the one recipient
+// that is a human mailbox rather than an agent that may never have registered.
+//
+// The health flag alone was not enough. A pipeline spent a day notifying an identity
+// that had never existed ("no such agent \"claude-verify\""), so every stage outcome
+// went unannounced; the daemon reported it accurately in `breeze status`, which is
+// the place you look when you are ALREADY suspicious. It was found by an agent who
+// only ran status because something else had gone wrong. A broken notifier must not
+// depend on someone thinking to ask whether the notifier is broken.
+//
+// Deliberately fired only on the transition, so a permanently-dead target costs one
+// message rather than one per stage. If this send fails too, nothing recurses: the
+// health flag is already set, so its own failure takes the non-transition branch —
+// which is also why alerts pass undelivered="" and never alert about themselves.
+//
+// It names the outcome, not just the channel, because the target is derived PER RUN
+// from whoever holds the next stage's role: the same daemon failed on "claude-verify"
+// and ninety minutes later on "opus-inflight". "Notifications are failing" is
+// therefore true only intermittently, while specific outcomes go unannounced — and a
+// health flag that flaps tells you less than a message naming what was lost.
+// Diagnosed by trail-main, who re-ran status instead of pasting the line they had.
+func alertHumanNotifierBroken(messPath, reason, undelivered string) {
+	msg := "breeze: a notification could not be delivered — " + reason
+	if undelivered != "" {
+		msg += "; nobody was told about " + undelivered
+	}
+	msg += " (the stage outcome itself is unaffected; `breeze status` shows the live state)"
+	go runMessBestEffort(messPath, "", "send", "--as", messSender, "user", msg)
 }
 
 func oneLineMess(s string) string { return strings.Join(strings.Fields(s), " ") }
@@ -98,7 +139,7 @@ func notifyViaMess(identities []string, message, thread string) {
 			if thread != "" {
 				args = append(args, "--thread", thread)
 			}
-			runMessBestEffort(messPath, args...)
+			runMessBestEffort(messPath, oneLineMess(message)+" (to "+identity+")", args...)
 		}(identity)
 	}
 }
@@ -116,6 +157,6 @@ func notifyViaMessTopic(topic, message, thread string) {
 		if thread != "" {
 			args = append(args, "--thread", thread)
 		}
-		runMessBestEffort(messPath, args...)
+		runMessBestEffort(messPath, oneLineMess(message)+" (to topic "+topic+")", args...)
 	}()
 }

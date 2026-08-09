@@ -554,3 +554,36 @@ func TestStageStatusMarksProjectionsAsNotRecorded(t *testing.T) {
 		t.Fatalf("a stored instance must be marked as recorded: %+v", real)
 	}
 }
+
+// The annotation shipped set by StageStatus alone, so `wait` — which returns the
+// stored instance from its own code path — reported real, finished runs as
+// "succeeded [no run recorded for this commit]". Two agents hit it within three
+// hours and worked around it by using `status` instead, which is the failure mode
+// that matters: a warning that fires on correct results teaches people to ignore it,
+// and then it is worth less than the silence it replaced. Every path that hands back
+// a stored instance must agree, so this asserts across them rather than on `wait`
+// alone.
+func TestEveryReadPathMarksStoredInstancesAsRecorded(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	if _, err := e.StartCommandStage("release", "build", "ran", "", "ci", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	paths := map[string]func() (*StageInstance, error){
+		"status": func() (*StageInstance, error) { return e.StageStatus("release", "build", "ran", "") },
+		"wait": func() (*StageInstance, error) {
+			return e.WaitForStage("release", "build", "ran", "", 5*time.Second)
+		},
+	}
+	for name, get := range paths {
+		inst, err := get()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !inst.Recorded {
+			t.Errorf("%s returned a stored %s instance without marking it a record: %+v", name, inst.Status, inst)
+		}
+	}
+}

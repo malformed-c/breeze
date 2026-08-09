@@ -292,6 +292,7 @@ type flagSet struct {
 	cpuQuota, cpuWeight, memoryMax, memoryHigh, tasksMax, ioWeight                                               string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
 	shared, wait, force, jsonOut, dryRun, prune, all, help, serial, tryLock                                      bool
 	tail                                                                                                         int      // --tail N: output lines per stream to show on failure (negative = all)
+	tailSet                                                                                                      bool     // --tail was given explicitly, so output is wanted whatever the outcome
 	targets                                                                                                      []string // repeated --target NAME
 	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
@@ -420,7 +421,7 @@ func parseFlags(args []string) flagSet {
 			if i < len(args) {
 				n, err := strconv.Atoi(args[i])
 				if err == nil {
-					f.tail = n
+					f.tail, f.tailSet = n, true
 				} else {
 					f.unknownFlag = "--tail " + args[i]
 				}
@@ -2328,6 +2329,17 @@ func printOutput(inst wire.StageInstance, tail int) {
 	}
 }
 
+// wantsOutput decides whether to show a stage's output. Unasked, only on failure —
+// that's when you need it and when noise is worth paying for. But an explicit
+// --tail is a request, and a request must never resolve to silence: a green sweep's
+// output is the only way to audit WHICH checks a "succeeded" actually exercised, and
+// `--tail 200` answering with nothing reads as "the run produced no output" rather
+// than "this command declines to show it." Reported by peri-sonnet-5, who could not
+// quote the guard count behind a gate they had just passed.
+func wantsOutput(status string, f flagSet) bool {
+	return f.tailSet || status == "failed" || status == "gate_failed"
+}
+
 // defaultTailLines is what a failure shows unasked: enough to hold a test summary
 // or a stack trace, short enough not to bury the status line that precedes it.
 const defaultTailLines = 20
@@ -2423,7 +2435,7 @@ func cmdStage(p paths, args []string) error {
 		if out.Instance.Error != "" {
 			fmt.Println("  " + out.Instance.Error)
 		}
-		if out.Instance.Status == "failed" || out.Instance.Status == "gate_failed" {
+		if wantsOutput(out.Instance.Status, f) {
 			printOutput(out.Instance, f.tail)
 		}
 		return stageFailureErr(out.Instance.Status)
@@ -2452,7 +2464,7 @@ func cmdStage(p paths, args []string) error {
 		}
 		// Quiet on success, informative on failure: the whole point is that you
 		// don't have to go and ask a second time, in JSON, at the worst moment.
-		if out.Instance.Status == "failed" || out.Instance.Status == "gate_failed" {
+		if wantsOutput(out.Instance.Status, f) {
 			printOutput(out.Instance, f.tail)
 		}
 		return stageFailureErr(out.Instance.Status)
@@ -2487,6 +2499,11 @@ func cmdStage(p paths, args []string) error {
 		// requested by coordinator for exactly that reason.
 		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
 		printSummary(out.Instance)
+		// Same rule as start/status. An agent woken by `wait` on a red gate would
+		// otherwise have to issue a second query for the reason it just waited for.
+		if wantsOutput(out.Instance.Status, f) {
+			printOutput(out.Instance, f.tail)
+		}
 		return stageFailureErr(out.Instance.Status)
 	case "cancel":
 		token, err := resolveTokenAuto(p, f, as)

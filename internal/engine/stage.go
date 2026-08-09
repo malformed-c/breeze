@@ -15,11 +15,17 @@ import (
 // — callers that need a derived status for an untouched key (stage.status) compute it
 // themselves via checkPrerequisite/checkEnvironmentDeps rather than persisting a
 // placeholder.
+//
+// Every read of the instance map goes through here, which is why Recorded is stamped
+// here: presence in the map is exactly what "a run happened" means, so no caller can
+// return a stored instance while forgetting to say it's a record. Doing it per read
+// path is what broke `wait`.
 func (e *Engine) getInstance(pipeline, stage string, key StageKey) *StageInstance {
 	inst, ok := e.instances[instanceKey(pipeline, stage, key)]
 	if !ok {
 		return nil
 	}
+	inst.Recorded = true
 	return inst
 }
 
@@ -547,7 +553,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 			e.audit("stage.gate_failed", actor, err.Error())
 			e.changed()
 			e.notifyStageLocked(pipelineName, stageName, key)
-			gateCp := *e.instances[ik]
+			gateCp := *e.getInstance(pipelineName, stageName, key)
 			e.mu.Unlock()
 			e.notifyResolution(pipelineName, stageName, &gateCp)
 			e.recordBrief(p.BriefsDir, &gateCp)
@@ -623,7 +629,6 @@ func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string
 	}
 	if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
 		cp := *inst
-		cp.Recorded = true
 		return &cp, nil
 	}
 	// No instance for this key: everything below is a PROJECTION of what the gates

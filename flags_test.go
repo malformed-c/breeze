@@ -59,3 +59,37 @@ func TestRejectUnknownFlags(t *testing.T) {
 		t.Fatalf("expected an unknown flag to be handled with a non-nil error, got handled=%v err=%v", handled, err)
 	}
 }
+
+// `--tail N` on a stage that SUCCEEDED printed nothing at all: output was shown only
+// on failure, so the flag was accepted, parsed, and then silently ignored. That
+// removes the only way to audit which checks a green gate actually exercised — the
+// reporter had just passed a guards sweep and could not quote how many guards ran.
+// An explicit request must not resolve to silence; the quiet-on-success default is
+// still right for callers who did not ask.
+func TestTailFlagIsHonouredRegardlessOfOutcome(t *testing.T) {
+	asked := parseFlags([]string{"--tail", "200"})
+	if !asked.tailSet || asked.tail != 200 {
+		t.Fatalf("--tail 200 did not parse: %+v", asked)
+	}
+	unasked := parseFlags([]string{"--env", "local"})
+	if unasked.tailSet {
+		t.Fatalf("tailSet must distinguish an explicit --tail from the default")
+	}
+
+	cases := []struct {
+		status string
+		f      flagSet
+		want   bool
+	}{
+		{"succeeded", asked, true},    // the bug: this was false
+		{"running", asked, true},      // a partial log is still what was asked for
+		{"succeeded", unasked, false}, // default stays quiet
+		{"failed", unasked, true},     // and still speaks up unasked when it matters
+		{"gate_failed", unasked, true},
+	}
+	for _, c := range cases {
+		if got := wantsOutput(c.status, c.f); got != c.want {
+			t.Errorf("wantsOutput(%q, tailSet=%v) = %v, want %v", c.status, c.f.tailSet, got, c.want)
+		}
+	}
+}
