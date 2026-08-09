@@ -294,6 +294,32 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### What retention keeps
+
+A daemon's state grows with every stage run, so older runs have their captured
+**output** dropped — the newest 200 resolved instances per pipeline keep their
+stdout/stderr. On a real daemon that was 78% of the snapshot (3.5 MB of 4.5 MB) for
+the bytes least likely to be read again, re-marshalled on every mutation.
+
+**The verdict is never dropped.** Retention used to delete the whole instance past a
+cap, which is not a memory bound but a correctness bug: `checkPrerequisite` reads the
+same records, so a dependent stage on an older commit was refused with `prerequisite
+"test" has not run yet` for a prerequisite that had *passed and been evicted* — a gate
+refusing on an absence it manufactured itself, silently, and more often the busier the
+fleet got. Found on a live daemon sitting exactly at the cap.
+
+A run whose output was dropped says so rather than showing you an empty log:
+
+```
+test: succeeded
+  (output pruned by retention — the verdict above is intact, but this run's
+   stdout/stderr are no longer stored)
+```
+
+The trade is that instance *count* is now unbounded, growing with the number of stage
+runs at a few hundred bytes each. That is a straight-line, visible cost, and the right
+one to take over a gate that silently forgets.
+
 #### Requiring a lock — `requires_lock`
 
 A stage can declare the lock its caller must **already hold**:
@@ -983,8 +1009,8 @@ has already succeeded there (the monotonic-ordering rule) — which is exactly w
 you don't want when the newer one turns out to be broken and you need to get back
 to the last known-good commit *now*. `rollback deploy` deliberately bypasses that
 rule, and Gate 1/Gate 2 as well (the target commit presumably already passed the
-pipeline once — re-checking gates that might have since had their evidence pruned
-by retention isn't useful here). It does **not** bypass RBAC — same
+pipeline once, and you need it back now, not after a re-run). It does **not** bypass
+RBAC — same
 `required_role` as a normal deploy — or the exclusive `(target, environment)` lock,
 so a rollback and a concurrent deploy still can't race each other. On success, the
 "current" pointer resets to the rolled-back commit (not just the highest seq ever

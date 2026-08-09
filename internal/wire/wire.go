@@ -434,6 +434,9 @@ type StageInstance struct {
 	// Recorded is false when this describes what the gates WOULD say rather than a
 	// run that happened — see engine.StageInstance.Recorded.
 	Recorded bool `json:"recorded"`
+	// OutputPruned is true when retention dropped this run's captured output. The
+	// verdict is unaffected. See engine.StageInstance.OutputPruned.
+	OutputPruned bool `json:"outputPruned,omitempty"`
 	// Summary is the stage transform's output — a short rendering of what the raw
 	// output means, when the stage defines one. See engine.StageDef.Transform.
 	Summary string `json:"summary,omitempty"`

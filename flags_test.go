@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"breeze/internal/wire"
+)
 
 // TestParseFlagsRoutesUnrecognizedFlagsAwayFromPositionals is a regression test
 // for two real incidents: `breeze identity register --help` used to silently
@@ -91,5 +98,46 @@ func TestTailFlagIsHonouredRegardlessOfOutcome(t *testing.T) {
 		if got := wantsOutput(c.status, c.f); got != c.want {
 			t.Errorf("wantsOutput(%q, tailSet=%v) = %v, want %v", c.status, c.f.tailSet, got, c.want)
 		}
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what it
+// wrote — printOutput writes straight to stdout, so this is the only way to assert
+// on the text a human actually sees.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	fn()
+	os.Stdout = saved
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Retention keeps a run's verdict and drops its output, so an empty stdout no longer
+// means "this stage printed nothing" — it can also mean "breeze no longer has it".
+// Those are answers to different questions, and tonight's whole theme is that the
+// second must not be delivered as silence.
+func TestPrunedOutputSaysSoRatherThanPrintingNothing(t *testing.T) {
+	out := captureStdout(t, func() {
+		printOutput(wire.StageInstance{Status: "succeeded", OutputPruned: true}, 20)
+	})
+	if !strings.Contains(out, "pruned by retention") {
+		t.Fatalf("a pruned run must say its output is gone, got %q", out)
+	}
+
+	quiet := captureStdout(t, func() {
+		printOutput(wire.StageInstance{Status: "succeeded"}, 20)
+	})
+	if strings.Contains(quiet, "pruned") {
+		t.Fatalf("a run that simply printed nothing must not claim retention took it, got %q", quiet)
 	}
 }

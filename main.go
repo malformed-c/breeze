@@ -2340,6 +2340,13 @@ func printOutput(inst wire.StageInstance, tail int) {
 	if tail == 0 {
 		tail = defaultTailLines
 	}
+	// Retention drops the output of older runs but keeps the verdict, so "this stage
+	// printed nothing" and "breeze no longer has what it printed" would otherwise be
+	// the same silence — and the second one is the answer to a different question.
+	if inst.OutputPruned && inst.Stdout == "" && inst.Stderr == "" {
+		fmt.Println("  (output pruned by retention — the verdict above is intact, but this run's stdout/stderr are no longer stored)")
+		return
+	}
 	for _, s := range []struct{ name, body string }{{"stderr", inst.Stderr}, {"stdout", inst.Stdout}} {
 		body := strings.TrimRight(s.body, "\n")
 		if body == "" {

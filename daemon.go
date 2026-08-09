@@ -223,7 +223,7 @@ func (d *daemonServer) sweepLoop() {
 			return
 		case <-ticker.C:
 			d.eng.SweepExpiredLocks()
-			d.eng.PruneStageInstances()
+			d.eng.PruneStageOutput()
 			d.eng.SweepExpiredGrants()
 		}
 	}

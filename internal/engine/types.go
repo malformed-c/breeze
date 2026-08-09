@@ -457,6 +457,11 @@ type StageInstance struct {
 	// is worse than the bug it fixed, because a warning that cries wolf trains people
 	// to ignore it. Not persisted: a snapshot's instances are records by construction.
 	Recorded bool `json:"-"`
+	// OutputPruned records that this run's captured stdout/stderr were dropped by
+	// retention (see PruneStageOutput) — the run and its verdict are intact, the
+	// bytes are gone. Distinguishes "this stage printed nothing" from "breeze no
+	// longer has what it printed", which are the same empty string otherwise.
+	OutputPruned bool
 	// Summary is a stage's transform output (see StageDef.Transform) — a short
 	// human-readable rendering of what the raw output means. Empty when the stage
 	// has no transform, which is every stage that doesn't opt in.
