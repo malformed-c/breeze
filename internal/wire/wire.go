@@ -286,6 +286,8 @@ type CommandTemplate struct {
 	Args           []string        `json:"args,omitempty"`
 	Env            []string        `json:"env,omitempty"`
 	Dir            string          `json:"dir,omitempty"`
+	Script         string          `json:"script,omitempty"`      // inline body, alternative to Path+Args
+	Interpreter    []string        `json:"interpreter,omitempty"` // argv prefix for Script; default /bin/sh or its shebang
 	ResourceLimits *ResourceLimits `json:"resourceLimits,omitempty"`
 }
 
@@ -334,7 +336,10 @@ type StageDef struct {
 	// earlier in Stages. Deliberately NOT omitempty: the nil/empty distinction is
 	// load-bearing (absent = "the preceding stage", [] = "no prerequisite, a root"),
 	// and omitempty would flatten [] to absent and silently re-chain a root stage.
-	Needs []string `json:"needs"`
+	// Transform runs after this stage resolves, with the result piped in as JSON,
+	// and its stdout is recorded as the instance's summary. Display-only.
+	Transform *Hook    `json:"transform,omitempty"`
+	Needs     []string `json:"needs"`
 	// Convergence is "all" (default, empty) or "any" — how many of Needs must have
 	// succeeded. See engine.Convergence.
 	Convergence string `json:"convergence,omitempty"`
@@ -400,8 +405,16 @@ type StageInstance struct {
 	Stdout      string     `json:"stdout,omitempty"`
 	Stderr      string     `json:"stderr,omitempty"`
 	Error       string     `json:"error,omitempty"`
-	Actor       string     `json:"actor,omitempty"`
-	Brief       string     `json:"brief,omitempty"`
+	// FailureKind names WHY a failed stage failed — command_failed, timed_out,
+	// cancelled, orphaned, start_failed — alongside the Status that says THAT it
+	// did. Status stays the terminal class callers branch on; this is for deciding
+	// what to do about it. Empty for anything not failed.
+	FailureKind string `json:"failureKind,omitempty"`
+	Actor       string `json:"actor,omitempty"`
+	Brief       string `json:"brief,omitempty"`
+	// Summary is the stage transform's output — a short rendering of what the raw
+	// output means, when the stage defines one. See engine.StageDef.Transform.
+	Summary string `json:"summary,omitempty"`
 }
 
 type StageStartRequest struct {

@@ -347,6 +347,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	tmpl := stage.Command
 	preGate := stage.PreGate
 	postAction := stage.PostAction
+	transform := stage.Transform
 	briefsDir := p.BriefsDir
 	e.mu.Unlock()
 
@@ -406,21 +407,38 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	inst.ExitCode = result.ExitCode
 	inst.Stdout = result.Stdout
 	inst.Stderr = result.Stderr
-	if result.Err != nil {
-		inst.Status = StageFailed
+	switch {
+	case result.Err != nil:
+		inst.Status, inst.FailureKind = StageFailed, FailStart
 		inst.Error = result.Err.Error()
-	} else if result.TimedOut {
-		inst.Status = StageFailed
+	case result.TimedOut:
+		// A timeout says the run took too long. It says nothing about whether the
+		// code is good — 74 of 78 checks may have passed — so it must not read as
+		// "a check went red", which is what one flat "failed" made it look like.
+		inst.Status, inst.FailureKind = StageFailed, FailTimedOut
 		inst.Error = "timed out"
-	} else if result.ExitCode != 0 {
-		inst.Status = StageFailed
-		if inst.Error == "" && wasCancelled {
+	case wasCancelled:
+		inst.Status, inst.FailureKind = StageFailed, FailCancelled
+		if inst.Error == "" {
 			inst.Error = "cancelled"
 		}
-	} else {
+	case result.ExitCode != 0:
+		inst.Status, inst.FailureKind = StageFailed, FailCommand
+	default:
 		inst.Status = StageSucceeded
 	}
 	e.audit("stage."+string(inst.Status), actor, fmt.Sprintf("pipeline=%s stage=%s key=%s exitCode=%d", pipelineName, stageName, key, inst.ExitCode))
+	transformIn := transformInputFor(inst, "", result.TimedOut)
+	e.mu.Unlock()
+
+	// Run the transform between the outcome being decided and it being reported:
+	// the summary has to exist before notifyResolution/recordBrief, which are the
+	// places it's most worth having. The stage's own result is already final and
+	// cannot be affected by what happens here.
+	summary := e.runTransform(transform, transformIn, params, actor)
+
+	e.mu.Lock()
+	inst.Summary = summary
 	cp := *inst
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
@@ -636,7 +654,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		if inst.Status != StageRunning {
 			continue
 		}
-		inst.Status = StageFailed
+		inst.Status, inst.FailureKind = StageFailed, FailCancelled
 		inst.Error = reason
 		inst.FinishedAt = e.now()
 		e.audit("stage.cancelled", "system", fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", inst.Pipeline, inst.Stage, inst.Key, reason))
@@ -717,7 +735,7 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	// eventual completion could still land afterward and silently overwrite the
 	// cancellation.
 	e.cancelIfRunningLocked(instanceKey(pipelineName, stageName, key))
-	inst.Status = StageFailed
+	inst.Status, inst.FailureKind = StageFailed, FailCancelled
 	inst.Error = reason
 	inst.FinishedAt = e.now()
 	e.audit("stage.cancelled", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", pipelineName, stageName, key, reason))
@@ -814,8 +832,14 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
+		Script: tmpl.Script, Interpreter: tmpl.Interpreter,
 		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
+		// Record which OS process owns this stage while it runs, so a daemon that
+		// comes back after a crash can tell a runner that died with the machine from
+		// one that survived a hard kill of its parent.
+		OnStart: func(pid int) { e.recordRunner(pipelineName, stageName, key, pid) },
 	}, params)
+	e.clearRunner(pipelineName, stageName, key)
 	e.unregisterRunningCancel(runKey)
 	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
 	// once that's called, runCtx.Err() is non-nil unconditionally (that's just

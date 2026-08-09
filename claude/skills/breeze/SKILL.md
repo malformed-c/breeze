@@ -272,6 +272,20 @@ shows commits truncated to 12 chars; `--json` always shows the full value.
 `required_role` set, or is an approval stage. Check `show pipeline <name>` first if
 unsure whether a given stage needs one.
 
+**A failed stage now says which KIND of failed** — `command_failed`, `timed_out`,
+`cancelled`, `orphaned`, `start_failed` — alongside the status, because those have
+unrelated fixes. `status == "failed"` still means what it meant, so nothing scripted
+breaks; the kind is for deciding what to DO. A timeout with 74 of 78 checks passing
+used to read exactly like a check going red.
+
+**Output appears on failure without `--json`** (stderr first, then stdout,
+`--tail N` to bound it). Don't hand-roll a JSON parser for it any more.
+
+**A stage whose runner vanished is reconciled at daemon start**, not left `running`
+forever: it becomes `failed (orphaned)`, its run lock is released so the retry isn't
+blocked, and a runner that outlived the daemon is killed first. If you see
+`orphaned`, nothing is wrong with the commit — the run never produced a verdict.
+
 **Exit code reflects the outcome, not just the RPC.** `start stage`/`approve`/
 `status`/`wait` and `rollback deploy` exit non-zero when the reported status is
 `failed`/`gate_failed` — check `$?` (or use `&&`) instead of assuming success just
@@ -315,6 +329,46 @@ succeeds, and `breeze run pipeline` runs them concurrently. `breeze show pipelin
 <name>` renders each stage's real prerequisites (`requires: unit + race`, or
 `requires: unit or race` for convergence=any) — read that rather than inferring the
 order from the HCL.
+
+### Turning a stage's output into an answer (`transform`)
+
+A stage's raw output is often unreadable when you need it — 4000 lines of test log
+where what's wanted is "3 failed: X, Y, Z". A `transform` block runs after the stage
+resolves, gets the result as JSON on **stdin**, and its stdout becomes the stage's
+**summary**, shown by `status stage`, in the mess notification and in the brief file,
+alongside (never instead of) the raw output.
+
+```hcl
+transform {                      # any command: jq, a binary, an inline script
+  command = ["jq", "-r", ".stdout | split(\"\\n\") | map(select(test(\"FAIL\"))) | join(\", \")"]
+  timeout = "30s"
+}
+transform {
+  interpreter = ["python3"]      # default /bin/sh, or the script's own shebang
+  timeout     = "30s"
+  script      = <<-PY
+    import sys, json
+    d = json.load(sys.stdin)
+    print("%s in %dms" % (d["status"], d["durationMs"]))
+  PY
+}
+```
+
+stdin fields: `pipeline`, `stage`, `commit`, `environment`, `target`, `actor`,
+`brief`, `status`, `exitCode`, `timedOut`, `error`, `startedAt`, `finishedAt`,
+`durationMs`, `stdout`, `stderr`.
+
+**It is display-only.** A transform can never change whether the stage passed, and
+one that fails or writes nothing leaves the outcome alone — but says so in the
+summary (`(transform exited 7: …)`) plus an audit event, rather than silently
+producing no summary. If you want output to decide pass/fail, put that in the stage
+command's own exit code.
+
+`script`/`interpreter` work anywhere a `command` does (stage commands, pre_gate,
+post_action). `{placeholder}` substitution does NOT apply inside a script body —
+that is what keeps a commit sha from ever being spliced into a shell — so a script
+takes its context from stdin. A bare command name (`jq`, `python3`) is a PATH
+lookup; `./scripts/x.sh` is relative to the config file.
 
 ### Waiting instead of polling
 

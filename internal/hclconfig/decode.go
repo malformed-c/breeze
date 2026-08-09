@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsimple"
@@ -83,14 +84,26 @@ type StageHCL struct {
 	BlockPredecessorActor bool               `hcl:"block_predecessor_actor,optional"`
 	Target                string             `hcl:"target,optional"`
 	Command               []string           `hcl:"command,optional"`
+	Script                string             `hcl:"script,optional"`
+	Interpreter           []string           `hcl:"interpreter,optional"`
 	Timeout               string             `hcl:"timeout,optional"`
 	ResourceLimits        *ResourceLimitsHCL `hcl:"resource_limits,block"`
 	PreGate               []HookHCL          `hcl:"pre_gate,block"`
 	PostAction            []HookHCL          `hcl:"post_action,block"`
+	// Transform runs after the stage resolves, with the result piped in as JSON,
+	// and its stdout becomes the stage's summary. At most one — a summary has a
+	// single author, and merging several would need a rule nobody asked for.
+	Transform *HookHCL `hcl:"transform,block"`
 }
 
+// HookHCL is a command to run: either `command = [...]` (an executable plus argv,
+// e.g. ["jq", "-r", ".stderr"]) or an inline `script`, optionally with an
+// `interpreter` prefix (["python3"], ["jq", "-rf"], ["awk", "-f"]). A script
+// defaults to /bin/sh, or executes directly when it starts with a shebang.
 type HookHCL struct {
-	Command        []string           `hcl:"command"`
+	Command        []string           `hcl:"command,optional"`
+	Script         string             `hcl:"script,optional"`
+	Interpreter    []string           `hcl:"interpreter,optional"`
 	Timeout        string             `hcl:"timeout"`
 	ResourceLimits *ResourceLimitsHCL `hcl:"resource_limits,block"`
 }
@@ -185,21 +198,41 @@ func ParseDefaults(path string) (*wire.ResourceLimits, error) {
 func resolveRelativePaths(p *wire.Pipeline, baseDir string) {
 	p.BriefsDir = resolveRelative(baseDir, p.BriefsDir)
 	for i := range p.Stages {
-		p.Stages[i].Command.Path = resolveRelative(baseDir, p.Stages[i].Command.Path)
+		p.Stages[i].Command.Path = resolveCommandPath(baseDir, p.Stages[i].Command.Path)
 		for j := range p.Stages[i].PreGate {
-			p.Stages[i].PreGate[j].Command.Path = resolveRelative(baseDir, p.Stages[i].PreGate[j].Command.Path)
+			p.Stages[i].PreGate[j].Command.Path = resolveCommandPath(baseDir, p.Stages[i].PreGate[j].Command.Path)
 		}
 		for j := range p.Stages[i].PostAction {
-			p.Stages[i].PostAction[j].Command.Path = resolveRelative(baseDir, p.Stages[i].PostAction[j].Command.Path)
+			p.Stages[i].PostAction[j].Command.Path = resolveCommandPath(baseDir, p.Stages[i].PostAction[j].Command.Path)
+		}
+		if t := p.Stages[i].Transform; t != nil {
+			t.Command.Path = resolveCommandPath(baseDir, t.Command.Path)
 		}
 	}
 }
 
+// resolveRelative anchors any relative path at baseDir. Used for DIRECTORIES
+// (briefs_dir, a command's working dir), where a bare name can only mean "next to
+// the config file" — there is no search path for a directory.
 func resolveRelative(baseDir, p string) string {
 	if p == "" || filepath.IsAbs(p) {
 		return p
 	}
 	return filepath.Clean(filepath.Join(baseDir, p))
+}
+
+// resolveCommandPath is resolveRelative for an EXECUTABLE, with one difference that
+// matters: a bare name with no separator is left alone, because that names a program
+// to find on PATH — exactly as every shell and exec.Command already treat it.
+// "./scripts/build.sh" and "scripts/build.sh" still anchor at the config file.
+// Anchoring bare names turned `command = ["jq", ...]` into <configdir>/jq and failed
+// with "no such file or directory", which reads as breeze being unable to run jq at
+// all rather than as a path rule.
+func resolveCommandPath(baseDir, p string) string {
+	if !strings.ContainsRune(p, filepath.Separator) {
+		return p
+	}
+	return resolveRelative(baseDir, p)
 }
 
 func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
@@ -291,9 +324,11 @@ func translateEnvOwners(block *EnvOwnersBlock) (map[string]string, error) {
 }
 
 func translateStage(sh StageHCL) (wire.StageDef, error) {
+	cmd := commandFromList(sh.Command, sh.ResourceLimits)
+	cmd.Script, cmd.Interpreter = sh.Script, sh.Interpreter
 	sd := wire.StageDef{
 		Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout,
-		Command: commandFromList(sh.Command, sh.ResourceLimits), Debug: sh.Debug,
+		Command: cmd, Debug: sh.Debug,
 		Needs: sh.Needs, Convergence: sh.Convergence,
 	}
 	switch sh.Type {
@@ -312,11 +347,17 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 	for _, h := range sh.PostAction {
 		sd.PostAction = append(sd.PostAction, translateHook(h))
 	}
+	if sh.Transform != nil {
+		t := translateHook(*sh.Transform)
+		sd.Transform = &t
+	}
 	return sd, nil
 }
 
 func translateHook(h HookHCL) wire.Hook {
-	return wire.Hook{Command: commandFromList(h.Command, h.ResourceLimits), Timeout: h.Timeout}
+	tmpl := commandFromList(h.Command, h.ResourceLimits)
+	tmpl.Script, tmpl.Interpreter = h.Script, h.Interpreter
+	return wire.Hook{Command: tmpl, Timeout: h.Timeout}
 }
 
 // commandFromList implements the documented convention: a command list's first

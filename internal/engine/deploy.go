@@ -297,6 +297,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	tmpl := stage.Command
 	preGate := stage.PreGate
 	postAction := stage.PostAction
+	transform := stage.Transform
 	e.mu.Unlock()
 
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "target": target, "actor": actor}
@@ -334,18 +335,21 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	outcome := DeploySucceeded
 	if result.Err != nil {
-		inst.Status = StageFailed
+		inst.Status, inst.FailureKind = StageFailed, FailStart
 		inst.Error = result.Err.Error()
 		outcome = DeployFailed
 	} else if result.TimedOut {
-		inst.Status = StageFailed
+		inst.Status, inst.FailureKind = StageFailed, FailTimedOut
 		inst.Error = "timed out"
 		outcome = DeployFailed
-	} else if result.ExitCode != 0 {
-		inst.Status = StageFailed
-		if inst.Error == "" && wasCancelled {
+	} else if wasCancelled {
+		inst.Status, inst.FailureKind = StageFailed, FailCancelled
+		if inst.Error == "" {
 			inst.Error = "cancelled"
 		}
+		outcome = DeployFailed
+	} else if result.ExitCode != 0 {
+		inst.Status, inst.FailureKind = StageFailed, FailCommand
 		outcome = DeployFailed
 	} else {
 		inst.Status = StageSucceeded
@@ -374,6 +378,11 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		ExitCode: inst.ExitCode, Outcome: outcome, Error: inst.Error,
 	})
 	e.audit("stage."+string(inst.Status), actor, fmt.Sprintf("pipeline=%s stage=%s key=%s exitCode=%d outcome=%s", pipelineName, stageName, key, inst.ExitCode, outcome))
+	transformIn := transformInputFor(inst, target, result.TimedOut)
+	e.mu.Unlock()
+	summary := e.runTransform(transform, transformIn, params, actor)
+	e.mu.Lock()
+	inst.Summary = summary
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
 	cp := *inst

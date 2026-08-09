@@ -139,7 +139,17 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	}
 
 	// (2) flock: the actual atomic mutual-exclusion primitive.
-	fd, err := syscall.Open(p.lockfile, syscall.O_CREAT|syscall.O_RDWR, 0o600)
+	//
+	// O_CLOEXEC is load-bearing, not hygiene. flock ownership belongs to the OPEN
+	// FILE DESCRIPTION, so any process that inherits this descriptor keeps the lock
+	// held — and without close-on-exec every stage command the daemon forks inherits
+	// it. A runner is Setpgid'd into its own group, so SIGKILLing the daemon leaves
+	// the runner alive holding the lock, and NO new daemon can ever bind for that
+	// directory until that process happens to exit. Found while reproducing a
+	// crash-orphan report: the daemon came back and failed with "another breeze
+	// daemon instance is already running", naming a daemon that no longer existed.
+	// The actual holder was a stray `sleep` from the stage that had been running.
+	fd, err := syscall.Open(p.lockfile, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lockfile: %w", err)
 	}
@@ -172,6 +182,15 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		log.Printf("warning: failed to load snapshot: %v", err)
 	} else {
 		eng.Load(snap)
+	}
+	// Anything the snapshot claims is still running was orphaned by whatever ended
+	// the previous daemon — a live run exists only in the memory of the process
+	// driving it, and a graceful stop resolves its runs before saving. Reconciled
+	// here, before serving, so a caller never sees a "running" stage that nothing is
+	// running (reported live: a host crash left stages stuck running indefinitely,
+	// which also BLOCKED their retry until someone cancelled them by hand).
+	if n := eng.ReconcileOrphanedStages(); n > 0 {
+		log.Printf("reconciled %d stage instance(s) left running by a daemon that did not shut down cleanly — marked failed (orphaned) and their run locks released, so they can be retried", n)
 	}
 	if err := loadDefaultLimits(eng, p); err != nil {
 		// Refusing to start is deliberate. This file exists precisely because

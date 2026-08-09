@@ -443,3 +443,46 @@ func TestExplicitDaemonStartDisplacesExisting(t *testing.T) {
 func tryStartDaemonForTest(p paths) (*daemonServer, error) {
 	return tryBindDaemon(p, true)
 }
+
+// The daemon's flock descriptor MUST be close-on-exec. flock ownership belongs to
+// the open file description, so any process inheriting the descriptor keeps the
+// lock held — and the daemon forks a process for every stage command. Without
+// O_CLOEXEC, a runner that outlives its daemon (which happens: runners are
+// Setpgid'd into their own group, so SIGKILLing the daemon leaves them running)
+// holds the lock forever, and NO new daemon can bind for that directory until that
+// stray process happens to exit.
+//
+// Found while reproducing a crash-orphan report: the restarted daemon failed with
+// "another breeze daemon instance is already running", naming a daemon that no
+// longer existed — the real holder was a stray `sleep` from the interrupted stage.
+// A live end-to-end reproduction is in the commit; this is the cheap invariant that
+// keeps it from coming back.
+func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
+	dir := t.TempDir()
+	p := paths{
+		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
+		state: dir + "/state.json", audit: dir + "/audit.jsonl",
+		daemonLog: dir + "/daemon.log", identDir: dir + "/ident",
+		defaults: dir + "/defaults.hcl",
+	}
+	if err := p.ensureDir(); err != nil {
+		t.Fatalf("ensureDir: %v", err)
+	}
+	d, err := tryBindDaemon(p, false)
+	if err != nil || d == nil {
+		t.Fatalf("bind: d=%v err=%v", d, err)
+	}
+	defer func() {
+		syscall.Flock(d.lockFD, syscall.LOCK_UN)
+		syscall.Close(d.lockFD)
+		d.listener.Close()
+	}()
+
+	flags, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(d.lockFD), uintptr(syscall.F_GETFD), 0)
+	if errno != 0 {
+		t.Fatalf("F_GETFD: %v", errno)
+	}
+	if flags&syscall.FD_CLOEXEC == 0 {
+		t.Fatalf("the lock fd is NOT close-on-exec: every stage command the daemon forks would inherit the flock, and one surviving runner would block every future daemon start for this directory")
+	}
+}

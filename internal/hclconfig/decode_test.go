@@ -3,6 +3,7 @@ package hclconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -522,5 +523,70 @@ pipeline "gated" {
 	}
 	if rl := review.PreGate[0].Command.ResourceLimits; rl == nil || rl.CPUWeight != 50 {
 		t.Fatalf("an approval stage's pre_gate DOES run a command and must inherit, got %+v", rl)
+	}
+}
+
+// A transform is meant to be written where it's used, in whatever language suits:
+// jq as a plain argv, an inline python or sh script. All three have to survive the
+// HCL translation, including the bare-command-name-means-PATH rule.
+func TestParseFileTransformShapes(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "svc" {
+  stage "jq" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+    transform {
+      command = ["jq", "-r", ".stdout"]
+      timeout = "30s"
+    }
+  }
+  stage "py" {
+    type    = "command"
+    timeout = "1m"
+    command = ["./scripts/run.sh"]
+    transform {
+      interpreter = ["python3"]
+      timeout     = "30s"
+      script      = <<-PY
+        import sys, json
+        print(json.load(sys.stdin)["status"])
+      PY
+    }
+  }
+  stage "sh" {
+    type    = "command"
+    timeout = "1m"
+    script  = "echo the stage itself can be a script too"
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	stages := pipelines[0].Stages
+
+	// A bare command name is a PATH lookup and must NOT be anchored at the config
+	// dir — anchoring turned `command = ["jq", ...]` into <configdir>/jq and failed
+	// with "no such file or directory".
+	if got := stages[0].Transform.Command.Path; got != "jq" {
+		t.Errorf("bare command name = %q, want it left alone for PATH lookup", got)
+	}
+	// ...while an explicitly relative path is still anchored, as documented.
+	if got := stages[1].Command.Path; !filepath.IsAbs(got) || !strings.HasSuffix(got, "/scripts/run.sh") {
+		t.Errorf("relative command path = %q, want it anchored at the config dir", got)
+	}
+	if tr := stages[1].Transform; tr == nil || len(tr.Command.Interpreter) != 1 || tr.Command.Interpreter[0] != "python3" {
+		t.Errorf("python transform = %+v", tr)
+	} else if !strings.Contains(tr.Command.Script, "json.load(sys.stdin)") {
+		t.Errorf("script body did not survive: %q", tr.Command.Script)
+	}
+	// A stage's own command can be a script as well.
+	if got := stages[2].Command.Script; !strings.Contains(got, "the stage itself can be a script") {
+		t.Errorf("stage script = %q", got)
+	}
+	if stages[2].Transform != nil {
+		t.Errorf("a stage without a transform block must not get one")
 	}
 }

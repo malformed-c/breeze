@@ -155,6 +155,12 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 		return
 	}
 	message := fmt.Sprintf("breeze: %s/%s (%s) -> %s", pipelineName, stageName, inst.Key.ShortString(), inst.Status)
+	// A stage's transform exists to answer "and what does that mean?" — which is
+	// exactly the question a notification raises and, without this, leaves the
+	// reader to answer by going and reading the raw output themselves.
+	if inst.Summary != "" {
+		message += " — " + oneLine(inst.Summary)
+	}
 	thread := messThreadID(pipelineName, inst.Key.Commit)
 	if len(targets) > 0 && fn != nil {
 		fn(targets, message, thread)

@@ -232,3 +232,120 @@ func TestEmptyResourceLimitsDoNotWrap(t *testing.T) {
 		t.Fatalf("stdout = %q", got)
 	}
 }
+
+// A transform is filter-shaped: it reads its input to EOF and writes a result.
+// That needs a real stdin pipe that CLOSES — a command blocking forever on a read
+// would hang the stage that ran it.
+func TestRunPipesStdinAndClosesIt(t *testing.T) {
+	res := Run(context.Background(), Template{
+		Path: "/bin/sh", Args: []string{"-c", "cat; echo ' <- eof reached'"},
+		Timeout: 5 * time.Second, Stdin: []byte(`{"status":"failed"}`),
+	}, nil)
+	if res.Err != nil || res.TimedOut {
+		t.Fatalf("stdin-reading command must complete: %+v", res)
+	}
+	got := strings.TrimSpace(string(res.Stdout))
+	if got != `{"status":"failed"} <- eof reached` {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+// No stdin means an inherited/empty one, not a hang: a command that happens to
+// read stdin must still see EOF rather than blocking on the daemon's own.
+func TestRunWithoutStdinDoesNotHang(t *testing.T) {
+	res := Run(context.Background(), Template{
+		Path: "/bin/sh", Args: []string{"-c", "cat"}, Timeout: 5 * time.Second,
+	}, nil)
+	if res.TimedOut {
+		t.Fatalf("a command reading stdin with none supplied must not hang")
+	}
+	if len(res.Stdout) != 0 {
+		t.Fatalf("stdout = %q, want empty", res.Stdout)
+	}
+}
+
+// A transform is meant to be written where it's used — three lines of jq, python or
+// sh — not checked in as a script nobody can see from the pipeline definition.
+func TestRunInlineScript(t *testing.T) {
+	cases := []struct {
+		name        string
+		script      string
+		interpreter []string
+		stdin       string
+		want        string
+	}{
+		{
+			name:   "defaults to sh",
+			script: "read -r line; echo \"sh saw: $line\"",
+			stdin:  "hello",
+			want:   "sh saw: hello",
+		},
+		{
+			name:        "explicit interpreter",
+			script:      "import sys, json\nd = json.load(sys.stdin)\nprint('%s exited %d' % (d['stage'], d['exitCode']))",
+			interpreter: []string{"python3"},
+			stdin:       `{"stage":"test","exitCode":2}`,
+			want:        "test exited 2",
+		},
+		{
+			name:   "shebang is executed directly",
+			script: "#!/bin/sh\necho shebang-ran",
+			want:   "shebang-ran",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.interpreter) > 0 {
+				if _, err := exec.LookPath(c.interpreter[0]); err != nil {
+					t.Skipf("%s not available", c.interpreter[0])
+				}
+			}
+			res := Run(context.Background(), Template{
+				Script: c.script, Interpreter: c.interpreter,
+				Stdin: []byte(c.stdin), Timeout: 10 * time.Second,
+			}, nil)
+			if res.Err != nil || res.ExitCode != 0 {
+				t.Fatalf("script failed: %+v stderr=%s", res, res.Stderr)
+			}
+			if got := strings.TrimSpace(string(res.Stdout)); got != c.want {
+				t.Fatalf("stdout = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// The no-shell-injection guarantee has to survive the introduction of a shell:
+// placeholders are substituted into ARGV, never into a script body, so a param
+// carrying shell metacharacters stays inert even when the interpreter IS a shell.
+func TestInlineScriptDoesNotSubstitutePlaceholders(t *testing.T) {
+	res := Run(context.Background(), Template{
+		// If {commit} were substituted here, the subshell would run and print "pwned".
+		Script:  `echo "literal: {commit}"`,
+		Timeout: 10 * time.Second,
+	}, Params{"commit": "$(echo pwned)"})
+	if res.Err != nil || res.ExitCode != 0 {
+		t.Fatalf("script failed: %+v", res)
+	}
+	got := strings.TrimSpace(string(res.Stdout))
+	if got != "literal: {commit}" {
+		t.Fatalf("stdout = %q — a placeholder must stay literal inside a script body", got)
+	}
+}
+
+// The temp file must not survive the run: it's 0700 and per-run precisely so
+// nothing can read or replace a script body after the fact.
+func TestInlineScriptTempFileIsRemoved(t *testing.T) {
+	res := Run(context.Background(), Template{
+		Script: "echo $0", Timeout: 10 * time.Second,
+	}, nil)
+	if res.Err != nil {
+		t.Fatalf("script failed: %+v", res)
+	}
+	path := strings.TrimSpace(string(res.Stdout))
+	if path == "" {
+		t.Fatalf("expected the script path on stdout")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("script temp file %s still exists after the run (err=%v)", path, err)
+	}
+}

@@ -1,0 +1,66 @@
+# Three findings from a day of heavy pipeline use (trail-main, peri-sonnet-5),
+# all reported against real incidents:
+#   - "failed" flattened three different facts with three different next actions
+#   - a stage's output was reachable only through --json, so every caller
+#     hand-rolled the same fragile parser at the exact moment a gate went red
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# A red check and a timeout are both "failed" — callers branching on status keep
+# working — but the KIND names which one, because the fixes are unrelated.
+! exec breeze start stage svc redcheck abc123 --as ci --token-file ci.token
+stdout 'redcheck: failed \(command_failed\)'
+
+! exec breeze start stage svc slow abc123 --as ci --token-file ci.token
+stdout 'slow: failed \(timed_out\)'
+
+# The output is shown on failure without asking for --json: stderr first (the
+# diagnosis usually lives there), then stdout.
+stdout '--- stderr'
+stdout 'about to hang'
+
+# ...and the raw output is still there in --json for anything scripted.
+! exec breeze status stage svc redcheck abc123 --json
+stdout '"failureKind":\s*"command_failed"'
+
+# Quiet on success — the output only appears when you need it.
+exec breeze start stage svc fine abc123 --as ci --token-file ci.token
+stdout 'fine: succeeded'
+! stdout '--- stdout'
+
+# --tail bounds it, and says what it dropped rather than pretending otherwise.
+! exec breeze start stage svc chatty abc123 --as ci --token-file ci.token --tail 3
+stdout 'last 3 of \d+ lines'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "svc" {
+  stage "redcheck" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/sh", "-c", "echo 'check 41 FAILED' >&2; exit 1"]
+  }
+  stage "slow" {
+    type    = "command"
+    needs   = []
+    timeout = "1s"
+    command = ["/bin/sh", "-c", "echo 'about to hang' >&2; sleep 30"]
+  }
+  stage "fine" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/sh", "-c", "echo 'all good'"]
+  }
+  stage "chatty" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do echo line $i; done; exit 2"]
+  }
+}

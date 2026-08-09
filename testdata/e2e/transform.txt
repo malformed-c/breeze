@@ -1,0 +1,88 @@
+# A stage's transform is handed the resolved result as JSON on stdin and its stdout
+# becomes the stage's summary — the short answer to "and what does that mean?",
+# next to (never instead of) the raw output. It can be any command: jq as plain
+# argv, an inline python or sh script, or a binary of your own.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# An inline sh transform, on a stage that failed. The summary explains; the exit
+# status is still the stage's own.
+! exec breeze start stage svc failing abc123 --as ci --token-file ci.token
+stdout 'failing: failed'
+stdout '2 of 3 checks failed'
+
+# The raw output is kept — a summary never replaces the record. (status exits
+# non-zero because the STAGE failed, which is the documented convention.)
+! exec breeze status stage svc failing abc123 --json
+stdout '"stdout":\s*"[^"]*not ok'
+stdout '"summary":\s*"2 of 3 checks failed"'
+
+# A bare command name is looked up on PATH, not anchored at the config file: this
+# is what `command = ["jq", ...]` in a transform depends on.
+exec breeze start stage svc pathlookup abc123 --as ci --token-file ci.token
+stdout 'pathlookup: succeeded'
+stdout 'echo found on PATH'
+
+# A transform that breaks cannot turn a green stage red, and does not vanish either.
+exec breeze start stage svc broken abc123 --as ci --token-file ci.token
+stdout 'broken: succeeded'
+stdout 'transform exited 7'
+
+# A stage with no transform is unaffected and carries no summary.
+exec breeze start stage svc plain abc123 --as ci --token-file ci.token
+stdout 'plain: succeeded'
+exec breeze status stage svc plain abc123 --json
+! stdout '"summary"'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "svc" {
+  stage "failing" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/sh", "-c", "echo 'ok 1'; echo 'not ok 2'; echo 'not ok 3'; exit 1"]
+    transform {
+      timeout = "20s"
+      script  = <<-SH
+        json=$(cat)
+        total=$(printf '%s' "$json" | grep -o 'ok ' | wc -l)
+        bad=$(printf '%s' "$json" | grep -o 'not ok' | wc -l)
+        echo "$bad of $total checks failed"
+      SH
+    }
+  }
+
+  stage "pathlookup" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/true"]
+    transform {
+      command = ["echo", "echo found on PATH"]
+      timeout = "20s"
+    }
+  }
+
+  stage "broken" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/true"]
+    transform {
+      timeout = "20s"
+      script  = "exit 7"
+    }
+  }
+
+  stage "plain" {
+    type    = "command"
+    needs   = []
+    timeout = "20s"
+    command = ["/bin/true"]
+  }
+}

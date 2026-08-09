@@ -24,11 +24,19 @@ func identityToWire(id engine.Identity) wire.IdentityInfo {
 }
 
 func commandTemplateFromWire(w wire.CommandTemplate) engine.CommandTemplate {
-	return engine.CommandTemplate{Path: w.Path, Args: w.Args, Env: w.Env, Dir: w.Dir, ResourceLimits: resourceLimitsFromWire(w.ResourceLimits)}
+	return engine.CommandTemplate{
+		Path: w.Path, Args: w.Args, Env: w.Env, Dir: w.Dir,
+		Script: w.Script, Interpreter: w.Interpreter,
+		ResourceLimits: resourceLimitsFromWire(w.ResourceLimits),
+	}
 }
 
 func commandTemplateToWire(c engine.CommandTemplate) wire.CommandTemplate {
-	return wire.CommandTemplate{Path: c.Path, Args: c.Args, Env: c.Env, Dir: c.Dir, ResourceLimits: resourceLimitsToWire(c.ResourceLimits)}
+	return wire.CommandTemplate{
+		Path: c.Path, Args: c.Args, Env: c.Env, Dir: c.Dir,
+		Script: c.Script, Interpreter: c.Interpreter,
+		ResourceLimits: resourceLimitsToWire(c.ResourceLimits),
+	}
 }
 
 func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
@@ -109,6 +117,13 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		Needs:       w.Needs,
 		Convergence: engine.Convergence(w.Convergence),
 	}
+	if w.Transform != nil {
+		h, err := hookFromWire(*w.Transform)
+		if err != nil {
+			return engine.StageDef{}, err
+		}
+		s.Transform = &h
+	}
 	if w.CommandPolicy != nil {
 		s.CommandPolicy = &engine.CommandPolicy{RequiredRole: engine.Role(w.CommandPolicy.RequiredRole), MaxConcurrent: w.CommandPolicy.MaxConcurrent}
 	}
@@ -130,6 +145,10 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
 		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence),
+	}
+	if s.Transform != nil {
+		t := hookToWire(*s.Transform)
+		w.Transform = &t
 	}
 	if s.CommandPolicy != nil {
 		w.CommandPolicy = &wire.CommandPolicy{RequiredRole: string(s.CommandPolicy.RequiredRole), MaxConcurrent: s.CommandPolicy.MaxConcurrent}
@@ -187,7 +206,8 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 		Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
 		Status: string(s.Status), Approvals: approvals, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
 		ExitCode: s.ExitCode, Stdout: string(s.Stdout), Stderr: string(s.Stderr), Error: s.Error,
-		Actor: s.Actor, Brief: s.Brief,
+		FailureKind: string(s.FailureKind),
+		Actor:       s.Actor, Brief: s.Brief, Summary: s.Summary,
 	}
 }
 

@@ -663,6 +663,62 @@ same limits as ad-hoc flags:
 `--cpu-quota`/`--cpu-weight`/`--memory-max`/`--memory-high`/`--tasks-max`/`--io-weight`
 (see "File locks" below).
 
+**Transforms — turning output into an answer.** A stage's raw output is often
+unreadable at the moment someone needs it: 4000 lines of test log where what's
+wanted is *"3 failed: X, Y, Z"*. A `transform` block runs after the stage resolves,
+receives the result as JSON on **stdin**, and whatever it writes to stdout is
+recorded as the stage's **summary** — shown by `status stage`, in the mess
+notification, and in the brief file, next to (never instead of) the untouched raw
+output.
+
+```hcl
+stage "test" {
+  type    = "command"
+  timeout = "10m"
+  command = ["./scripts/test.sh", "{commit}"]
+
+  transform {                                  # jq: just a command on PATH
+    command = ["jq", "-r", "\"\\(.exitCode) — \\(.stdout | split(\"\\n\") | map(select(startswith(\"FAIL\"))) | join(\", \"))\""]
+    timeout = "30s"
+  }
+}
+
+stage "bench" {
+  transform {                                  # or an inline script, any language
+    interpreter = ["python3"]                  # default: /bin/sh, or its own shebang
+    timeout     = "30s"
+    script      = <<-PY
+      import sys, json
+      d = json.load(sys.stdin)
+      slow = [l for l in d["stdout"].splitlines() if "ns/op" in l]
+      print("%d benchmarks, slowest: %s" % (len(slow), max(slow, default="n/a")))
+    PY
+  }
+}
+```
+
+The JSON on stdin is a stable, documented contract (`engine.TransformInput`):
+`pipeline`, `stage`, `commit`, `environment`, `target`, `actor`, `brief`, `status`,
+`exitCode`, `timedOut`, `error`, `startedAt`, `finishedAt`, `durationMs`, `stdout`,
+`stderr`. Additions to it will be additive — someone's jq expression depends on it.
+
+**A transform is display-only, deliberately.** It cannot change whether a stage
+passed, and one that fails, times out, or writes nothing leaves the outcome exactly
+as it was — a summarizer must never be able to turn a green build red. Its failure
+isn't swallowed either: the summary itself says so (`(transform exited 7: …)`) and a
+`stage.transform.failed` audit event records it, because a summary that merely
+doesn't appear is indistinguishable from a stage nobody configured one for.
+
+**Inline scripts** (`script` + optional `interpreter`) work anywhere a `command`
+does — stage commands and `pre_gate`/`post_action` hooks too, not just transforms.
+The body is written to a private (0700, per-run, removed afterwards) temp file and
+run by `interpreter`, `/bin/sh`, or directly if it starts with a shebang.
+`{placeholder}` substitution deliberately does **not** apply inside a script body:
+splicing a commit sha into a shell script is exactly the injection that argv
+construction exists to prevent, so a script gets its context from stdin and env,
+which stay inert data. Braces are left alone, so jq's `{commit}` object shorthand
+and python f-strings mean what they normally mean.
+
 **Relative paths** (a stage's `command`, a hook's `command`, `briefs_dir`) are
 resolved against **the directory containing the HCL file itself** — not your
 current directory when you run `breeze apply`, and not the daemon's own working
@@ -671,6 +727,11 @@ happened to be started from — not stable, not what you'd want). So
 `command = ["./scripts/build.sh"]` in `/repo/ci/pipeline.hcl` always means
 `/repo/ci/scripts/build.sh`, no matter where `breeze apply` is invoked from. Use an
 absolute path if you want it anchored somewhere else entirely.
+
+A **bare name with no separator** (`jq`, `python3`, `make`) is the exception: it's
+looked up on `PATH`, exactly as a shell would, and is never anchored at the config
+directory. Directories (`briefs_dir`, a command's working dir) have no search path,
+so a bare name there still anchors.
 
 ## Driving a pipeline
 
@@ -686,6 +747,39 @@ breeze list deploys release deploy [--env staging] [--limit N]
 `start stage`/`approve stage` only need `--token` when the target stage actually has
 a `required_role` (command/deploy) or is an approval stage (always Tier-2, since an
 approval is inherently an authorization-bearing attestation).
+
+**A failed stage says WHY.** `failed` is the terminal class every caller branches
+on, and a *kind* alongside it names the cause — `command_failed`, `timed_out`,
+`cancelled`, `orphaned`, `start_failed` — because those have unrelated fixes:
+
+```
+verify: failed (timed_out)
+  timed out
+  --- stderr (last 20 of 312 lines; --tail N for more) ---
+  ...
+```
+
+One flat word made a timeout with 74 of 78 checks passing read exactly like a check
+going red, which is a very different thing to wake up to. Callers checking
+`status == "failed"` are unaffected, and new kinds can be added without touching
+them.
+
+**Output is shown on failure without `--json`.** stderr first (the diagnosis usually
+lives there), then stdout, tail-bounded (`--tail N`, negative for everything) and
+saying what it dropped. Quiet on success. Before this, the run's output sat in a
+response the CLI had already decoded but printed nothing of, so every caller
+hand-rolled the same fragile JSON parser at exactly the moment a gate went red.
+
+**A stage whose runner disappeared is reconciled, not left "running".** If the
+daemon comes back and the snapshot says a stage is running, that stage is orphaned
+by definition — a live run exists only in the memory of the process driving it, and
+a graceful stop resolves its runs before saving. Those instances become
+`failed (orphaned)`, their run locks are released so the retry isn't blocked, and a
+runner that outlived the daemon (it happens — runners are `Setpgid`'d into their own
+group, so a hard kill of the daemon leaves them running) is killed first, because a
+command still mutating the world under a record that says it stopped is the state
+breeze exists to prevent. Reported live: a host crash left stages stuck `running`
+indefinitely and blocked their retries until someone cancelled them by hand.
 
 **Failed means exit code 1.** `start stage`/`approve`/`status`/`wait` and `deploy
 rollback` all exit non-zero when the reported outcome is `failed` or `gate_failed` —
@@ -1214,6 +1308,26 @@ authority it already legitimately holds. Concretely:
   cover pipelines registered before it existed and ones registered through the raw
   JSON path — and deliberately isn't baked into the stored definition, which would
   make every re-apply look like a diff.
+- The orphan reconcile relies on an **invariant, not a probe**: "running in a
+  snapshot being loaded" is a contradiction, so there is no PID or boot-id to go and
+  measure (and nothing for PID reuse to fool). That holds only because snapshot load
+  happens exactly once, at startup, in the flock-protected process that owns the
+  stages — if breeze ever grows a hot reload or a second loader, the invariant has
+  to be re-derived, because the failure mode flips to the worse direction:
+  terminating stages that are genuinely alive.
+- The daemon's flock descriptor is opened **O_CLOEXEC**, and that flag is
+  load-bearing. flock ownership belongs to the open file description, so without it
+  every forked stage command inherits the lock — and one runner surviving a hard
+  kill of the daemon blocks every future daemon start for that directory, failing
+  with "another breeze daemon instance is already running" while naming a daemon
+  that no longer exists. Found by reproducing a crash-orphan report; the holder
+  turned out to be a stray `sleep` from the interrupted stage.
+- A transform's output is a **summary alongside** the raw output, never a
+  replacement for it, and it cannot affect the stage's outcome. Both halves are
+  deliberate: the record of what actually happened must survive a bad summarizer,
+  and a summarizer must not be able to fail a build. The cost is that a transform
+  can't be used as a gate — if you want output to decide pass/fail, that belongs in
+  the stage command's own exit code, where it's visible as such.
 - Version skew is handled by **advertised features, not version comparison**
   (`wire.Features()`): a daemon says what it can honor, and the CLI refuses to send
   anything else. Comparing build timestamps would be fragile (an ad-hoc `go build`

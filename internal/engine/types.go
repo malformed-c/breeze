@@ -96,6 +96,10 @@ type CommandTemplate struct {
 	Args []string
 	Env  []string
 	Dir  string
+	// Script/Interpreter are the inline alternative to Path+Args — see
+	// hook.Template. Mutually exclusive with Path at registration time.
+	Script      string
+	Interpreter []string
 	// ResourceLimits, when set, wraps this command's execution in a transient
 	// systemd scope (systemd-run --scope) with the given cgroup constraints —
 	// bounding a single build/test/deploy command's CPU/memory/process-count
@@ -160,6 +164,19 @@ type StageDef struct {
 	Needs []string
 	// Convergence decides how Needs is evaluated; empty means ConvergeAll.
 	Convergence Convergence
+	// Transform, when set, runs AFTER this stage's own command has resolved and is
+	// handed the result as JSON on stdin (see TransformInput). Whatever it writes to
+	// stdout is recorded as the instance's Summary — the human-readable line shown
+	// wherever the stage is reported, next to (never instead of) the untouched raw
+	// output. It exists because a stage's real output is often unreadable at the
+	// moment someone needs it: 4000 lines of test log where what's wanted is "3
+	// failed: X, Y, Z".
+	//
+	// Deliberately display-only. A transform cannot change whether the stage passed,
+	// and a transform that fails or times out leaves the outcome untouched — a
+	// summarizer must never be able to turn a green build red. Its failure is still
+	// reported (in the Summary itself, plus an audit event) rather than swallowed.
+	Transform *Hook
 	// Debug, when true, exempts this stage from Gate 1 (the intra-pipeline
 	// predecessor-succeeded check) — it can be triggered for any commit at any
 	// time, regardless of whether earlier stages have run. RBAC (CommandPolicy/
@@ -308,6 +325,27 @@ func (k StageKey) ShortString() string {
 	return c + "@" + k.Environment
 }
 
+// FailureKind names WHY a terminal stage failed, alongside (never instead of) the
+// Status that says THAT it failed. The split exists because one word was carrying
+// three different facts with three different next actions: a guard going red, a run
+// exceeding its timeout, and a run whose process disappeared all read as "failed".
+// A real case: verify-guards reported failed with 74 of 78 guards passing and the
+// error buried as "timed out" — at a glance, indistinguishable from a red guard,
+// which is a very different thing to wake up to.
+//
+// Status remains the terminal class every existing caller branches on, so
+// status == "failed" keeps meaning exactly what it meant; the kind is for deciding
+// what to DO, and new kinds can be added later without touching a caller.
+type FailureKind string
+
+const (
+	FailCommand   FailureKind = "command_failed" // the command ran and exited nonzero — the ordinary case
+	FailTimedOut  FailureKind = "timed_out"      // exceeded the stage's timeout; may say nothing about the code
+	FailCancelled FailureKind = "cancelled"      // a human or a shutdown stopped it deliberately
+	FailOrphaned  FailureKind = "orphaned"       // its runner vanished (host crash, hard kill) — no verdict was ever produced
+	FailStart     FailureKind = "start_failed"   // the command could not be started at all (missing binary, bad dir)
+)
+
 type StageStatus string
 
 const (
@@ -326,6 +364,29 @@ type Approval struct {
 	Brief    string
 }
 
+// TransformInput is exactly what a stage's transform receives on stdin: a stable,
+// documented JSON object, deliberately NOT wire.StageInstance (which exists to
+// serve the CLI and can change shape for CLI reasons). Anything added here must be
+// additive — someone's jq expression depends on it.
+type TransformInput struct {
+	Pipeline    string `json:"pipeline"`
+	Stage       string `json:"stage"`
+	Commit      string `json:"commit"`
+	Environment string `json:"environment,omitempty"`
+	Target      string `json:"target,omitempty"` // deploy stages only
+	Actor       string `json:"actor"`
+	Brief       string `json:"brief,omitempty"`
+	Status      string `json:"status"`
+	ExitCode    int    `json:"exitCode"`
+	TimedOut    bool   `json:"timedOut"`
+	Error       string `json:"error,omitempty"`
+	StartedAt   string `json:"startedAt"`
+	FinishedAt  string `json:"finishedAt"`
+	DurationMs  int64  `json:"durationMs"`
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+}
+
 type StageInstance struct {
 	Pipeline   string
 	Stage      string
@@ -338,8 +399,26 @@ type StageInstance struct {
 	Stdout     []byte
 	Stderr     []byte
 	Error      string
-	Actor      string
-	Brief      string
+	// FailureKind is set whenever Status is StageFailed, naming the cause. Empty for
+	// every non-failed status.
+	FailureKind FailureKind
+	// RunnerPID and RunnerStart identify the OS process executing this stage while
+	// it runs, so a daemon that comes back after a crash can tell a process that
+	// died with the machine from one that survived a hard kill of the daemon (which
+	// really happens: a runner is Setpgid'd into its own group, so SIGKILLing the
+	// daemon reparents it to init and it keeps going — verified, not assumed).
+	// RunnerStart is the process's own start time from /proc, which makes the
+	// identification immune to PID reuse; empty where /proc isn't available, in
+	// which case the survivor check is skipped rather than guessed at. Both are
+	// cleared when the run resolves.
+	RunnerPID   int
+	RunnerStart string
+	Actor       string
+	Brief       string
+	// Summary is a stage's transform output (see StageDef.Transform) — a short
+	// human-readable rendering of what the raw output means. Empty when the stage
+	// has no transform, which is every stage that doesn't opt in.
+	Summary string
 }
 
 func (s *StageInstance) HasApprovalFrom(identity string) bool {

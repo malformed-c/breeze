@@ -207,6 +207,12 @@ func usage() {
                                          # Stage attributes worth knowing exist:
                                          #   needs / convergence  — which stages this one
                                          #     waits on; how branches diverge and converge
+                                         #   transform { ... } — runs after the stage,
+                                         #     gets the result as JSON on stdin, its stdout
+                                         #     becomes the stage's summary (display-only:
+                                         #     it can never change pass/fail)
+                                         #   script / interpreter — an inline program body
+                                         #     instead of command = [...]; jq, python, sh
                                          #   resource_limits { cpu_quota, memory_max,
                                          #     tasks_max, io_weight } — caps a stage's or
                                          #     hook's cgroup footprint (same systemd-run
@@ -284,6 +290,7 @@ type flagSet struct {
 	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline, role string
 	cpuQuota, cpuWeight, memoryMax, memoryHigh, tasksMax, ioWeight                                               string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
 	shared, wait, force, jsonOut, dryRun, prune, all, help, serial, tryLock                                      bool
+	tail                                                                                                         int      // --tail N: output lines per stream to show on failure (negative = all)
 	targets                                                                                                      []string // repeated --target NAME
 	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
@@ -406,6 +413,16 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.limit = args[i]
+			}
+		case "--tail":
+			i++
+			if i < len(args) {
+				n, err := strconv.Atoi(args[i])
+				if err == nil {
+					f.tail = n
+				} else {
+					f.unknownFlag = "--tail " + args[i]
+				}
 			}
 		case "-f", "--file":
 			i++
@@ -2207,6 +2224,68 @@ func sortedKeys(m map[string][]string) []string {
 	return keys
 }
 
+// statusLine renders a stage's outcome with its CAUSE when it failed. "failed"
+// alone was carrying three different facts with three different next actions — a
+// check going red, a run exceeding its timeout, and a run whose process vanished —
+// and the difference decides whether you fix code, raise a limit, or just re-run.
+// Reported from a real case: 74 of 78 guards passed and the run timed out, which at
+// a glance read exactly like a guard had gone red.
+func statusLine(inst wire.StageInstance) string {
+	if inst.FailureKind == "" || inst.Status != "failed" {
+		return inst.Status
+	}
+	return inst.Status + " (" + inst.FailureKind + ")"
+}
+
+// printOutput shows what the stage actually printed, tail-first, WITHOUT needing
+// --json. It's shown on failure and stays quiet on success, because the moment you
+// need it is the moment a gate just went red — and until now every caller
+// hand-rolled the same fragile JSON parser at exactly that moment. stderr comes
+// before stdout (the diagnosis usually lives there), and a truncated tail says what
+// it dropped rather than pretending it showed everything. tail is the number of
+// lines per stream; 0 means the default, negative means everything.
+//
+// Design credit: trail-main, who prototyped this after hand-writing the parser one
+// too many times.
+func printOutput(inst wire.StageInstance, tail int) {
+	if tail == 0 {
+		tail = defaultTailLines
+	}
+	for _, s := range []struct{ name, body string }{{"stderr", inst.Stderr}, {"stdout", inst.Stdout}} {
+		body := strings.TrimRight(s.body, "\n")
+		if body == "" {
+			continue
+		}
+		lines := strings.Split(body, "\n")
+		if tail > 0 && len(lines) > tail {
+			fmt.Printf("  --- %s (last %d of %d lines; --tail N for more) ---\n", s.name, tail, len(lines))
+			lines = lines[len(lines)-tail:]
+		} else {
+			fmt.Printf("  --- %s (%d lines) ---\n", s.name, len(lines))
+		}
+		for _, l := range lines {
+			fmt.Println("  " + l)
+		}
+	}
+}
+
+// defaultTailLines is what a failure shows unasked: enough to hold a test summary
+// or a stack trace, short enough not to bury the status line that precedes it.
+const defaultTailLines = 20
+
+// printSummary shows a stage's transform output, when it has one — the short
+// rendering of what the raw output means, which is the reason the transform exists.
+// Printed above any error line so a failure reads as "failed: here's what broke"
+// rather than making the reader go find the log.
+func printSummary(inst wire.StageInstance) {
+	if inst.Summary == "" {
+		return
+	}
+	for line := range strings.SplitSeq(strings.TrimRight(inst.Summary, "\n"), "\n") {
+		fmt.Println("  " + line)
+	}
+}
+
 // stageFailureErr returns a non-nil error when status is a failed terminal
 // outcome ("failed" or "gate_failed") — the status text on stdout is still the
 // primary, human-readable signal; this only controls the process's own exit
@@ -2267,9 +2346,13 @@ func cmdStage(p paths, args []string) error {
 			printJSON(out)
 			return stageFailureErr(out.Instance.Status)
 		}
-		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
+		printSummary(out.Instance)
 		if out.Instance.Error != "" {
-			fmt.Println(out.Instance.Error)
+			fmt.Println("  " + out.Instance.Error)
+		}
+		if out.Instance.Status == "failed" || out.Instance.Status == "gate_failed" {
+			printOutput(out.Instance, f.tail)
 		}
 		return stageFailureErr(out.Instance.Status)
 	case "status":
@@ -2290,7 +2373,16 @@ func cmdStage(p paths, args []string) error {
 			printJSON(out)
 			return stageFailureErr(out.Instance.Status)
 		}
-		fmt.Printf("%s: %s\n", out.Instance.Stage, out.Instance.Status)
+		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
+		printSummary(out.Instance)
+		if out.Instance.Error != "" {
+			fmt.Println("  " + out.Instance.Error)
+		}
+		// Quiet on success, informative on failure: the whole point is that you
+		// don't have to go and ask a second time, in JSON, at the worst moment.
+		if out.Instance.Status == "failed" || out.Instance.Status == "gate_failed" {
+			printOutput(out.Instance, f.tail)
+		}
 		return stageFailureErr(out.Instance.Status)
 	case "wait":
 		payload, _ := json.Marshal(wire.StageWaitRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Timeout: f.timeout})
@@ -2456,6 +2548,7 @@ func cmdDeployRollback(p paths, args []string) error {
 		return stageFailureErr(out.Instance.Status)
 	}
 	fmt.Printf("%s: %s (rollback)\n", out.Instance.Stage, out.Instance.Status)
+	printSummary(out.Instance)
 	if out.Instance.Error != "" {
 		fmt.Println(out.Instance.Error)
 	}

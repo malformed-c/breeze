@@ -172,8 +172,13 @@ func validateHook(h Hook) error {
 }
 
 func validateTemplatePlaceholders(tmpl CommandTemplate) error {
-	if tmpl.Path == "" {
-		return fmt.Errorf("command path required")
+	switch {
+	case tmpl.Path == "" && tmpl.Script == "":
+		return fmt.Errorf("command required: give either command = [...] or an inline script")
+	case tmpl.Path != "" && tmpl.Script != "":
+		return fmt.Errorf("command and script are mutually exclusive — a stage runs one or the other, and accepting both would silently ignore one of them")
+	case tmpl.Script != "" && len(tmpl.Args) > 0:
+		return fmt.Errorf("args cannot be combined with an inline script (a script's input is stdin, not argv); use interpreter = [...] to control how it's invoked")
 	}
 	if err := validateResourceLimits(tmpl.ResourceLimits); err != nil {
 		return err

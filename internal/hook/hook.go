@@ -23,10 +23,39 @@ type Template struct {
 	Env     []string
 	Dir     string
 	Timeout time.Duration
+	// Stdin, when non-empty, is written to the command's standard input and the
+	// pipe is then closed, so a filter-shaped command (one that reads to EOF and
+	// writes a result) works without needing a temp file. Nothing else in breeze
+	// gives a command structured input — argv placeholders can carry a commit sha
+	// but not a stage's captured output — which is what a transform needs.
+	Stdin []byte
+	// Script is an inline program body, as an alternative to Path+Args. It's written
+	// to a temp file and run by Interpreter (default /bin/sh, or the script's own
+	// "#!" line if it has one and Interpreter is unset), so a transform can be three
+	// lines of python or jq written where it's used instead of a checked-in script
+	// nobody can see from the pipeline definition.
+	//
+	// {placeholder} substitution deliberately does NOT apply inside Script — that is
+	// what keeps breeze's "no shell ever interprets a param" guarantee true: a
+	// commit sha spliced into a shell script body would be exactly the injection
+	// argv construction exists to prevent. A script gets its context from stdin
+	// (which for a transform is the whole point) and from Env, both of which stay
+	// inert data. Braces in the script are left completely alone, so jq's `{commit}`
+	// object shorthand and python f-strings mean what they normally mean.
+	Script string
+	// Interpreter is the argv prefix a Script is appended to, e.g. ["python3"],
+	// ["jq", "-rf"], ["awk", "-f"]. Empty means /bin/sh, or direct execution when
+	// the script carries a shebang.
+	Interpreter []string
 	// ResourceLimits, when set, wraps this command's execution in a transient
 	// systemd scope so a runaway build/test/deploy can't starve the host or
 	// other concurrent work. See ResourceLimits and WrapWithSystemdRun.
 	ResourceLimits *ResourceLimits
+	// OnStart, when set, is called with the started process's PID as soon as it is
+	// running. Callers use it to record which OS process owns a stage, so a daemon
+	// that comes back after a crash can tell a runner that died with the machine
+	// from one that outlived a hard kill of the daemon.
+	OnStart func(pid int)
 }
 
 // ResourceLimits bounds a command's cgroup footprint via systemd-run --scope.
@@ -107,6 +136,46 @@ func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string,
 	return "systemd-run", sdArgs
 }
 
+// writeScript materializes an inline Script as a private temp file. 0700 and a
+// per-run file rather than a stable path: two concurrent stages must never share
+// (or race to overwrite) one script, and nothing but this user should be able to
+// read — or, worse, replace — the body between writing it and executing it.
+func writeScript(body string) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "breeze-script-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
+	}
+	cleanup = func() { os.Remove(f.Name()) }
+	if err := f.Chmod(0o700); err != nil {
+		f.Close()
+		cleanup()
+		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
+	}
+	if _, err := f.WriteString(body); err != nil {
+		f.Close()
+		cleanup()
+		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
+	}
+	return f.Name(), cleanup, nil
+}
+
+// scriptArgv decides how to invoke a materialized script: an explicit Interpreter
+// wins, then a shebang (executed directly, which is what the author asked for by
+// writing one), then /bin/sh as the least surprising default.
+func scriptArgv(tmpl Template, scriptPath string) (string, []string) {
+	if len(tmpl.Interpreter) > 0 {
+		return tmpl.Interpreter[0], append(append([]string(nil), tmpl.Interpreter[1:]...), scriptPath)
+	}
+	if strings.HasPrefix(tmpl.Script, "#!") {
+		return scriptPath, nil
+	}
+	return "/bin/sh", []string{scriptPath}
+}
+
 // Params are substituted into argv/env placeholders. Values are attacker/agent
 // controlled (e.g. a commit sha) but are NEVER shell-interpreted — see Run.
 type Params map[string]string
@@ -167,11 +236,22 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	}
 
 	path := tmpl.Path
+	if tmpl.Script != "" {
+		scriptPath, cleanup, err := writeScript(tmpl.Script)
+		if err != nil {
+			return Result{Err: err}
+		}
+		defer cleanup()
+		path, args = scriptArgv(tmpl, scriptPath)
+	}
 	if !tmpl.ResourceLimits.IsZero() {
 		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
 	}
 
 	cmd := exec.CommandContext(ctx, path, args...)
+	if len(tmpl.Stdin) > 0 {
+		cmd.Stdin = bytes.NewReader(tmpl.Stdin)
+	}
 	cmd.Dir = Substitute(tmpl.Dir, params)
 	cmd.Env = os.Environ()
 	for _, e := range tmpl.Env {
@@ -203,6 +283,9 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	err := cmd.Start()
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}
+	}
+	if tmpl.OnStart != nil && cmd.Process != nil {
+		tmpl.OnStart(cmd.Process.Pid)
 	}
 
 	waitErr := cmd.Wait()
