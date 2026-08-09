@@ -21,7 +21,14 @@ func dialOrStart(p paths) (net.Conn, error) {
 	if err := startDaemon(); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	// Long enough to outlast a PREDECESSOR still draining. The daemon we just
+	// spawned may itself be waiting out a stopping daemon's lock (up to
+	// lockWaitBudget), and a restart's drain is now routinely seconds rather than
+	// milliseconds because a `stage start` caller holds its connection for the whole
+	// run. Waiting only 3s meant an ordinary command reported "daemon did not start"
+	// while a daemon was, in fact, on its way — the same client-impatience bug
+	// already fixed for `restart daemon` and `stop`.
+	deadline := time.Now().Add(startWaitBudget)
 	for time.Now().Before(deadline) {
 		conn, err := net.Dial("unix", p.sock)
 		if err == nil {
@@ -46,6 +53,10 @@ func startDaemon() error {
 	cmd.SysProcAttr = daemonSysProcAttr()
 	return cmd.Start()
 }
+
+// startWaitBudget bounds how long a client waits for a daemon it auto-started to
+// come up — necessarily more than the lock wait that daemon may itself be doing.
+const startWaitBudget = 20 * time.Second
 
 // call performs a single request/response round trip: connect, encode one Request,
 // decode one Response, close. Used for every non-streaming op.
