@@ -124,6 +124,11 @@ type PingResponse struct {
 	// two possible files exists — the same undiscoverability that had someone
 	// document that breeze could not limit anything at all.
 	LimitSources []string `json:"limitSources,omitempty"`
+	// NotifyProblem is non-empty when this daemon's mess notifications are failing.
+	// Delivery is best-effort by design, but a notifier that CANNOT work (no sender
+	// identity, mess missing) previously failed identically to a peer being offline
+	// — invisibly, forever. This is where that becomes visible.
+	NotifyProblem string `json:"notifyProblem,omitempty"`
 }
 
 type WhoAmIResponse struct {

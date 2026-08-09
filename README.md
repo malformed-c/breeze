@@ -437,6 +437,13 @@ a missing identity got read live as a bug in `assign role`. `assign role`/`revok
 now also say what changed on success, and name the unregistered identity on failure
 instead of a bare "not found".
 
+The mapping is passed to `mess` verbatim, so it can also be a room-qualified
+address (`coord/bob`) for an agent that has joined a mess room — a bare name is
+only reachable within your own room. breeze deliberately doesn't track mess's
+topology; the person who knows it states it once, here. Note that `/` is mess's
+addressing separator, which is why `notify_topic`/`command_topic` are rejected at
+`breeze apply` if they contain one.
+
 **The recommended way to register: use your existing mess identity name.**
 breeze's identity names and mess agent names are separate namespaces, but if you
 already talk to other agents via `mess`, register breeze under that *same* name:
@@ -457,6 +464,9 @@ CI/service identity with no mess presence of its own, or a deliberate alias):
 breeze register identity alice --mess-agent alice-on-mess   # notify.go's mess sends
                                                              # now target "alice-on-mess",
                                                              # not the raw identity name
+breeze register identity bob --mess-agent coord/bob          # a mess ROOM-qualified
+                                                             # target, for an agent that
+                                                             # has joined a room
 breeze notify identity off --as alice   # opt out of breeze's mess notifications entirely
 breeze notify identity on  --as alice   # opt back in
 ```
@@ -1355,6 +1365,15 @@ authority it already legitimately holds. Concretely:
   — and `stop && start` a race against its own predecessor. For the same reason a
   starting daemon now waits out a held lock (bounded) instead of failing instantly
   with "another instance is already running" when nothing is actually running.
+- Notification DELIVERY is best-effort; notification MISCONFIGURATION is not. The
+  two used to be the same thing — `mess` was invoked and its error discarded — so
+  "the recipient is offline" and "this daemon has no identity, and every
+  notification it has ever sent failed" were indistinguishable, and the second went
+  unnoticed indefinitely. A failing notifier is now logged once per transition and
+  reported by `breeze status`. The daemon also names itself explicitly (`mess send
+  --as breeze`), because a long-lived process has no session identity and no
+  `$MESS_AGENT` to fall back on. Found by mess-dev, who maintains mess and checked
+  all three live daemons' environments rather than the docs.
 - The daemon points **fd 2** at its log, not just `log.SetOutput`. A panic is written
   by the runtime straight to file descriptor 2, which for a detached daemon is
   `/dev/null` — so a crash left an empty log and a daemon that had simply vanished.

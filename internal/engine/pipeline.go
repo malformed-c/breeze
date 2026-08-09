@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	"breeze/internal/hook"
 )
@@ -120,6 +121,20 @@ func validatePipeline(p *Pipeline) error {
 			if err := validateHook(h); err != nil {
 				return fmt.Errorf("pipeline %q stage %q postAction: %w", p.Name, s.Name, err)
 			}
+		}
+	}
+
+	// mess reserves "/" for addressing — "room/topic" and "room/agent" — so a topic
+	// containing one is now rejected by mess itself. Caught at registration rather
+	// than at notification time: a bad topic would otherwise surface only as
+	// notifications that never arrive, and "the notifier is broken" is a much harder
+	// thing to trace back to a config typo than "breeze apply refused this".
+	for _, t := range []struct{ field, value string }{
+		{"notify_topic", p.NotifyTopic},
+		{"command_topic", p.CommandTopic},
+	} {
+		if strings.Contains(t.value, "/") {
+			return fmt.Errorf("pipeline %q: %s %q must not contain %q — mess reserves it for addressing a room (\"room/topic\"), and would reject the topic", p.Name, t.field, t.value, "/")
 		}
 	}
 

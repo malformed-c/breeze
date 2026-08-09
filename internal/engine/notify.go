@@ -1,6 +1,9 @@
 package engine
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // SetNotifyFn wires a callback fired (asynchronously, best-effort) whenever a stage
 // instance resolves — the daemon uses this to shell out to `mess send` for each
@@ -37,7 +40,11 @@ func (e *Engine) SetNotifyTopicFn(fn func(topic, message, thread string)) {
 // environment: a fanned-out pipeline's staging/prod branches are still the same
 // logical run of one commit, just diverging partway through.
 func messThreadID(pipelineName, commit string) string {
-	return "breeze-" + pipelineName + "-" + commit
+	// "/" is mess's addressing separator (room/agent, room/topic), so it never
+	// appears in an identifier breeze hands to mess — even one, like a thread id,
+	// that mess does not currently restrict. Cheaper to not generate the question
+	// than to answer it later from a notification that quietly stopped arriving.
+	return strings.ReplaceAll("breeze-"+pipelineName+"-"+commit, "/", "-")
 }
 
 // requiredRoleFor returns the role gating s, regardless of stage type — "" if s has

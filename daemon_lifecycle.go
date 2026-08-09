@@ -252,6 +252,14 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	if adopted, orphaned := eng.AdoptOrReconcile(snap.DaemonPID); adopted > 0 || orphaned > 0 {
 		log.Printf("in-flight stages at startup: %d adopted (still running, results will be collected), %d orphaned (their runner is gone)", adopted, orphaned)
 	}
+	// AFTER adoption has decided what's live, so an adopted run keeps the files it
+	// is still writing into. This is the backstop for every path that resolves an
+	// instance without cleaning up after it — a crash most obviously, where nothing
+	// runs at all. An EXIT trap cannot survive the signal that skips it; a startup
+	// sweep by the process that OWNS the directory can.
+	if n := eng.SweepRunDirs(); n > 0 {
+		log.Printf("swept %d run director(ies) left behind by runs that are no longer live", n)
+	}
 	if err := loadDefaultLimits(eng, p); err != nil {
 		// Refusing to start is deliberate. This file exists precisely because
 		// someone decided unbounded commands could hurt this machine; silently

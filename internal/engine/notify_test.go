@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -379,5 +380,51 @@ func TestNotifyResolutionIsNoOpWithoutFn(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("StartCommandStage hung with no notify fn set")
+	}
+}
+
+// mess reserves "/" for addressing a room ("room/topic", "room/agent") and now
+// rejects a topic containing one. Caught at registration, because the alternative
+// failure is notifications that simply never arrive — and tracing that back to a
+// config typo is far harder than reading an error from `breeze apply`.
+func TestRegisterPipelineRejectsSlashInTopics(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		mut  func(*Pipeline)
+	}{
+		{"notify_topic", func(p *Pipeline) { p.NotifyTopic = "#room/activity" }},
+		{"command_topic", func(p *Pipeline) { p.CommandTopic = "#room/approvals" }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := New()
+			p := examplePipeline()
+			c.mut(&p)
+			err := e.RegisterPipeline(p, "admin")
+			if err == nil {
+				t.Fatalf("expected a topic containing / to be rejected")
+			}
+			if !strings.Contains(err.Error(), c.name) || !strings.Contains(err.Error(), "mess reserves") {
+				t.Fatalf("error should name the field and why, got %q", err)
+			}
+		})
+	}
+	// A topic without one is untouched.
+	e := New()
+	p := examplePipeline()
+	p.NotifyTopic = "#release-activity"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("an ordinary topic must still register: %v", err)
+	}
+}
+
+// A thread id is built from a pipeline name, which breeze does not restrict — so it
+// sanitizes rather than generating an identifier with mess's addressing separator
+// in it. Cheaper than answering later why a notification quietly stopped arriving.
+func TestMessThreadIDNeverContainsTheAddressingSeparator(t *testing.T) {
+	if got := messThreadID("team/release", "abc123"); strings.Contains(got, "/") {
+		t.Fatalf("thread id %q must not contain /", got)
+	}
+	if got := messThreadID("release", "abc123"); got != "breeze-release-abc123" {
+		t.Fatalf("an ordinary name must be unchanged, got %q", got)
 	}
 }

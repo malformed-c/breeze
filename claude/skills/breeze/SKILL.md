@@ -69,6 +69,12 @@ immediately with no `--mess-agent` mapping to remember. Only pass
 that diverges from your mess one; otherwise treat plain `breeze identity
 register <name>` (no mess name behind it) as the exception, not the default.
 
+`--mess-agent` is passed to mess verbatim, so it can be a room-qualified address
+(`--mess-agent coord/bob`) when the target has joined a mess room — a bare name only
+reaches your own room. `/` is mess's addressing separator, so `notify_topic` and
+`command_topic` containing one are rejected by `breeze apply` rather than silently
+producing notifications that never arrive.
+
 **Two hard rules, not just caveats:**
 1. **Never use a token that wasn't explicitly handed to you** for the task at
    hand — not one you found lying around (`admin.token` in a repo, a prior
@@ -398,6 +404,12 @@ breeze wait stage  release build abc123 --timeout 30m &     # background this
 Prefer backgrounding `wait stage` (via your shell `&` or Claude Code's background
 Bash execution) over hand-rolled polling loops — it's a real blocking primitive, not
 a sleep loop, and resolves the instant the stage finishes.
+
+If you rely on the mess WAKE that accompanies it, check `breeze status` for a
+"mess notifications: FAILING" line. That path was broken for a long time in a way
+nothing could show you — the daemon had no mess identity of its own, so every
+notification failed with "no identity" and the error was discarded. Fixed, and a
+failing notifier is now reported instead of being invisible.
 
 ### Chat-triggered approvals
 

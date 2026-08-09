@@ -74,3 +74,26 @@ func TestSortedKeys(t *testing.T) {
 		t.Fatalf("sortedKeys() = %v, want %v", got, want)
 	}
 }
+
+// A timeout divergence between the HCL file and what was actually registered stayed
+// invisible for a day because the human view printed everything except the timeout,
+// so three agents quoted the file at each other while the daemon ran something else.
+// "Verify the registered state, not the file" only works if the registered state is
+// legible without --json.
+func TestStageTimeoutText(t *testing.T) {
+	cases := []struct {
+		stage wire.StageDef
+		want  string
+	}{
+		{wire.StageDef{Type: "command", Timeout: "5m0s"}, "5m0s"},
+		{wire.StageDef{Type: "command", Timeout: "300s"}, "5m0s"}, // normalized, so two spellings compare equal by eye
+		{wire.StageDef{Type: "deploy", Timeout: "30s"}, "30s"},
+		{wire.StageDef{Type: "approval"}, "—"}, // nothing executes; no setting to go looking for
+		{wire.StageDef{Type: "command"}, "(no timeout)"},
+	}
+	for _, c := range cases {
+		if got := stageTimeoutText(c.stage); got != c.want {
+			t.Errorf("stageTimeoutText(%+v) = %q, want %q", c.stage, got, c.want)
+		}
+	}
+}

@@ -11,12 +11,12 @@ exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
 
 exec breeze show pipeline release
 stdout 'fan-out at: deploy \(environments: \[staging prod\]\)'
-stdout 'build\s+command\s+requires: \(none, first stage\)'
-stdout 'review\s+approval\s+requires: build'
-stdout 'deploy\s+deploy\s+requires: review'
+stdout 'build\s+command\s+\S+\s+requires: \(none, first stage\)'
+stdout 'review\s+approval\s+\S+\s+requires: build'
+stdout 'deploy\s+deploy\s+\S+\s+requires: review'
 stdout 'env deps: prod requires staging'
-stdout 'test\s+command\s+requires: deploy \(same environment\)'
-stdout 'hotfix\s+command\s+requires: \(none — debug stage, skips ordering\)'
+stdout 'test\s+command\s+\S+\s+requires: deploy \(same environment\)'
+stdout 'hotfix\s+command\s+\S+\s+requires: \(none — debug stage, skips ordering\)'
 
 # --json is untouched: still the raw wire.Pipeline, no "requires" field grafted on.
 exec breeze show pipeline release --json

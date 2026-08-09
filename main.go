@@ -802,6 +802,9 @@ func cmdStatus(p paths, args []string) error {
 		limits += " — set one in " + p.defaults + " for this daemon, or " + p.globalDefaults + " for every daemon on this machine"
 	}
 	fmt.Printf("resource limits (every command this daemon runs): %s\n", limits)
+	if ping.NotifyProblem != "" {
+		fmt.Printf("mess notifications: FAILING — %s\n  (stage outcomes are unaffected; nobody is being told about them)\n", ping.NotifyProblem)
+	}
 	return nil
 }
 
@@ -2164,7 +2167,14 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 	}
 	fmt.Println()
 	for i, s := range pl.Stages {
-		fmt.Printf("  %-12s  %-9s  requires: %s\n", s.Name, s.Type, stageRequiresText(pl, i))
+		// The timeout is on the main line, not in --json only. A file-vs-registration
+		// timeout divergence stayed invisible for a day because of that omission:
+		// three agents quoted the HCL file at each other while the daemon was running
+		// something else, and the one command that would have settled it printed
+		// everything except the field in question. "Verify the registered state, not
+		// the file" is only a usable rule if the registered state is legible.
+		// (peri-sonnet-5's close-out, routed by coordinator.)
+		fmt.Printf("  %-12s  %-9s  %-8s  requires: %s\n", s.Name, s.Type, stageTimeoutText(s), stageRequiresText(pl, i))
 		// Limits are rendered per stage because that's where they bite, and because
 		// reading them back out of --json couldn't distinguish "this stage has no
 		// limits" from "this breeze can't do limits" — the exact confusion that got
@@ -2183,6 +2193,19 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 			}
 		}
 	}
+}
+
+// stageTimeoutText renders a stage's timeout for the human view. An approval stage
+// has none — nothing executes — and showing "0s" there would invite someone to go
+// looking for a setting that does not exist.
+func stageTimeoutText(s wire.StageDef) string {
+	if s.Type == "approval" {
+		return "—"
+	}
+	if s.Timeout == "" {
+		return "(no timeout)"
+	}
+	return normalizeDuration(s.Timeout)
 }
 
 // stageNeeds resolves stage i's Gate 1 prerequisites to stage indices, mirroring

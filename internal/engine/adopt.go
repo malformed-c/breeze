@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -181,6 +183,7 @@ func (e *Engine) resolveAdopted(inst *StageInstance, res hook.Result) {
 		inst.Status = StageSucceeded
 	}
 	e.releaseRunLockLocked(inst)
+	e.cleanupRunDirLocked(inst)
 	e.audit("stage."+string(inst.Status), inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s exitCode=%d (adopted across a daemon restart)",
 		inst.Pipeline, inst.Stage, inst.Key, inst.ExitCode))
 	e.changed()
@@ -217,3 +220,71 @@ func (e *Engine) RunningStageCount() int {
 	}
 	return n
 }
+
+// cleanupRunDir removes a finished run's directory. Safe only once the run has
+// reached a terminal state and its output has been copied into the instance —
+// before that, those files are what makes the run recoverable across a restart.
+// Must be called with e.mu held.
+func (e *Engine) cleanupRunDirLocked(inst *StageInstance) {
+	if inst.OutputDir == "" || e.runDir == "" {
+		return
+	}
+	// Never delete outside the directory breeze owns. The path is derived, not
+	// supplied, but a deletion is worth one cheap check against a future caller
+	// handing this an OutputDir from somewhere else.
+	if !strings.HasPrefix(inst.OutputDir, e.runDir+string(filepath.Separator)) {
+		return
+	}
+	os.RemoveAll(inst.OutputDir)
+	inst.OutputDir = ""
+}
+
+// SweepRunDirs removes every run directory that doesn't belong to a stage that is
+// currently running. Called at startup, AFTER adoption has decided what's live, so
+// an adopted run keeps the files it is still writing into.
+//
+// This is the backstop for every path that resolves an instance without getting to
+// clean up after it — a crash being the obvious one, since nothing runs at all. It
+// can be exact rather than heuristic because breeze OWNS this directory and knows
+// precisely which instances exist: no name patterns, no PID guessing, no chance of
+// deleting something that belongs to somebody else.
+func (e *Engine) SweepRunDirs() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runDir == "" {
+		return 0
+	}
+	live := make(map[string]bool)
+	for _, inst := range e.instances {
+		if inst.Status == StageRunning && inst.OutputDir != "" {
+			live[filepath.Base(inst.OutputDir)] = true
+		}
+	}
+	entries, err := os.ReadDir(e.runDir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, entry := range entries {
+		if live[entry.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(e.runDir, entry.Name())); err == nil {
+			n++
+		}
+	}
+	return n
+}
+
+// RunScratchDir is the per-run directory a stage command can use for anything it
+// needs to put on disk — a git worktree, a build tree, a temp checkout. Handed to
+// the command as $BREEZE_RUN_DIR and removed by breeze when the run resolves, or
+// swept at the next startup if the daemon never got the chance.
+//
+// It exists because the alternative is what everyone does instead: create a
+// directory named after a PID, clean it up in an EXIT trap, and lose the cleanup
+// entirely to SIGKILL or a host crash — after which the corpses accumulate until
+// /tmp fills and every command on the box starts failing for unrelated reasons.
+// A trap cannot survive the signal that skips it. Somewhere the daemon owns, and
+// reconciles at startup, can.
+func RunScratchDir(runDir string) string { return filepath.Join(runDir, "scratch") }

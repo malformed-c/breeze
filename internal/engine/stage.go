@@ -444,6 +444,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 
 	e.mu.Lock()
 	inst.Summary = summary
+	e.cleanupRunDirLocked(inst)
 	cp := *inst
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
@@ -839,8 +840,15 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
-		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
+		Path: tmpl.Path, Args: tmpl.Args, Dir: tmpl.Dir, Timeout: timeout,
 		Script: tmpl.Script, Interpreter: tmpl.Interpreter,
+		// $BREEZE_RUN_DIR is a scratch directory breeze owns, cleans when the run
+		// resolves, and sweeps at startup if it never got the chance. The
+		// alternative is what everyone writes instead — a /tmp path named after a
+		// PID, cleaned in an EXIT trap — which loses its cleanup to exactly the
+		// signals that need it most, and accumulates until the disk fills and
+		// unrelated commands start failing for reasons nobody connects to it.
+		Env:            append(append([]string(nil), tmpl.Env...), "BREEZE_RUN_DIR="+RunScratchDir(outputDir)),
 		OutputDir:      outputDir,
 		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
 		// Record which OS process owns this stage while it runs, so a daemon that

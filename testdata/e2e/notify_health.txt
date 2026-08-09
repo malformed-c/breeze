@@ -1,0 +1,62 @@
+# Delivery is best-effort by design — a peer being offline must never affect a stage
+# outcome. MISCONFIGURATION is not, and used to be indistinguishable from it: the
+# daemon has no mess identity of its own (no --as, no session, no $MESS_AGENT), so
+# EVERY notification breeze ever sent failed with "no identity" and the error was
+# discarded. Nobody noticed, because a failure and a success looked identical from
+# breeze's side. Reported by mess-dev, who maintains mess and checked all three live
+# daemons' environments.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:${PATH}
+
+exec chmod +x $WORK/bin/mess $WORK/bin/mess-ok $WORK/bin/mess-broken
+
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# A healthy notifier says nothing; status stays quiet.
+! exec breeze start stage svc red abc123 --as ci --token-file ci.token
+exec sleep 1
+exec breeze status
+! stdout 'mess notifications'
+
+# A mess that refuses (the daemon's real situation before this) is now REPORTED,
+# rather than failing forever in silence.
+exec cp $WORK/bin/mess-broken $WORK/bin/mess
+! exec breeze start stage svc red def456 --as ci --token-file ci.token
+exec sleep 1
+exec breeze status
+stdout 'mess notifications: FAILING'
+stdout 'no identity'
+stdout 'stage outcomes are unaffected'
+
+# ...and recovery clears it, so a transient failure doesn't stick forever.
+exec cp $WORK/bin/mess-ok $WORK/bin/mess
+! exec breeze start stage svc red cafe01 --as ci --token-file ci.token
+exec sleep 1
+exec breeze status
+! stdout 'mess notifications'
+
+exec breeze stop
+
+-- bin/mess-ok --
+#!/bin/sh
+exit 0
+-- bin/mess-broken --
+#!/bin/sh
+echo "mess: no identity: run \`mess register <name>\`, pass --as NAME, or set MESS_AGENT" >&2
+exit 1
+-- bin/mess --
+#!/bin/sh
+exit 0
+-- pipeline.hcl --
+pipeline "svc" {
+  # A failure notifies unconditionally (mess's "user" mailbox), so every case here
+  # actually invokes the notifier — a lone SUCCEEDING stage notifies nobody, since
+  # there is no next stage whose role holders would care.
+  stage "red" {
+    type    = "command"
+    timeout = "20s"
+    command = ["/bin/false"]
+  }
+}

@@ -186,3 +186,100 @@ func TestReapStrayChildrenCollectsZombies(t *testing.T) {
 		t.Fatalf("pid %d still present after reaping", pid)
 	}
 }
+
+// A run's directory has to go when the run does, or breeze accumulates one per
+// stage execution forever — which it did: eleven had piled up in this repo within a
+// day of the output-to-files change, each holding a full run's stdout and stderr.
+func TestRunDirIsCleanedUpWhenTheRunResolves(t *testing.T) {
+	e := New()
+	dir := t.TempDir()
+	e.SetRunDir(dir)
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/sh", Args: []string{"-c", "echo out; echo err >&2"}}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// The output survived into the record...
+	if !strings.Contains(string(inst.Stdout), "out") || !strings.Contains(string(inst.Stderr), "err") {
+		t.Fatalf("output lost: %q / %q", inst.Stdout, inst.Stderr)
+	}
+	// ...and the files it came from are gone.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("run directories left behind: %v", entries)
+	}
+}
+
+// The startup sweep is the backstop for every path that resolves an instance
+// without cleaning up — a crash most obviously, where nothing runs at all. It must
+// spare directories belonging to runs that are still going, which after adoption is
+// a real case.
+func TestSweepRunDirsSparesLiveRunsAndRemovesTheRest(t *testing.T) {
+	e := New()
+	dir := t.TempDir()
+	e.SetRunDir(dir)
+	registerReleasePipeline(t, e)
+
+	liveKey := StageKey{Commit: "live"}
+	liveDir := e.runOutputDir("release", "build", liveKey)
+	deadDir := e.runOutputDir("release", "build", StageKey{Commit: "dead"})
+	strayDir := filepath.Join(dir, "left_by_a_crash_nobody_recorded")
+	for _, d := range []string{liveDir, deadDir, strayDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	e.instances[instanceKey("release", "build", liveKey)] = &StageInstance{
+		Pipeline: "release", Stage: "build", Key: liveKey, Status: StageRunning, OutputDir: liveDir,
+	}
+
+	if n := e.SweepRunDirs(); n != 2 {
+		t.Fatalf("swept %d, want 2", n)
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Fatalf("a still-running stage's directory must survive the sweep: %v", err)
+	}
+	for _, gone := range []string{deadDir, strayDir} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("%s should have been swept", gone)
+		}
+	}
+}
+
+// A stage command gets a scratch directory breeze owns and reconciles. The point is
+// that an EXIT trap cannot survive the signal that skips it, so cleanup has to
+// belong to something that outlives the run — which is what a /tmp path named after
+// a PID, cleaned by a trap, is not.
+func TestStageCommandGetsAScratchDirThatIsCleanedUp(t *testing.T) {
+	e := New()
+	dir := t.TempDir()
+	e.SetRunDir(dir)
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{
+		Path: "/bin/sh",
+		Args: []string{"-c", `mkdir -p "$BREEZE_RUN_DIR" && touch "$BREEZE_RUN_DIR/worktree" && echo "$BREEZE_RUN_DIR"`},
+	}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	scratch := strings.TrimSpace(string(inst.Stdout))
+	if scratch == "" || !strings.HasPrefix(scratch, dir) {
+		t.Fatalf("BREEZE_RUN_DIR = %q, want a path under %s", scratch, dir)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("the scratch directory must be cleaned up with the run (err=%v)", err)
+	}
+}
