@@ -10,7 +10,15 @@ import (
 // for now we persist all currently-known ones; waiters/listeners are transient and
 // deliberately excluded, mirroring mess's persist.go.
 type Snapshot struct {
-	Seq               int                       `json:"seq"`
+	Seq int `json:"seq"`
+	// DaemonPID is the process that wrote this snapshot. On startup it answers the
+	// one question adoption turns on: a daemon that re-execs itself keeps its PID
+	// (syscall.Exec replaces the image, not the process), so a snapshot whose
+	// DaemonPID equals ours means we ARE the process that started those runs and
+	// they are still our children — adoptable, waitable. A different PID means a
+	// crash or a fresh start, where the runners (if any survived) belong to init and
+	// only the orphan path applies.
+	DaemonPID         int                       `json:"daemonPid,omitempty"`
 	Identities        []Identity                `json:"identities,omitempty"`
 	Pipelines         []Pipeline                `json:"pipelines,omitempty"`
 	Locks             []FileLock                `json:"locks,omitempty"`

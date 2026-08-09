@@ -1,0 +1,50 @@
+# A restart used to cost everyone their in-flight work: running stages were
+# cancelled on the way down, because the goroutine waiting on each runner died with
+# the process image and its result became uncollectable. Three real stages died to
+# one restart the day this changed.
+#
+# Now a restart leaves them running. The re-exec keeps the process (and so its
+# children), the output goes to files rather than pipes, and the new image adopts
+# them and collects the real result.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# Start a run that will still be going when the daemon is replaced.
+exec sh -c 'breeze start stage svc long abc123 --as ci --token-file ci.token >/dev/null 2>&1 & sleep 2'
+exec breeze status stage svc long abc123
+stdout 'long: running'
+
+exec breeze restart daemon
+stdout 'restarted in place'
+
+# Still running — not cancelled, not orphaned.
+exec breeze status stage svc long abc123
+stdout 'long: running'
+
+# It finishes on its own and the NEW daemon records the real result, including the
+# output written after the restart.
+exec breeze wait stage svc long abc123 --timeout 60s
+stdout 'long: succeeded'
+exec breeze status stage svc long abc123 --json
+stdout 'phase-1'
+stdout 'phase-2-after-restart'
+
+# A plain stop still cancels: nothing is coming back to adopt them, so leaving the
+# work running under a record that says running would strand it.
+exec sh -c 'breeze start stage svc long def456 --as ci --token-file ci.token >/dev/null 2>&1 & sleep 2'
+exec breeze stop
+exec breeze ping
+! exec breeze status stage svc long def456
+stdout 'failed \(cancelled\)'
+
+-- pipeline.hcl --
+pipeline "svc" {
+  stage "long" {
+    type    = "command"
+    timeout = "2m"
+    command = ["/bin/sh", "-c", "echo phase-1; sleep 12; echo phase-2-after-restart"]
+  }
+}

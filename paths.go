@@ -16,6 +16,10 @@ type paths struct {
 	audit     string
 	daemonLog string
 	identDir  string
+	// runs holds one directory per in-flight stage run, containing its stdout and
+	// stderr as files. On disk rather than in memory so a run's output survives the
+	// daemon being replaced — see StageInstance.OutputDir.
+	runs string
 	// defaults is this daemon's optional machine-level config file
 	// (<state-dir>/defaults.hcl) — currently just a resource_limits block applied
 	// as a floor under every command this daemon runs. Read at startup only; a
@@ -69,6 +73,7 @@ func pathsForDir(dir string) paths {
 		audit:     filepath.Join(dir, "audit.jsonl"),
 		daemonLog: filepath.Join(dir, "daemon.log"),
 		identDir:  filepath.Join(dir, "ident"),
+		runs:      filepath.Join(dir, "runs"),
 		defaults:  filepath.Join(dir, "defaults.hcl"),
 	}
 }

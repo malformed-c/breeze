@@ -7,6 +7,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,6 +68,11 @@ type Engine struct {
 	// written yet. That's the difference between a machine policy and a config
 	// convention — the host it protects doesn't care who forgot.
 	defaultLimits *hook.ResourceLimits
+
+	// runDir is where a running stage's output files live (<state-dir>/runs). On
+	// disk rather than in memory precisely so a run's output outlives the process
+	// that started it — see StageInstance.OutputDir.
+	runDir string
 
 	auditFn  func(AuditEvent)
 	auditSeq int
@@ -150,7 +158,10 @@ func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
 
 func (e *Engine) snapshotLocked() Snapshot {
 	snap := Snapshot{
-		Seq:             e.lockSeq,
+		Seq: e.lockSeq,
+		// Recorded so a future startup can tell "I am the same process that started
+		// those runs" (a re-exec) from "someone else did" (a crash or fresh start).
+		DaemonPID:       os.Getpid(),
 		CommitSeq:       cloneIntMap(e.commitSeq),
 		LastDeployedSeq: cloneIntMap(e.lastDeployedSeq),
 		DeployHistory:   make(map[string][]DeployRecord, len(e.deployHistory)),
@@ -323,4 +334,38 @@ func (e *Engine) EffectiveLimits(own *hook.ResourceLimits) *hook.ResourceLimits 
 		merged.IOWeight = def.IOWeight
 	}
 	return &merged
+}
+
+// SetRunDir tells the engine where to keep running stages' output files. Set once
+// at startup by the daemon, which is the only thing that knows the state directory.
+func (e *Engine) SetRunDir(dir string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runDir = dir
+}
+
+// runOutputDir is the per-instance directory a live run writes its output into.
+// Derived from the instance key rather than stored anywhere, so a restarted daemon
+// can find a run's output knowing only what it already has in the snapshot.
+func (e *Engine) runOutputDir(pipeline, stage string, key StageKey) string {
+	if e.runDir == "" {
+		return ""
+	}
+	return filepath.Join(e.runDir, sanitizeRunKey(instanceKey(pipeline, stage, key)))
+}
+
+// sanitizeRunKey turns an instance key into one safe path segment. Instance keys
+// contain "/" (pipeline/stage/commit) and commits can be arbitrary strings, so this
+// replaces anything outside a conservative set rather than trusting them as paths.
+func sanitizeRunKey(k string) string {
+	var b strings.Builder
+	for _, r := range k {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }

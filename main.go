@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"breeze/internal/hclconfig"
@@ -682,9 +683,30 @@ func printJSON(v any) {
 // tryBindDaemon, waitForDialState — lives in daemon_lifecycle.go)
 
 func cmdStop(p paths) error {
-	_, err := call(p, wire.Request{Op: wire.OpStop})
-	if err != nil {
+	// Ask who we're stopping before stopping them, so we can wait for that exact
+	// process to be gone rather than for a socket that disappears immediately.
+	pid := 0
+	if resp, err := call(p, wire.Request{Op: wire.OpPing}); err == nil {
+		if ping, err := decodePayload[wire.PingResponse](resp); err == nil {
+			pid = ping.Pid
+		}
+	}
+	if _, err := call(p, wire.Request{Op: wire.OpStop}); err != nil {
 		return err
+	}
+	// "stopped" has to mean stopped. The request only ASKS; the daemon then drains
+	// in-flight requests and flushes its snapshot, holding its socket and flock the
+	// whole time — so returning immediately meant `breeze stop && breeze start
+	// daemon` could race its own predecessor and fail with "daemon did not start".
+	// That window used to be milliseconds and became seconds once a `stage start`
+	// caller stayed connected for the length of its run.
+	// Waiting on the SOCKET would prove nothing: a daemon closes its listener the
+	// instant it's asked to stop, then spends up to ten seconds draining requests
+	// and flushing its snapshot while still holding the lock. Waiting on the PROCESS
+	// is what makes "stopped" mean stopped — and what makes `breeze stop && breeze
+	// start daemon` reliable rather than a race against its own predecessor.
+	if pid > 0 && !waitForProcessExit(pid, restartWaitBudget) {
+		return fmt.Errorf("asked the daemon (pid %d) to stop, but it is still running after %s — it may be draining a long request; check %s", pid, restartWaitBudget, p.daemonLog)
 	}
 	fmt.Println("stopped")
 	return nil
@@ -2272,6 +2294,19 @@ func printOutput(inst wire.StageInstance, tail int) {
 // defaultTailLines is what a failure shows unasked: enough to hold a test summary
 // or a stack trace, short enough not to bury the status line that precedes it.
 const defaultTailLines = 20
+
+// waitForProcessExit polls until pid is gone, or timeout. Signal 0 is a pure
+// existence probe — it never touches the process.
+func waitForProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
 
 // printSummary shows a stage's transform output, when it has one — the short
 // rendering of what the raw output means, which is the reason the transform exists.

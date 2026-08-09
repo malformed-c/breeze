@@ -281,6 +281,14 @@ used to read exactly like a check going red.
 **Output appears on failure without `--json`** (stderr first, then stdout,
 `--tail N` to bound it). Don't hand-roll a JSON parser for it any more.
 
+**A daemon restart no longer kills running stages.** They keep executing and the
+restarted daemon adopts them, collecting the real exit code and the output written
+on both sides of the restart (the stage's own timeout still applies, carried across
+as a deadline). `breeze stop` still cancels them — nothing comes back to adopt those.
+
+If you were parked in `start stage` when a restart happened, your connection breaks
+but THE RUN DOES NOT: check `status stage` rather than assuming it died.
+
 **A stage whose runner vanished is reconciled at daemon start**, not left `running`
 forever: it becomes `failed (orphaned)`, its run lock is released so the retry isn't
 blocked, and a runner that outlived the daemon is killed first. If you see

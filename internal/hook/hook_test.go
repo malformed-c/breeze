@@ -349,3 +349,65 @@ func TestInlineScriptTempFileIsRemoved(t *testing.T) {
 		t.Fatalf("script temp file %s still exists after the run (err=%v)", path, err)
 	}
 }
+
+// Output written to files is what lets a run outlive the daemon that started it:
+// the child holds a file descriptor, not one end of a pipe belonging to a process
+// image that a restart is about to replace.
+func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	res := Run(context.Background(), Template{
+		Path: "/bin/sh", Args: []string{"-c", "echo to-stdout; echo to-stderr >&2; exit 3"},
+		Timeout: 10 * time.Second, OutputDir: dir,
+	}, nil)
+	if res.Err != nil {
+		t.Fatalf("run: %v", res.Err)
+	}
+	if res.ExitCode != 3 {
+		t.Fatalf("exit = %d, want 3", res.ExitCode)
+	}
+	// The Result is unchanged from the caller's point of view...
+	if got := strings.TrimSpace(string(res.Stdout)); got != "to-stdout" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if got := strings.TrimSpace(string(res.Stderr)); got != "to-stderr" {
+		t.Fatalf("stderr = %q", got)
+	}
+	// ...and the same content is on disk, where someone else can recover it.
+	for name, want := range map[string]string{StdoutFile: "to-stdout", StderrFile: "to-stderr"} {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.TrimSpace(string(body)) != want {
+			t.Fatalf("%s file = %q, want %q", name, body, want)
+		}
+	}
+}
+
+// The child must hold the output descriptors DIRECTLY. If anything in this process
+// sat in between (as the in-memory pipe capture does), replacing this process would
+// break the child's writes — which is exactly the failure adoption has to avoid.
+func TestFileOutputSurvivesTheParentLettingGo(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("/bin/sh", "-c", "echo first; sleep 0.3; echo second")
+	of, err := openOutputFiles(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	cmd.Stdout, cmd.Stderr = of.stdout, of.stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	// Drop every descriptor this process holds while the child is still writing.
+	of.close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("the child must not die when the parent closes its copies: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, StdoutFile))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(body), "second") {
+		t.Fatalf("output written AFTER the parent let go was lost: %q", body)
+	}
+}

@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -56,7 +58,27 @@ type Template struct {
 	// that comes back after a crash can tell a runner that died with the machine
 	// from one that outlived a hard kill of the daemon.
 	OnStart func(pid int)
+	// OutputDir, when set, sends the command's stdout and stderr straight to files
+	// in that directory instead of into this process's memory. That is what lets a
+	// run OUTLIVE the daemon: the default capture hands the child a pipe whose read
+	// end belongs to this process image, so the moment a restart re-execs, the child
+	// writes into a pipe nobody holds — EPIPE, output lost, and quite possibly a
+	// dead child. A file descriptor doesn't care that its parent was replaced.
+	//
+	// Result still carries the output (read back after the command exits, capped the
+	// same way the in-memory path caps it), so callers see no difference in the
+	// normal case; the difference only shows up when someone else has to recover the
+	// output later.
+	OutputDir string
 }
+
+// Output file names inside Template.OutputDir. Fixed rather than generated so a
+// daemon that restarts — or a human with a shell — can find a run's output knowing
+// only the directory.
+const (
+	StdoutFile = "stdout"
+	StderrFile = "stderr"
+)
 
 // ResourceLimits bounds a command's cgroup footprint via systemd-run --scope.
 // All fields are optional; only limits actually set are passed through as
@@ -276,8 +298,19 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	cmd.WaitDelay = 2 * time.Second
 
 	var stdout, stderr capBuffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var outFiles *outputFiles
+	if tmpl.OutputDir != "" {
+		of, err := openOutputFiles(tmpl.OutputDir)
+		if err != nil {
+			return Result{Err: err}
+		}
+		defer of.close()
+		outFiles = of
+		cmd.Stdout, cmd.Stderr = of.stdout, of.stderr
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 
 	start := time.Now()
 	err := cmd.Start()
@@ -305,12 +338,60 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		Duration: duration,
 		TimedOut: timedOut,
 	}
+	if outFiles != nil {
+		res.Stdout, res.Stderr = outFiles.read()
+	}
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		res.ExitCode = exitErr.ExitCode()
 	} else if waitErr != nil && !timedOut {
 		res.Err = waitErr
 	}
 	return res
+}
+
+// outputFiles holds the two files a run writes directly into. The child gets these
+// descriptors as its own stdout/stderr, so nothing in this process sits between the
+// command and its output — which is the whole point: there is no pipe to break when
+// this process is replaced.
+type outputFiles struct{ stdout, stderr *os.File }
+
+func openOutputFiles(dir string) (*outputFiles, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("run output dir: %w", err)
+	}
+	out, err := os.Create(filepath.Join(dir, StdoutFile))
+	if err != nil {
+		return nil, fmt.Errorf("run output: %w", err)
+	}
+	errf, err := os.Create(filepath.Join(dir, StderrFile))
+	if err != nil {
+		out.Close()
+		return nil, fmt.Errorf("run output: %w", err)
+	}
+	return &outputFiles{stdout: out, stderr: errf}, nil
+}
+
+func (o *outputFiles) close() {
+	o.stdout.Close()
+	o.stderr.Close()
+}
+
+func (o *outputFiles) read() ([]byte, []byte) {
+	return ReadCapped(o.stdout.Name()), ReadCapped(o.stderr.Name())
+}
+
+// ReadCapped reads at most maxCaptured bytes from path, matching the in-memory
+// capture's cap so a run's recorded output is the same size either way. Exported
+// because recovering a run's output after a restart happens outside this package.
+func ReadCapped(path string) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	buf := make([]byte, maxCaptured)
+	n, _ := io.ReadFull(f, buf)
+	return buf[:n]
 }
 
 // OutputTail returns up to n bytes from the end of combined stdout+stderr, for

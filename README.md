@@ -770,6 +770,32 @@ saying what it dropped. Quiet on success. Before this, the run's output sat in a
 response the CLI had already decoded but printed nothing of, so every caller
 hand-rolled the same fragile JSON parser at exactly the moment a gate went red.
 
+**A restart no longer costs anyone their in-flight work.** A running stage used to be
+cancelled on the way down, because the goroutine waiting on its process died with
+the daemon's image and the result became uncollectable. It now keeps running and the
+new image **adopts** it:
+
+- Its output goes to **files**, not pipes. A pipe's read end belongs to the process
+  image a restart replaces, so the child's next write would get `EPIPE` — output
+  lost, and quite possibly a dead child. A file descriptor doesn't care that its
+  parent was replaced.
+- `syscall.Exec` keeps the process (same PID), so the runners are still the daemon's
+  children and `wait4` still collects their real exit status. The snapshot records
+  the daemon's PID, which is how startup tells "I re-exec'd myself" (adopt) from
+  "someone else started me" (orphan — nothing here is my child).
+- The stage's declared `timeout` is persisted as a deadline, so an adopted run still
+  ends when it said it would. That's the TTL, and it was already declared per stage.
+- The transform, brief and notifications all still fire on the adopted result —
+  otherwise a restart would quietly cost a stage everything except its exit code.
+
+`breeze stop` still cancels, and must: nothing is coming back to adopt those runs, so
+leaving the processes going would strand work nobody will ever collect a result from.
+
+One wrinkle worth knowing: the caller blocked in `start stage` when the restart
+happens loses its connection — the run continues and is recorded, but that CLI
+invocation reports a broken connection rather than the outcome. `status stage` has
+the truth.
+
 **A stage whose runner disappeared is reconciled, not left "running".** If the
 daemon comes back and the snapshot says a stage is running, that stage is orphaned
 by definition — a live run exists only in the memory of the process driving it, and
@@ -1308,6 +1334,17 @@ authority it already legitimately holds. Concretely:
   cover pipelines registered before it existed and ones registered through the raw
   JSON path — and deliberately isn't baked into the stored definition, which would
   make every re-apply look like a diff.
+- `breeze stop` waits for the daemon **process** to exit, not for its socket to go
+  quiet. A daemon closes its listener the instant it's asked to stop but holds its
+  lock for the whole drain, so waiting on the socket made "stopped" mean "asked"
+  — and `stop && start` a race against its own predecessor. For the same reason a
+  starting daemon now waits out a held lock (bounded) instead of failing instantly
+  with "another instance is already running" when nothing is actually running.
+- The daemon points **fd 2** at its log, not just `log.SetOutput`. A panic is written
+  by the runtime straight to file descriptor 2, which for a detached daemon is
+  `/dev/null` — so a crash left an empty log and a daemon that had simply vanished.
+  That is precisely how a nil dereference in the adoption path nearly shipped: it
+  killed the daemon mid-run and the log's last line was a cheerful "listening".
 - The orphan reconcile relies on an **invariant, not a probe**: "running in a
   snapshot being loaded" is a contradiction, so there is no PID or boot-id to go and
   measure (and nothing for PID reuse to fool). That holds only because snapshot load

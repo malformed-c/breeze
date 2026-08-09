@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -69,6 +70,34 @@ func startDaemonDetached(p paths) error {
 	return nil
 }
 
+// lockWaitBudget bounds how long a starting daemon waits for a predecessor to
+// finish draining and release the lock. Comfortably longer than that drain (5s for
+// requests + 5s for the snapshot write); past it, something is genuinely wrong and
+// failing loudly beats waiting forever.
+const lockWaitBudget = 15 * time.Second
+
+// flockWithRetry takes the lock, polling until timeout rather than giving up on the
+// first EWOULDBLOCK.
+func flockWithRetry(fd int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// restartWaitBudget is how long a client waits for a restarted daemon to come back:
+// comfortably more than the daemon's own worst-case shutdown (5s for in-flight
+// requests + 5s for a pending snapshot write), so a slow-but-successful restart is
+// never reported as a failed one.
+const restartWaitBudget = 20 * time.Second
+
 // restartDaemon asks an already-running daemon to restart itself in place (OpRestart
 // — same PID, re-executing whatever binary is currently on disk) rather than this
 // CLI process killing it and spawning a separate new one to track. If nothing is
@@ -92,7 +121,13 @@ func restartViaConn(p paths, conn net.Conn) error {
 	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart}); err != nil {
 		return fmt.Errorf("asking the existing daemon to restart: %w", err)
 	}
-	if !waitForDialState(p.sock, true, 5*time.Second) {
+	// The client's patience has to exceed the daemon's own shutdown budget, or a
+	// restart that worked perfectly reports as a failure. That budget is up to 5s
+	// waiting for in-flight requests plus up to 5s for a pending snapshot write —
+	// and waiting for connections became the common case once restarts stopped
+	// cancelling running stages, because a `stage start` caller is parked on one
+	// for the whole run.
+	if !waitForDialState(p.sock, true, restartWaitBudget) {
 		return fmt.Errorf("asked the daemon to restart but it did not come back up within 5s (check %s)", p.daemonLog)
 	}
 	fmt.Printf("breeze daemon restarted in place (dir %s)\n", p.dir)
@@ -140,6 +175,15 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 
 	// (2) flock: the actual atomic mutual-exclusion primitive.
 	//
+	// Retried briefly rather than failed instantly. A daemon closes its listener the
+	// moment it's asked to stop, but keeps the lock while it drains in-flight
+	// requests and flushes its snapshot — up to ten seconds. In that window a client
+	// finds nothing listening, auto-starts a daemon, and that daemon used to fail
+	// immediately with "another breeze daemon instance is already running", which is
+	// both alarming and wrong: nothing is running, something is finishing. A genuine
+	// live daemon is caught by the dial-probe above, so reaching here with the lock
+	// held means a predecessor on its way out.
+	//
 	// O_CLOEXEC is load-bearing, not hygiene. flock ownership belongs to the OPEN
 	// FILE DESCRIPTION, so any process that inherits this descriptor keeps the lock
 	// held — and without close-on-exec every stage command the daemon forks inherits
@@ -153,9 +197,9 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open lockfile: %w", err)
 	}
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := flockWithRetry(fd, lockWaitBudget); err != nil {
 		syscall.Close(fd)
-		return nil, fmt.Errorf("another breeze daemon instance is already running (flock held on %s): %w", p.lockfile, err)
+		return nil, fmt.Errorf("another breeze daemon instance is already running (flock held on %s for more than %s): %w", p.lockfile, lockWaitBudget, err)
 	}
 
 	// (3) remove stale socket, (4) bind.
@@ -170,6 +214,15 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	logFile, err := os.OpenFile(p.daemonLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err == nil {
 		log.SetOutput(logFile)
+		// Point fd 2 at the log as well. log.SetOutput only redirects THIS package's
+		// writes; a panic is written by the runtime straight to file descriptor 2,
+		// which for a detached daemon is /dev/null — so a crash left an empty log
+		// and a daemon that had simply vanished. That is exactly how a nil
+		// dereference in the adoption path nearly shipped: the daemon died silently
+		// mid-run and the log's last line was a cheerful "listening".
+		if err := syscall.Dup2(int(logFile.Fd()), int(os.Stderr.Fd())); err != nil {
+			log.Printf("warning: could not route stderr to the log; a panic would not be recorded: %v", err)
+		}
 	}
 
 	if err := registerSelf(p); err != nil {
@@ -189,8 +242,15 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	// here, before serving, so a caller never sees a "running" stage that nothing is
 	// running (reported live: a host crash left stages stuck running indefinitely,
 	// which also BLOCKED their retry until someone cancelled them by hand).
-	if n := eng.ReconcileOrphanedStages(); n > 0 {
-		log.Printf("reconciled %d stage instance(s) left running by a daemon that did not shut down cleanly — marked failed (orphaned) and their run locks released, so they can be retried", n)
+	eng.SetRunDir(p.runs)
+	if n := eng.ReapStrayChildren(); n > 0 {
+		log.Printf("reaped %d stray child process(es) left unwaited by the previous image", n)
+	}
+	// Either this process re-exec'd itself (its runners are still its children, so
+	// they keep running and get adopted) or it didn't (nothing can be collected, so
+	// they're orphaned). snap.DaemonPID is what tells those apart.
+	if adopted, orphaned := eng.AdoptOrReconcile(snap.DaemonPID); adopted > 0 || orphaned > 0 {
+		log.Printf("in-flight stages at startup: %d adopted (still running, results will be collected), %d orphaned (their runner is gone)", adopted, orphaned)
 	}
 	if err := loadDefaultLimits(eng, p); err != nil {
 		// Refusing to start is deliberate. This file exists precisely because

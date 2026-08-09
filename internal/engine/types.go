@@ -413,8 +413,17 @@ type StageInstance struct {
 	// cleared when the run resolves.
 	RunnerPID   int
 	RunnerStart string
-	Actor       string
-	Brief       string
+	// OutputDir is where this run's stdout/stderr files live while it executes. It
+	// is what makes a run recoverable by a DIFFERENT daemon process: the output is
+	// on disk rather than in the memory of whoever started it.
+	OutputDir string
+	// Deadline is when this run's own timeout expires (StartedAt + the stage's
+	// timeout), persisted so it survives a restart. A run adopted by a new daemon
+	// still has to end when it said it would — the timeout is the TTL, and it was
+	// already declared per stage, so nothing new has to be invented for it.
+	Deadline time.Time
+	Actor    string
+	Brief    string
 	// Summary is a stage's transform output (see StageDef.Transform) — a short
 	// human-readable rendering of what the raw output means. Empty when the stage
 	// has no transform, which is every stage that doesn't opt in.

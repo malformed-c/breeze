@@ -135,7 +135,21 @@ func runDaemon(p paths, args []string) error {
 				// nothing left to ever call cmd.Wait) has ever waited for in-flight
 				// hook.Run executions, so a stage caught mid-run stayed stuck
 				// "running" forever, surviving even a fresh daemon start afterward.
-				if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process is now orphaned with no result; re-run `stage start` to retry"); n > 0 {
+				// A RESTART leaves running stages alone: the re-exec keeps this
+				// process (and therefore its children), their output goes to files
+				// rather than pipes, and the new image adopts them and collects
+				// their real results. Cancelling here is what used to make every
+				// restart cost whoever had work in flight — three real stages died
+				// to one restart the day this changed.
+				//
+				// A STOP still cancels, and must: nothing is coming back to adopt
+				// them, so leaving the processes running would strand work nobody
+				// will ever collect a result from, under records that say running.
+				if d.restarting.Load() {
+					if n := d.eng.RunningStageCount(); n > 0 {
+						log.Printf("restarting with %d stage instance(s) still running — they keep executing and will be adopted after the re-exec", n)
+					}
+				} else if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process is now orphaned with no result; re-run `stage start` to retry"); n > 0 {
 					log.Printf("cancelled %d stage instance(s) still running at shutdown (their underlying processes are now orphaned, untracked)", n)
 				}
 				// Give every in-flight request a real chance to write its response

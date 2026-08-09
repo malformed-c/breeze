@@ -377,6 +377,11 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	inst := &StageInstance{
 		Pipeline: pipelineName, Stage: stageName, Key: key,
 		Status: StageRunning, StartedAt: e.now(), Actor: actor, Brief: brief,
+		OutputDir: e.runOutputDir(pipelineName, stageName, key),
+		// The stage's own declared timeout, persisted as a wall-clock deadline: a
+		// run adopted by a later daemon still has to end when it said it would, and
+		// nothing new had to be invented to say when that is.
+		Deadline: e.now().Add(timeout),
 	}
 	e.instances[instanceKey(pipelineName, stageName, key)] = inst
 	e.changed()
@@ -828,11 +833,15 @@ func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*
 // and deploy stages. Shared by StartCommandStage and runDeployStage.
 func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
 	runKey := instanceKey(pipelineName, stageName, key)
+	e.mu.Lock()
+	outputDir := e.runOutputDir(pipelineName, stageName, key)
+	e.mu.Unlock()
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir, Timeout: timeout,
 		Script: tmpl.Script, Interpreter: tmpl.Interpreter,
+		OutputDir:      outputDir,
 		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
 		// Record which OS process owns this stage while it runs, so a daemon that
 		// comes back after a crash can tell a runner that died with the machine from
