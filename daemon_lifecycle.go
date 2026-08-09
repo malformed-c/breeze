@@ -129,7 +129,7 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 		// so probing on the connection the restart is about to use consumes it.
 		if resp, err := call(p, wire.Request{Op: wire.OpPing}); err == nil {
 			if ping, derr := decodePayload[wire.PingResponse](resp); derr == nil && !slices.Contains(ping.Features, wire.FeatureRestartGuard) {
-				fmt.Fprintf(os.Stderr, "warning: this daemon (pid %d, built %s) predates the running-stage guard, so it will restart even if stages are in flight — check `breeze operator` first\n",
+				fmt.Fprintf(os.Stderr, "warning: this daemon (pid %d, %s) predates the running-stage guard, so it will restart even if stages are in flight — check `breeze operator` first\n",
 					ping.Pid, versionString(ping.Version, ping.BuildTime))
 			}
 		}
