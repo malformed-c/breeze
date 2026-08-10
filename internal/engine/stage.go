@@ -966,6 +966,20 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	}
 	defer slot.Release()
 
+	// Create the scratch directory before advertising it. $BREEZE_RUN_DIR shipped
+	// pointing at a path nothing ever made: hook.Run creates the OUTPUT directory
+	// (for stdout/stderr) and scratch is a subdirectory of it, so every script that
+	// took breeze at its word got ENOENT on first use. The whole promise of the
+	// variable — "a scratch directory breeze owns, cleans when the run resolves" —
+	// was false at the first step, which is why the one team who tried it kept
+	// rolling their own and their directories survived kills that breeze's sweep
+	// would have reaped.
+	if outputDir != "" {
+		if err := os.MkdirAll(RunScratchDir(outputDir), 0o700); err != nil {
+			return hook.Result{ExitCode: -1, Err: fmt.Errorf("creating the stage's scratch directory: %w", err)}, false
+		}
+	}
+
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{

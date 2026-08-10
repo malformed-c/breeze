@@ -283,3 +283,41 @@ func TestStageCommandGetsAScratchDirThatIsCleanedUp(t *testing.T) {
 		t.Fatalf("the scratch directory must be cleaned up with the run (err=%v)", err)
 	}
 }
+
+// $BREEZE_RUN_DIR shipped pointing at a path nothing ever created. hook.Run makes
+// the OUTPUT directory for stdout/stderr, and scratch is a subdirectory of it, so
+// every script that took breeze at its word got ENOENT on its first write — while
+// the docs promised "a scratch directory breeze owns, cleans when the run resolves".
+// Found by a team who had quietly kept rolling their own, whose directories then
+// survived kills that breeze's sweep would have reaped.
+func TestScratchDirExistsAndIsWritableDuringTheRun(t *testing.T) {
+	e := New()
+	dir := t.TempDir()
+	e.SetRunDir(dir)
+	p := examplePipeline()
+	// Write into the advertised scratch dir; a stage that cannot is the bug.
+	p.Stages[0].Command = CommandTemplate{
+		Path: "/bin/sh",
+		Args: []string{"-c", `touch "$BREEZE_RUN_DIR/proof" && echo "$BREEZE_RUN_DIR"`},
+	}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	inst, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if inst.Status != StageSucceeded {
+		t.Fatalf("a stage must be able to write to the scratch dir breeze advertises: %s — %s",
+			inst.Status, strings.TrimSpace(string(inst.Stderr)))
+	}
+	if got := strings.TrimSpace(string(inst.Stdout)); !strings.HasPrefix(got, dir) {
+		t.Errorf("BREEZE_RUN_DIR must live under the configured run dir, got %q", got)
+	}
+	// And it must not outlive the run: the sweep is the other half of the promise.
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("the run directory must be cleaned when the run resolves, still present: %v", entries)
+	}
+}
