@@ -366,9 +366,20 @@ func (e *Engine) EffectiveLimits(own *hook.ResourceLimits) *hook.ResourceLimits 
 }
 
 // MergeResourceLimits fills every field own leaves unset from def, most specific
-// winning. One function for every level of the stack — stage over pipeline over
-// per-daemon over machine-wide — so "more specific wins, per field" is defined
-// exactly once and cannot drift between them.
+// winning — stage over pipeline over per-daemon over machine-wide.
+//
+// THIS IS NOT THE ONLY COPY, and the comment that used to claim it was ("defined
+// exactly once and cannot drift between them") was false when written and then came
+// true in the worst way: hclconfig.mergeLimits does the same thing on wire types for
+// the apply-time levels, and when nice and the IO caps were added they went into that
+// one and not this one. Five of eleven fields silently stopped being inherited from a
+// machine default — exactly the drift the comment promised was impossible.
+//
+// The two exist because they merge different types (wire on the client, hook here)
+// and neither package can reasonably import the other. So the guarantee is enforced
+// by a test that enumerates the struct's fields by reflection and fails if EITHER
+// implementation forgets one, rather than by a sentence asserting it. A new field
+// added to ResourceLimits and wired into only one merge now fails the suite.
 func MergeResourceLimits(own, def *hook.ResourceLimits) *hook.ResourceLimits {
 	if def == nil {
 		return own
@@ -395,6 +406,21 @@ func MergeResourceLimits(own, def *hook.ResourceLimits) *hook.ResourceLimits {
 	}
 	if merged.IOWeight == 0 {
 		merged.IOWeight = def.IOWeight
+	}
+	if merged.IOReadBandwidthMax == "" {
+		merged.IOReadBandwidthMax = def.IOReadBandwidthMax
+	}
+	if merged.IOWriteBandwidthMax == "" {
+		merged.IOWriteBandwidthMax = def.IOWriteBandwidthMax
+	}
+	if merged.IOReadIOPSMax == "" {
+		merged.IOReadIOPSMax = def.IOReadIOPSMax
+	}
+	if merged.IOWriteIOPSMax == "" {
+		merged.IOWriteIOPSMax = def.IOWriteIOPSMax
+	}
+	if merged.Nice == nil {
+		merged.Nice = def.Nice
 	}
 	return &merged
 }

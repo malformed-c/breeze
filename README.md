@@ -1090,14 +1090,19 @@ default of `"1400%"` is given 2800%, not clamped to 1400%. Fields the stage does
 name still come from the machine, so a stage that only raises its memory ceiling still
 inherits the machine's CPU policy.
 
-Precisely what is measured, since this is the kind of claim that gets overstated:
-breeze **passes** the stage's larger value rather than the machine's (observed on
-`cpu_quota`, by reading what a stage actually receives), and the **kernel honours** a
-stage value larger than the machine default (observed on `memory_high` — a stage
-declaring `16G` under a machine default of `12G` had `memory.high = 17179869184` in
-its live scope, with every parent cgroup at `max`). Those are two different
-assertions on two different keys; neither on its own establishes the other, and
-"configured for 2800%" is not the same claim as "got 28 cores".
+Precisely what is measured, and by whom, since this is the kind of claim that gets
+overstated by summarising it:
+
+| claim | measured on |
+|---|---|
+| breeze **passes** the stage's larger value | `cpu_quota` — reading what a stage receives |
+| the kernel **honours** a larger value | `memory_high` — `16G` over a `12G` default, `memory.high = 17179869184` live, every parent at `max` |
+| the kernel **honours** a larger value | `cpu_quota` — `cpu.max = 2800000 100000` (28 cores) on a live scope, parent `max` |
+| no clamp exists in either merge | both merge implementations, statically |
+
+Four segments by four people. "Configured for 2800%" and "got 28 cores" are different
+claims and the second needed its own reading — for about twenty minutes it did not
+exist, which is precisely the window in which two of us wrote sentences asserting it.
 
 So a machine-level value is a **default for everything that does not say otherwise**,
 never a ceiling on what a stage may ask for. What it protects against is escaping by
