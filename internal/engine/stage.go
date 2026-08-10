@@ -3,11 +3,13 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
 
 	"breeze/internal/hook"
+	"breeze/internal/slots"
 )
 
 // getInstance looks up an existing stage instance. Materialization is lazy: this
@@ -87,6 +89,8 @@ func describeStageState(inst *StageInstance) string {
 		return "is still running"
 	case StageAwaiting:
 		return "is awaiting approval"
+	case StageQueued:
+		return "is queued for a machine slot"
 	default:
 		return "has not succeeded"
 	}
@@ -223,6 +227,15 @@ func isTerminalStatus(s StageStatus) bool {
 	return s == StageSucceeded || s == StageFailed || s == StageGateFailed
 }
 
+// isInFlight covers the states where breeze has committed to running something and
+// a goroutine in THIS process is seeing it through: executing, or queued for one of
+// the machine's stage slots. The distinction from StageRunning alone matters
+// wherever the question is "is work outstanding" rather than "is a process alive" —
+// concurrency limits, the restart guard, shutdown cancellation, and orphan
+// reconciliation. A queued stage has no process, but it does have a goroutine that a
+// re-exec destroys, so it is exactly as orphanable as a running one.
+func isInFlight(s StageStatus) bool { return s == StageRunning || s == StageQueued }
+
 func stageWaitKey(pipeline, stage string, key StageKey) string {
 	return "stage:" + instanceKey(pipeline, stage, key)
 }
@@ -308,7 +321,7 @@ func (e *Engine) WaitForStage(pipelineName, stageName, commit, environment strin
 func (e *Engine) runningCount(pipeline, stage string) int {
 	n := 0
 	for _, inst := range e.instances {
-		if inst.Pipeline == pipeline && inst.Stage == stage && inst.Status == StageRunning {
+		if inst.Pipeline == pipeline && inst.Stage == stage && isInFlight(inst.Status) {
 			n++
 		}
 	}
@@ -370,7 +383,7 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 	}
 
 	if existing := e.getInstance(pipelineName, stageName, key); existing != nil {
-		if existing.Status == StageRunning || existing.Status == StageAwaiting {
+		if existing.Status == StageRunning || existing.Status == StageAwaiting || existing.Status == StageQueued {
 			e.mu.Unlock()
 			return nil, fmt.Errorf("stage %q (%s) is already in progress", stageName, key)
 		}
@@ -722,7 +735,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 	}
 	var toNotify []resolved
 	for _, inst := range e.instances {
-		if inst.Status != StageRunning {
+		if !isInFlight(inst.Status) {
 			continue
 		}
 		inst.Status, inst.FailureKind = StageFailed, FailCancelled
@@ -790,10 +803,10 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 		e.mu.Unlock()
 		return nil, ErrNotFound
 	}
-	if inst.Status != StageRunning && inst.Status != StageAwaiting {
+	if !isInFlight(inst.Status) && inst.Status != StageAwaiting {
 		status := inst.Status
 		e.mu.Unlock()
-		return nil, fmt.Errorf("stage %q (%s) is %s, not running/awaiting — nothing to cancel", stageName, key, status)
+		return nil, fmt.Errorf("stage %q (%s) is %s, not running/queued/awaiting — nothing to cancel", stageName, key, status)
 	}
 	if reason == "" {
 		reason = "cancelled by " + actor
@@ -902,6 +915,17 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	e.mu.Lock()
 	outputDir := e.runOutputDir(pipelineName, stageName, key)
 	e.mu.Unlock()
+	// The machine-wide budget is taken HERE, at the one place both command and
+	// deploy stages actually execute, rather than in each caller's gate sequence —
+	// so the two paths cannot drift, and so the wait happens after every gate has
+	// passed. Queueing a stage that was going to be refused anyway would make the
+	// budget look full while holding nothing back.
+	slot, err := e.acquireMachineSlot(pipelineName, stageName, key, actor)
+	if err != nil {
+		return hook.Result{ExitCode: -1, Err: err}, false
+	}
+	defer slot.Release()
+
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
@@ -1033,4 +1057,55 @@ func (e *Engine) PipelineStatus(pipelineName, commit string) ([]StageInstance, e
 		}
 	}
 	return out, nil
+}
+
+// acquireMachineSlot takes one of the machine's stage slots, marking the instance
+// QUEUED while it waits and flipping it back to RUNNING once it has one.
+//
+// The status flip is the part that matters. Without it a stage waiting twenty
+// minutes for a slot is indistinguishable from a stage that hung: the record says
+// "running", nothing is running, and the only honest signal — that it is waiting
+// behind three other builds — exists nowhere. A shared budget has to be legible from
+// outside or it turns every slow build into an investigation.
+//
+// The wait happens WITHOUT e.mu held, so status queries keep working while a stage
+// queues, and it is bounded by the configured wait_timeout (0 = forever). Deliberately
+// no-ops entirely when no budget is configured, which is the default.
+func (e *Engine) acquireMachineSlot(pipelineName, stageName string, key StageKey, actor string) (*slots.Slot, error) {
+	e.mu.Lock()
+	q := e.queue
+	e.mu.Unlock()
+	if q.Max <= 0 {
+		return &slots.Slot{}, nil
+	}
+
+	h := slots.Holder{
+		PID: os.Getpid(), Dir: q.StateDir, Pipeline: pipelineName, Stage: stageName,
+		Key: key.ShortString(), Actor: actor, Since: e.now(),
+	}
+	slot, err := slots.Acquire(q.Dir, q.Max, h, q.WaitTimeout, func(holders []slots.Holder) {
+		e.mu.Lock()
+		if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
+			inst.Status = StageQueued
+			e.audit("stage.queued", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — waiting for one of the machine's %d stage slots, held by: %s",
+				pipelineName, stageName, key, q.Max, oneLine(slots.Describe(holders))))
+			e.changed()
+		}
+		e.mu.Unlock()
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	e.mu.Lock()
+	if inst := e.getInstance(pipelineName, stageName, key); inst != nil && inst.Status == StageQueued {
+		// StartedAt is deliberately NOT reset: the stage started when the caller asked
+		// for it, and a duration that silently excludes the queue wait would under-
+		// report every busy period on the machine — exactly the number someone tuning
+		// max_concurrent needs to see.
+		inst.Status = StageRunning
+		e.changed()
+	}
+	e.mu.Unlock()
+	return slot, nil
 }

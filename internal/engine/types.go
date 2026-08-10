@@ -369,8 +369,15 @@ const (
 type StageStatus string
 
 const (
-	StageReady      StageStatus = "ready"
-	StageRunning    StageStatus = "running"
+	StageReady   StageStatus = "ready"
+	StageRunning StageStatus = "running"
+	// StageQueued: gates all passed, the stage is holding its own run lock, and it
+	// is waiting for one of the MACHINE's stage slots (see the queue block in the
+	// machine-wide defaults). A real state, not a display nicety — a stage that sits
+	// for twenty minutes with no record is indistinguishable from one that hung, and
+	// a shared budget nobody can see produces "why is my build not starting" with no
+	// way to answer it.
+	StageQueued     StageStatus = "queued"
 	StageAwaiting   StageStatus = "awaiting_approval"
 	StageSucceeded  StageStatus = "succeeded"
 	StageFailed     StageStatus = "failed"

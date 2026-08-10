@@ -269,6 +269,9 @@ func validateResourceLimits(rl *hook.ResourceLimits) error {
 			return err
 		}
 	}
+	if rl.Nice != nil && (*rl.Nice < -20 || *rl.Nice > 19) {
+		return fmt.Errorf("resource_limits: nice must be between -20 (most favourable) and 19 (least), got %d", *rl.Nice)
+	}
 	if rl.TasksMax < 0 {
 		return fmt.Errorf("resource_limits: tasks_max must be >= 0")
 	}

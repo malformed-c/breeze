@@ -116,6 +116,14 @@ type RestartRequest struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// QueueStatus reports the machine-wide stage budget and its current occupancy.
+type QueueStatus struct {
+	Max         int      `json:"max"`
+	Dir         string   `json:"dir"`
+	WaitTimeout string   `json:"waitTimeout,omitempty"`
+	InUse       []string `json:"inUse,omitempty"`
+}
+
 type PingResponse struct {
 	Pid       int    `json:"pid"`
 	Version   string `json:"version"`
@@ -152,6 +160,14 @@ type PingResponse struct {
 	// nothing. Carried on ping because it is a fact about the HOST, not the config:
 	// the same pipeline is correctly limited on a machine that delegates io.
 	IOLimitProblem string `json:"ioLimitProblem,omitempty"`
+	// NiceProblem is non-empty when this daemon's configured niceness cannot take
+	// effect — in practice, a negative value without the privilege to apply it.
+	NiceProblem string `json:"niceProblem,omitempty"`
+	// Queue describes the machine-wide stage budget, if one is configured, and who
+	// is occupying it right now. Carried on ping because it is a fact about the
+	// MACHINE rather than this daemon: the slots are shared with every other breeze
+	// daemon running as the same user, and none of them can see each other's state.
+	Queue *QueueStatus `json:"queue,omitempty"`
 }
 
 type WhoAmIResponse struct {
@@ -338,6 +354,9 @@ type ResourceLimits struct {
 	IOWriteBandwidthMax string `json:"ioWriteBandwidthMax,omitempty"`
 	IOReadIOPSMax       string `json:"ioReadIOPSMax,omitempty"`
 	IOWriteIOPSMax      string `json:"ioWriteIOPSMax,omitempty"`
+	// Nice is a pointer so an explicit 0 survives the wire — see
+	// hook.ResourceLimits.Nice.
+	Nice *int `json:"nice,omitempty"`
 }
 
 type Hook struct {

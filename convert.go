@@ -48,7 +48,7 @@ func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
 		MemoryMax: w.MemoryMax, MemoryHigh: w.MemoryHigh,
 		TasksMax: w.TasksMax, IOWeight: w.IOWeight,
 		IOReadBandwidthMax: w.IOReadBandwidthMax, IOWriteBandwidthMax: w.IOWriteBandwidthMax,
-		IOReadIOPSMax: w.IOReadIOPSMax, IOWriteIOPSMax: w.IOWriteIOPSMax,
+		IOReadIOPSMax: w.IOReadIOPSMax, IOWriteIOPSMax: w.IOWriteIOPSMax, Nice: w.Nice,
 	}
 }
 
@@ -61,7 +61,7 @@ func resourceLimitsToWire(rl *hook.ResourceLimits) *wire.ResourceLimits {
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
 		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
 		IOReadBandwidthMax: rl.IOReadBandwidthMax, IOWriteBandwidthMax: rl.IOWriteBandwidthMax,
-		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax,
+		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax, Nice: rl.Nice,
 	}
 }
 
@@ -246,6 +246,9 @@ func describeLimits(rl *hook.ResourceLimits) string {
 	add("memory_high", rl.MemoryHigh)
 	if rl.TasksMax > 0 {
 		add("tasks_max", strconv.Itoa(rl.TasksMax))
+	}
+	if rl.Nice != nil {
+		add("nice", strconv.Itoa(*rl.Nice))
 	}
 	if rl.IOWeight > 0 {
 		add("io_weight", strconv.Itoa(rl.IOWeight))

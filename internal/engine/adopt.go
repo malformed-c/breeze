@@ -40,6 +40,23 @@ func (e *Engine) AdoptOrReconcile(snapshotDaemonPID int) (adopted, orphaned int)
 			candidates = append(candidates, inst)
 		}
 	}
+	// A QUEUED stage is not adoptable and must not be left alone: it has no process
+	// to inherit, only a goroutine parked on the machine's slot semaphore, and a
+	// re-exec destroys that goroutine. Without this it would sit "queued" forever —
+	// the same permanent-limbo bug that stuck stages in "running" before adoption
+	// existed, one state over. Nothing ran, so it is safe to say so and safe to retry.
+	for _, inst := range e.instances {
+		if inst.Status == StageQueued {
+			inst.Status, inst.FailureKind = StageFailed, FailCancelled
+			inst.FinishedAt = e.now()
+			inst.Error = "the daemon restarted while this stage was waiting for a machine slot; it never started, so nothing ran — re-run `stage start` to queue again"
+			e.releaseRunLockLocked(inst)
+			e.audit("stage.failed", inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — was queued for a machine slot at restart, never started",
+				inst.Pipeline, inst.Stage, inst.Key))
+			e.notifyStageLocked(inst.Pipeline, inst.Stage, inst.Key)
+			orphaned++
+		}
+	}
 	e.mu.Unlock()
 
 	for _, inst := range candidates {
@@ -215,7 +232,7 @@ func (e *Engine) RunningStageCount() int {
 	defer e.mu.Unlock()
 	n := 0
 	for _, inst := range e.instances {
-		if inst.Status == StageRunning {
+		if isInFlight(inst.Status) {
 			n++
 		}
 	}
@@ -230,7 +247,7 @@ func (e *Engine) RunningStages() []StageInstance {
 	defer e.mu.Unlock()
 	var out []StageInstance
 	for _, inst := range e.instances {
-		if inst.Status == StageRunning {
+		if isInFlight(inst.Status) {
 			out = append(out, *inst)
 		}
 	}

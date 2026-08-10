@@ -294,6 +294,41 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### Scheduling priority — `nice`
+
+```hcl
+resource_limits {
+  nice = 10   # -20 (most favourable) … 19 (least)
+}
+```
+
+Applied with `nice(1)` rather than systemd's `Nice=`, because a **scope unit rejects
+that property outright** — `systemd-run --scope --property=Nice=10` fails with
+`Unknown assignment: Nice=10` and exit 1, since `Nice=` is an exec property and a
+scope adopts processes something else started.
+
+Doing it with `nice(1)` has a property the cgroup knobs don't: **it is inherited by
+every grandchild.** A build niced to 10 nices the compilers and linkers it forks,
+which is usually the whole point. A `nice`-only block deliberately does *not* create
+a systemd scope at all — that would be overhead on a good host and a hard failure on
+one with no usable per-user systemd session.
+
+`nice = 0` is a real value, not "unset", so a stage can undo a machine-wide default.
+
+A **negative** value asks for higher-than-normal priority and needs privilege. A
+non-root `nice(1)` given `-5` prints `cannot set niceness: Permission denied`, exits
+**0**, and runs at the original priority — accepted, ineffective, reported as
+success. `breeze status` says so:
+
+```
+nice: NOT IN FORCE — nice = -5 asks for HIGHER priority than default, which requires
+privilege — a non-root daemon's nice(1) reports "cannot set niceness: Permission
+denied", exits 0, and runs at the original priority. Positive values (lower
+priority) work without privilege
+```
+
+Positive values — the ones that yield rather than demand — always work.
+
 #### Capping IO
 
 Alongside `io_weight` (a priority — who yields when the disk is busy) there are four
@@ -339,6 +374,61 @@ then re-login
 
 This applies to `io_weight` too, which shipped long before the caps and had been
 quietly doing nothing on exactly this kind of host.
+
+#### A machine-wide stage queue
+
+`resource_limits` bound what one command may consume. The queue bounds **how many run
+at once across every breeze daemon on the box** — the thing that actually decides
+whether three agents' builds collide:
+
+```hcl
+# ~/.config/breeze/defaults.hcl — the MACHINE-wide file, and only that one
+queue {
+  max_concurrent = 3
+  wait_timeout   = "30m"   # omit to wait indefinitely
+}
+```
+
+A stage arriving when the budget is full **waits**, and says so while waiting:
+
+```
+$ breeze status stage breeze test <sha>
+test: queued
+
+$ breeze status
+machine-wide stage budget: 3 concurrent, 3 in use at the time of asking (slots in
+/run/user/1000/breeze/slots, shared with every breeze daemon on this machine)
+  periapsis/verify-guards f5d3576b  actor=peri-sonnet-5  pid=4443  dir=/home/…/periapsis/.git/breeze  …
+  apsis/build 8beef61f  actor=trail-main  …
+  breeze/test 0a5d609b  actor=breeze-main  …
+```
+
+`queued` is a real status, not a display nicety: a stage sitting silently for twenty
+minutes is indistinguishable from one that hung, and a shared budget nobody can
+inspect turns "why is my build not starting" into a question with no answer.
+
+Mechanics worth knowing:
+
+- **Slots are flock'd files** in a directory shared by every daemon running as this
+  user. A daemon killed mid-run cannot leak a slot — the kernel drops the lock when
+  the process dies. A counter file or a database row would erode the budget to zero,
+  one crash at a time.
+- The directory path is derived from uid and home with **no environment input**. If
+  it read `$XDG_RUNTIME_DIR`, one daemon started from a shell without it would get
+  its own private budget — two half-budgets that each look like a working one, which
+  is worse than no budget at all. `breeze status` prints the path so a split would be
+  visible rather than inferred.
+- **Only the machine-wide file may set it.** A per-daemon `queue` block is refused at
+  startup: three daemons each declaring `max_concurrent = 2` is not a budget of two,
+  it is a budget of six wearing the word two, and it would read as correct in every
+  individual config file.
+- A queued stage counts against the restart guard, because a re-exec destroys the
+  goroutine holding its place in the queue. If the daemon restarts while a stage is
+  queued, the stage is failed with "it never started, so nothing ran" rather than
+  being left in limbo.
+- The budget is taken **after** every gate has passed, at the single point where both
+  command and deploy stages execute. Queueing a stage that was going to be refused
+  anyway would make the machine look busy while holding nothing back.
 
 #### Restarting while work is in flight
 

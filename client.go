@@ -38,6 +38,13 @@ func dialOrStart(p paths) (net.Conn, error) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// The daemon writes WHY it refused to start — a malformed defaults.hcl, a
+	// per-daemon queue block, a bad limit — and that reason is already on disk. A
+	// client that answers "see the log" instead of quoting it is making the reader
+	// do a lookup breeze could have done, at the moment they are least inclined to.
+	if tail := lastLogLines(p.daemonLog, 5); tail != "" {
+		return nil, fmt.Errorf("daemon did not start\nlast lines of %s:\n%s", p.daemonLog, tail)
+	}
 	return nil, fmt.Errorf("daemon did not start (see %s)", p.daemonLog)
 }
 

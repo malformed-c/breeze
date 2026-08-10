@@ -178,6 +178,18 @@ func notifyViaMessTopic(topic, message, thread string) {
 // Deliberately silent when no IO limit is configured: an undelegated controller is
 // not a problem for a daemon that never asks for it, and a warning that fires when
 // nothing is wrong is how a warning stops being read.
+// niceStatus is ioLimitStatus's counterpart for scheduling priority.
+func niceStatus(eng *engine.Engine) string {
+	rl := eng.DefaultResourceLimits()
+	if rl == nil {
+		return "" // no machine-level limits at all, which is the common case
+	}
+	if ok, why := hook.NicenessApplicable(rl.Nice); !ok {
+		return why
+	}
+	return ""
+}
+
 func ioLimitStatus(eng *engine.Engine) string {
 	rl := eng.DefaultResourceLimits()
 	if !rl.UsesIO() {

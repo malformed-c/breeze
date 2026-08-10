@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const exampleHCL = `
@@ -640,5 +641,75 @@ pipeline "guarded" {
 	}
 	if stages[1].RequiresLock != "" {
 		t.Fatalf("a stage that does not declare one must stay empty, got %q", stages[1].RequiresLock)
+	}
+}
+
+// The queue block is machine-wide policy, so it has to survive the round trip from
+// the defaults file — a dropped max_concurrent would mean a box configured for one
+// build at a time quietly running as many as arrive.
+func TestParseQueue(t *testing.T) {
+	path := writeFixture(t, `
+queue {
+  max_concurrent = 3
+  wait_timeout   = "30m"
+}
+`)
+	q, err := ParseQueue(path)
+	if err != nil {
+		t.Fatalf("ParseQueue: %v", err)
+	}
+	if q == nil || q.MaxConcurrent != 3 || q.WaitTimeout != 30*time.Minute {
+		t.Fatalf("queue = %+v, want max 3 / 30m", q)
+	}
+
+	// No block at all is the normal case and must not invent a budget.
+	none := writeFixture(t, "resource_limits {\n  memory_high = \"4G\"\n}\n")
+	if q, err := ParseQueue(none); err != nil || q != nil {
+		t.Fatalf("a file with no queue block must yield no budget, got %+v (err %v)", q, err)
+	}
+
+	// A malformed duration must fail loudly rather than silently meaning "forever".
+	bad := writeFixture(t, "queue {\n  max_concurrent = 2\n  wait_timeout   = \"30 minutes\"\n}\n")
+	if _, err := ParseQueue(bad); err == nil {
+		t.Fatal("a malformed wait_timeout must be an error, not a default")
+	}
+}
+
+// nice is a POINTER in every layer so that 0 survives. nice = 0 is a real value
+// (normal priority), and a stage undoing a machine-wide nice = 10 has to be able to
+// say so — with a plain int it would write 0 and silently inherit 10, which is the
+// merge quietly doing the opposite of what the file says.
+func TestParseFileNiceDistinguishesZeroFromUnset(t *testing.T) {
+	path := writeFixture(t, `
+pipeline "p" {
+  resource_limits {
+    nice = 10
+  }
+  stage "inherits" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/true"]
+  }
+  stage "opts-out" {
+    type    = "command"
+    needs   = []
+    timeout = "1m"
+    command = ["/bin/true"]
+    resource_limits {
+      nice = 0
+    }
+  }
+}
+`)
+	pipelines, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	stages := pipelines[0].Stages
+	if n := stages[0].Command.ResourceLimits.Nice; n == nil || *n != 10 {
+		t.Fatalf("a stage with no block of its own must inherit nice=10, got %v", n)
+	}
+	if n := stages[1].Command.ResourceLimits.Nice; n == nil || *n != 0 {
+		t.Fatalf("an explicit nice = 0 must override the pipeline default, got %v", n)
 	}
 }

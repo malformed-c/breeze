@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -122,6 +123,22 @@ type ResourceLimits struct {
 	IOWriteBandwidthMax string // systemd IOWriteBandwidthMax=
 	IOReadIOPSMax       string // systemd IOReadIOPSMax=, e.g. "/dev/sda 1000"
 	IOWriteIOPSMax      string // systemd IOWriteIOPSMax=
+	// Nice is the CPU scheduling niceness, -20 (most favourable) to 19 (least),
+	// applied via nice(1) rather than a systemd property: Nice= is an EXEC property
+	// and a scope unit rejects it outright ("Unknown assignment: Nice=10", exit 1),
+	// because a scope adopts processes someone else started. nice(1) composes
+	// cleanly inside the scope and — unlike the cgroup knobs — is inherited by every
+	// grandchild, which is what makes it useful for a build that forks compilers.
+	//
+	// A POINTER so that 0 is expressible. nice = 0 is a meaningful value (normal
+	// priority) and distinct from "unset": with a plain int, a stage that wanted to
+	// undo a machine-wide nice = 10 would write nice = 0 and silently inherit 10.
+	//
+	// A NEGATIVE value needs privilege. A non-root nice(1) asked for -5 prints
+	// "cannot set niceness: Permission denied", exits 0, and runs at 0 — accepted,
+	// ineffective, and reported as success, exactly like the io controller. See
+	// NicenessApplicable.
+	Nice *int
 }
 
 // ioProperties pairs each IO-cap field with its systemd property name, so the
@@ -158,12 +175,11 @@ func (rl *ResourceLimits) UsesIO() bool {
 	return false
 }
 
-// IsZero reports whether no limit at all is set — used to decide whether a
-// command needs the systemd-run wrapper, so an all-empty block behaves exactly
-// like no block.
+// IsZero reports whether no limit at all is set, including niceness — an all-empty
+// block behaves exactly like no block.
 func (rl *ResourceLimits) IsZero() bool {
 	return rl == nil || (rl.CPUQuota == "" && rl.CPUWeight == 0 && rl.MemoryMax == "" &&
-		rl.MemoryHigh == "" && rl.TasksMax == 0 && !rl.UsesIO())
+		rl.MemoryHigh == "" && rl.TasksMax == 0 && rl.Nice == nil && !rl.UsesIO())
 }
 
 // WrapWithSystemdRun rewrites (path, args) into a systemd-run invocation that
@@ -321,7 +337,12 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		defer cleanup()
 		path, args = scriptArgv(tmpl, scriptPath)
 	}
-	if !tmpl.ResourceLimits.IsZero() {
+	if tmpl.ResourceLimits != nil {
+		// Nice first, so the niced process is INSIDE the scope rather than the
+		// scope being started by a niced systemd-run.
+		path, args = WrapWithNice(path, args, tmpl.ResourceLimits.Nice)
+	}
+	if tmpl.ResourceLimits.needsCgroup() {
 		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
 	}
 
@@ -599,4 +620,56 @@ func ownCgroupDir() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no unified (0::) entry in /proc/self/cgroup — cgroup v2 is required for resource limits")
+}
+
+// needsCgroup reports whether anything here requires the systemd-run --scope
+// wrapper. Deliberately NOT the same question as IsZero: niceness is applied by
+// nice(1) and needs no cgroup at all, so a nice-only block must not drag in a
+// transient scope unit — which would be pure overhead at best, and on a host with
+// no usable per-user systemd session would turn a working stage into a failing one.
+func (rl *ResourceLimits) needsCgroup() bool {
+	if rl == nil {
+		return false
+	}
+	return rl.CPUQuota != "" || rl.CPUWeight != 0 || rl.MemoryMax != "" ||
+		rl.MemoryHigh != "" || rl.TasksMax != 0 || rl.UsesIO()
+}
+
+// WrapWithNice prepends nice(1) so the command — and everything it forks — runs at
+// the requested scheduling priority. Applied BEFORE the systemd-run wrapper so the
+// niced process ends up inside the scope rather than outside it.
+//
+// nice(1) rather than systemd's Nice= because a scope unit rejects that property
+// outright: `systemd-run --scope --property=Nice=10` fails with "Unknown
+// assignment: Nice=10" and exit 1. Measured, not assumed.
+//
+// "--" separates nice's options from the command, so a command path that begins
+// with a dash cannot be read as a flag.
+func WrapWithNice(path string, args []string, nice *int) (string, []string) {
+	if nice == nil {
+		return path, args
+	}
+	out := append([]string{"-n", strconv.Itoa(*nice), "--", path}, args...)
+	return "nice", out
+}
+
+// NicenessApplicable reports whether the requested niceness can actually take
+// effect, and if not, why. Lowering niceness (a negative value, i.e. asking for MORE
+// CPU) requires privilege; a non-root caller gets a warning on stderr, an exit
+// status of 0, and a process running at its original priority.
+//
+// Same shape as the io controller: accepted, ineffective, reported as success. The
+// difference is worth stating precisely — a POSITIVE nice always works, so this is
+// only ever a problem for the one direction that asks for more resources rather
+// than fewer.
+func NicenessApplicable(nice *int) (bool, string) {
+	if nice == nil || *nice >= 0 {
+		return true, ""
+	}
+	if os.Geteuid() == 0 {
+		return true, ""
+	}
+	return false, fmt.Sprintf("nice = %d asks for HIGHER priority than default, which requires privilege — "+
+		"a non-root daemon's nice(1) reports \"cannot set niceness: Permission denied\", exits 0, and runs at the original priority. "+
+		"Positive values (lower priority) work without privilege", *nice)
 }

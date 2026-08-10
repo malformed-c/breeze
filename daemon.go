@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"breeze/internal/engine"
+	"breeze/internal/slots"
 	"breeze/internal/wire"
 )
 
@@ -341,7 +342,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 
 	switch req.Op {
 	case wire.OpPing:
-		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, Features: wire.Features(), DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits()), LimitSources: d.eng.LimitSources(), NotifyProblem: notifierStatus(), IOLimitProblem: ioLimitStatus(d.eng)})
+		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, Features: wire.Features(), DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits()), LimitSources: d.eng.LimitSources(), NotifyProblem: notifierStatus(), IOLimitProblem: ioLimitStatus(d.eng), NiceProblem: niceStatus(d.eng), Queue: queueStatus(d.eng)})
 
 	case wire.OpStop:
 		close(d.stop)
@@ -1195,13 +1196,43 @@ func parseOptionalDuration(s string) (time.Duration, error) {
 // the step that failed. Whoever reads this should not need a second command to decide.
 func restartRefusal(running []engine.StageInstance) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "refusing to restart: %d stage(s) running right now, and a restart interrupts whoever is watching them\n", len(running))
+	fmt.Fprintf(&b, "refusing to restart: %d stage(s) in flight right now, and a restart interrupts whoever is watching them\n", len(running))
 	now := time.Now()
 	for _, inst := range running {
-		fmt.Fprintf(&b, "  %s/%s %s  actor=%s  running %s\n",
-			inst.Pipeline, inst.Stage, inst.Key.ShortString(), inst.Actor, now.Sub(inst.StartedAt).Round(time.Second))
+		// A QUEUED stage has not started — it is waiting for a machine slot — and
+		// saying "running" about it would misdescribe the very thing this message
+		// exists to describe accurately. It is still listed, because a restart
+		// destroys the goroutine holding its place in the queue.
+		state := "running"
+		if inst.Status == engine.StageQueued {
+			state = "queued for a machine slot"
+		}
+		fmt.Fprintf(&b, "  %s/%s %s  actor=%s  %s %s\n",
+			inst.Pipeline, inst.Stage, inst.Key.ShortString(), inst.Actor, state, now.Sub(inst.StartedAt).Round(time.Second))
 	}
 	b.WriteString("adoption would carry them across (they survive a restart), so this is about consent, not safety — " +
 		"if they are yours or you have asked, `breeze restart daemon --force`")
 	return b.String()
+}
+
+// queueStatus reports the machine-wide budget and who currently holds its slots, or
+// nil when no budget is configured. The occupancy is read live rather than tracked,
+// because no daemon can see another's state — the slot files ARE the shared record,
+// and reading them is the only way to answer "what is this machine busy with".
+//
+// It is a snapshot, and it is rendered as one: three agents spent a night learning
+// that a point-in-time read is not a claim about any later moment.
+func queueStatus(eng *engine.Engine) *wire.QueueStatus {
+	q := eng.Queue()
+	if q.Max <= 0 {
+		return nil
+	}
+	out := &wire.QueueStatus{Max: q.Max, Dir: q.Dir}
+	if q.WaitTimeout > 0 {
+		out.WaitTimeout = q.WaitTimeout.String()
+	}
+	for _, h := range slots.Holders(q.Dir, q.Max) {
+		out.InUse = append(out.InUse, h.String())
+	}
+	return out
 }

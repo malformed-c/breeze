@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsimple"
@@ -127,6 +128,10 @@ type ResourceLimitsHCL struct {
 	IOWriteBandwidthMax string `hcl:"io_write_bandwidth_max,optional"`
 	IOReadIOPSMax       string `hcl:"io_read_iops_max,optional"`
 	IOWriteIOPSMax      string `hcl:"io_write_iops_max,optional"`
+	// A POINTER: nice = 0 is a real value (normal priority), and a stage undoing a
+	// machine-wide nice = 10 has to be able to say so. With a plain int that stage
+	// would write 0 and silently inherit 10.
+	Nice *int `hcl:"nice,optional"`
 }
 
 // RoleHCL is accepted syntactically (so a config file can document the roles a
@@ -177,6 +182,26 @@ func ParseFile(path string) ([]wire.Pipeline, error) {
 // dir and not in anyone's pipeline file. Currently one block.
 type DefaultsHCL struct {
 	ResourceLimits *ResourceLimitsHCL `hcl:"resource_limits,block"`
+	Queue          *QueueHCL          `hcl:"queue,block"`
+}
+
+// QueueHCL configures the MACHINE-WIDE stage budget: at most MaxConcurrent stage
+// commands run at once across EVERY breeze daemon on this box, and a stage that
+// arrives when the budget is full waits rather than failing.
+//
+// Only meaningful in the machine-wide file. A per-daemon queue block is refused at
+// startup rather than merged: three daemons each declaring "max 2" is not a budget
+// of 2, it is a budget of 6 wearing the word 2, and the whole point is that the
+// machine — not any one repo — is what runs out of cores.
+type QueueHCL struct {
+	MaxConcurrent int    `hcl:"max_concurrent,optional"`
+	WaitTimeout   string `hcl:"wait_timeout,optional"`
+}
+
+// Queue is a parsed queue block. WaitTimeout of 0 means wait indefinitely.
+type Queue struct {
+	MaxConcurrent int
+	WaitTimeout   time.Duration
 }
 
 // ParseDefaults reads a daemon's defaults.hcl. A missing file is not an error —
@@ -196,6 +221,40 @@ func ParseDefaults(path string) (*wire.ResourceLimits, error) {
 		return nil, err
 	}
 	return translateResourceLimits(cfg.ResourceLimits), nil
+}
+
+// ParseQueue reads the queue block from a defaults file. Missing file or missing
+// block: (nil, nil) — no budget, which is the default and preserves the behavior of
+// every breeze that predates this.
+func ParseQueue(path string) (*Queue, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg DefaultsHCL
+	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Queue == nil {
+		return nil, nil
+	}
+	q := &Queue{MaxConcurrent: cfg.Queue.MaxConcurrent}
+	if q.MaxConcurrent < 0 {
+		return nil, fmt.Errorf("queue: max_concurrent must be >= 0 (0 means no budget), got %d", q.MaxConcurrent)
+	}
+	if cfg.Queue.WaitTimeout != "" {
+		d, err := time.ParseDuration(cfg.Queue.WaitTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("queue: wait_timeout %q: %w", cfg.Queue.WaitTimeout, err)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("queue: wait_timeout must not be negative, got %s", d)
+		}
+		q.WaitTimeout = d
+	}
+	return q, nil
 }
 
 // resolveRelativePaths rewrites every relative command path and BriefsDir in p to
@@ -386,7 +445,7 @@ func translateResourceLimits(rl *ResourceLimitsHCL) *wire.ResourceLimits {
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
 		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
 		IOReadBandwidthMax: rl.IOReadBandwidthMax, IOWriteBandwidthMax: rl.IOWriteBandwidthMax,
-		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax,
+		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax, Nice: rl.Nice,
 	}
 }
 
@@ -461,6 +520,9 @@ func mergeLimits(own, def *wire.ResourceLimits) *wire.ResourceLimits {
 	}
 	if merged.IOWriteIOPSMax == "" {
 		merged.IOWriteIOPSMax = def.IOWriteIOPSMax
+	}
+	if merged.Nice == nil {
+		merged.Nice = def.Nice
 	}
 	return &merged
 }

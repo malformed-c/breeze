@@ -145,7 +145,7 @@ func (e *Engine) ReconcileOrphanedStages() int {
 
 	n := 0
 	for _, inst := range e.instances {
-		if inst.Status != StageRunning {
+		if !isInFlight(inst.Status) {
 			continue
 		}
 		// A runner CAN outlive its daemon: it's Setpgid'd into its own process

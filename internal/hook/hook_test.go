@@ -411,3 +411,66 @@ func TestFileOutputSurvivesTheParentLettingGo(t *testing.T) {
 		t.Fatalf("output written AFTER the parent let go was lost: %q", body)
 	}
 }
+
+// Niceness is applied by nice(1), not by a systemd property: a scope unit rejects
+// Nice= outright ("Unknown assignment: Nice=10", exit 1) because it is an exec
+// property and a scope adopts processes someone else started.
+func TestNiceWrapsWithNiceNotASystemdProperty(t *testing.T) {
+	n := 15
+	path, args := WrapWithNice("/bin/build", []string{"x"}, &n)
+	if path != "nice" {
+		t.Fatalf("path = %q, want nice", path)
+	}
+	want := []string{"-n", "15", "--", "/bin/build", "x"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+
+	// Unset must be completely inert.
+	p2, a2 := WrapWithNice("/bin/build", []string{"x"}, nil)
+	if p2 != "/bin/build" || len(a2) != 1 {
+		t.Fatalf("no nice must leave the command alone, got %s %v", p2, a2)
+	}
+}
+
+// A nice-only block must not drag in a transient systemd scope: that is overhead on
+// a good host and a hard failure on one with no usable per-user systemd session,
+// which would turn a working stage into a broken one.
+func TestNiceAloneDoesNotRequireASystemdScope(t *testing.T) {
+	n := 10
+	nice := &ResourceLimits{Nice: &n}
+	if nice.IsZero() {
+		t.Fatal("a nice-only block is not empty")
+	}
+	if nice.needsCgroup() {
+		t.Fatal("a nice-only block must not require the systemd-run wrapper")
+	}
+	if !(&ResourceLimits{MemoryHigh: "1G"}).needsCgroup() {
+		t.Fatal("a cgroup limit must still require the wrapper")
+	}
+}
+
+// Asking for HIGHER priority needs privilege, and without it nice(1) warns, exits 0
+// and runs at the original priority — accepted, ineffective, reported as success.
+func TestNegativeNiceIsReportedAsInapplicableForANonRootDaemon(t *testing.T) {
+	neg, pos := -5, 5
+	if ok, _ := NicenessApplicable(&pos); !ok {
+		t.Error("a positive nice needs no privilege and must always be applicable")
+	}
+	if ok, _ := NicenessApplicable(nil); !ok {
+		t.Error("no niceness requested must never be a problem")
+	}
+	ok, why := NicenessApplicable(&neg)
+	if os.Geteuid() == 0 {
+		if !ok {
+			t.Error("root can lower niceness")
+		}
+		return
+	}
+	if ok {
+		t.Fatal("a non-root daemon cannot raise priority and must say so")
+	}
+	if !strings.Contains(why, "Permission denied") {
+		t.Errorf("the reason must quote what actually happens, got %q", why)
+	}
+}

@@ -18,6 +18,7 @@ import (
 
 	"breeze/internal/engine"
 	"breeze/internal/hclconfig"
+	"breeze/internal/slots"
 	"breeze/internal/wire"
 )
 
@@ -302,6 +303,19 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		return nil, err
 	}
 
+	if err := loadQueue(eng, p); err != nil {
+		// Same reasoning as the limits file above: a budget someone wrote and breeze
+		// silently ignored would look exactly like a working daemon while three
+		// builds ran at once on a box that was configured for one.
+		err = fmt.Errorf("loading the machine-wide queue: %w", err)
+		log.Printf("refusing to start: %v", err)
+		ln.Close()
+		os.Remove(p.sock)
+		syscall.Flock(fd, syscall.LOCK_UN)
+		syscall.Close(fd)
+		return nil, err
+	}
+
 	saver := newSnapshotWriter(p.state)
 	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd, saver: saver}
 	eng.SetOnChange(saver.submit)
@@ -393,5 +407,44 @@ func loadDefaultLimits(eng *engine.Engine, p paths) error {
 	default:
 		log.Printf("resource limit floor: %s (from %s)", describeLimits(rl), p.defaults)
 	}
+	return nil
+}
+
+// loadQueue installs the machine-wide stage budget from the MACHINE-WIDE defaults
+// file only, and refuses a per-daemon one.
+//
+// The refusal is the interesting half. resource_limits merge per field across the
+// two files precisely because a repo may legitimately want a tighter memory ceiling
+// than the machine's, and a per-daemon override there is meaningful. A queue budget
+// is not like that: three daemons each declaring "max_concurrent = 2" is not a
+// budget of two, it is a budget of six wearing the word two — and it would look
+// correct in every individual config file. The machine is what runs out of cores, so
+// only the machine-wide file gets to say how many.
+func loadQueue(eng *engine.Engine, p paths) error {
+	if q, err := hclconfig.ParseQueue(p.defaults); err != nil {
+		return fmt.Errorf("%s: %w", p.defaults, err)
+	} else if q != nil {
+		return fmt.Errorf("%s declares a queue block, but the stage budget is MACHINE-wide and can only be set in %s — "+
+			"a per-daemon budget is not a budget: every daemon on this box would get its own copy of max_concurrent=%d, "+
+			"so three daemons would run %d stages at once while all three config files still read %d",
+			p.defaults, p.globalDefaults, q.MaxConcurrent, q.MaxConcurrent*3, q.MaxConcurrent)
+	}
+	if p.globalDefaults == "" {
+		return nil
+	}
+	q, err := hclconfig.ParseQueue(p.globalDefaults)
+	if err != nil {
+		return fmt.Errorf("%s: %w", p.globalDefaults, err)
+	}
+	if q == nil || q.MaxConcurrent <= 0 {
+		return nil
+	}
+	dir := slots.Dir()
+	if dir == "" {
+		return fmt.Errorf("a queue is configured in %s but no shared slot directory could be determined (no /run/user/%d and no home directory), so the budget could not be enforced",
+			p.globalDefaults, os.Getuid())
+	}
+	eng.SetQueue(engine.QueueConfig{Dir: dir, StateDir: p.dir, Max: q.MaxConcurrent, WaitTimeout: q.WaitTimeout})
+	log.Printf("machine-wide stage budget: %d concurrent, slots in %s (shared with every breeze daemon running as this user)", q.MaxConcurrent, dir)
 	return nil
 }

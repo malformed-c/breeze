@@ -18,6 +18,20 @@ import (
 
 // Engine is the single source of truth for daemon state, guarded by mu. All public
 // methods lock internally; nothing outside this package touches the maps directly.
+// QueueConfig is the machine-wide stage budget the daemon installs at startup (see
+// SetQueue). A nil/zero Max means no budget, which is the default and exactly the
+// behavior of every breeze that predates the queue.
+type QueueConfig struct {
+	Dir string // where the slot files live, shared by every daemon on this machine
+	// StateDir is THIS daemon's own state directory, recorded in the slot so an
+	// occupancy listing says which repo is holding the machine — the first thing
+	// anyone asks when their build is queued behind something. Distinct from Dir,
+	// which is the same for every daemon and therefore identifies nobody.
+	StateDir    string
+	Max         int           // 0 = unlimited
+	WaitTimeout time.Duration // 0 = wait indefinitely
+}
+
 type Engine struct {
 	mu sync.Mutex
 
@@ -84,6 +98,12 @@ type Engine struct {
 	notifyFn      func(identities []string, message, thread string)
 	notifyTopicFn func(topic, message, thread string)
 	briefFn       func(dir, filename, header, section string)
+
+	// queue is the machine-wide stage budget (see QueueConfig). Guarded by mu like
+	// everything else, but the WAIT itself happens outside the lock — a stage may
+	// sit here for many minutes, and holding e.mu across that would freeze every
+	// status query on the daemon, which is the opposite of what a visible queue is for.
+	queue QueueConfig
 
 	now func() time.Time // injectable for tests, mirrors mess's broker clock injection
 }
@@ -401,4 +421,22 @@ func sanitizeRunKey(k string) string {
 		}
 	}
 	return b.String()
+}
+
+// SetQueue installs the machine-wide stage budget. Called once at daemon startup
+// from the machine-wide defaults file; a zero Max leaves breeze behaving exactly as
+// it did before the queue existed.
+func (e *Engine) SetQueue(q QueueConfig) {
+	e.mu.Lock()
+	e.queue = q
+	e.mu.Unlock()
+}
+
+// Queue returns the installed budget, for `breeze status` to report. A budget that
+// cannot be inspected turns "why is my build not starting" into a question with no
+// answer, which is the failure mode of every shared-resource limit ever built.
+func (e *Engine) Queue() QueueConfig {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.queue
 }

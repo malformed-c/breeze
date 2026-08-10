@@ -1,0 +1,61 @@
+# The machine-wide stage budget: at most max_concurrent stage commands run at once
+# across EVERY breeze daemon on this box, and a stage arriving when the budget is
+# full WAITS rather than failing. The slots are flock'd files in a shared directory,
+# so a daemon killed mid-run cannot leak one.
+env XDG_CONFIG_HOME=$WORK/cfg
+env BREEZE_DIR=$WORK/state
+mkdir $WORK/cfg/breeze
+
+exec breeze register identity ci
+cp stdout ci.token
+exec breeze apply -f pipeline.hcl --as ci --token-file ci.token
+
+# The budget is legible: a shared limit nobody can inspect turns "why is my build
+# not starting" into a question with no answer.
+exec breeze status
+stdout 'machine-wide stage budget: 1 concurrent'
+
+# Occupy the only slot, then start a second stage. It queues rather than running.
+exec sh -c 'breeze start stage svc slow abc --as ci --token-file ci.token >/dev/null 2>&1 & sleep 1'
+exec sh -c 'breeze start stage svc quick abc --as ci --token-file ci.token >$WORK/quick.out 2>&1 & sleep 1'
+
+exec breeze status stage svc quick abc
+stdout 'quick: queued'
+
+# And the occupancy names WHICH REPO is holding the machine, which is the first
+# thing anyone asks when their build is behind something.
+exec breeze status
+stdout 'machine-wide stage budget: 1 concurrent, 1 in use'
+stdout 'svc/slow'
+
+# A queued stage counts against the restart guard: it has no process, but it does
+# have a goroutine holding its place, and a re-exec destroys that.
+! exec breeze restart daemon
+stderr 'queued for a machine slot'
+
+# Once the slot frees, the queued stage runs — it waited, it did not fail.
+exec sh -c 'sleep 5; cat $WORK/quick.out'
+stdout 'succeeded'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "svc" {
+  stage "slow" {
+    type    = "command"
+    timeout = "60s"
+    command = ["/bin/sleep", "4"]
+  }
+  stage "quick" {
+    type    = "command"
+    needs   = []
+    timeout = "60s"
+    command = ["/bin/true"]
+  }
+}
+
+-- cfg/breeze/defaults.hcl --
+queue {
+  max_concurrent = 1
+  wait_timeout   = "60s"
+}

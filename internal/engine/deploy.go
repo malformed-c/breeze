@@ -207,7 +207,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	}
 
 	if existing := e.getInstance(pipelineName, stageName, key); existing != nil {
-		if existing.Status == StageRunning || existing.Status == StageAwaiting {
+		if existing.Status == StageRunning || existing.Status == StageAwaiting || existing.Status == StageQueued {
 			e.mu.Unlock()
 			return nil, fmt.Errorf("stage %q (%s) is already in progress", stageName, key)
 		}
