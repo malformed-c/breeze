@@ -475,6 +475,36 @@ ceiling alone would not have fixed it — it only moves where the thrashing star
 because when one build peaks at 7 GB the concurrency has to be derived from **memory,
 not cores**.
 
+#### Work left running after a stage exits
+
+breeze killed a run's tree on **timeout** and **cancel**, and did nothing at all on a
+**normal exit** — so a stage whose command returned 0 having backgrounded a build left
+it running, with no record anywhere. That is how a dozen linkers reached load average
+72 while `breeze operator` showed nothing in flight.
+
+Now, when a command exits, anything still in its scope is counted, recorded and
+reaped:
+
+```
+build: succeeded  [3 process(es) were still running when the command exited]
+```
+
+The count is kept whether or not they are reaped, because the silence was the larger
+half of that incident. A stage that deliberately starts something meant to outlive it
+declares so:
+
+```hcl
+stage "start-fixture" {
+  leaves_processes = true   # record the survivors, do not reap them
+}
+```
+
+Declared rather than inferred: reaping a deliberate daemon would be a silent breakage,
+and *not* reaping a leak is the far more common one. Only possible for a stage with a
+scope of its own — an unlimited stage shares the daemon's cgroup, where "what is still
+running" cannot be asked about the stage and killing would take the daemon with it.
+`breeze show pipeline` marks those stages.
+
 #### How a stage is killed
 
 On timeout or cancel, breeze kills the run's **cgroup**, falling back to its process

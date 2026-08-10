@@ -120,6 +120,7 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		Debug:       w.Debug,
 		Needs:       w.Needs,
 		Convergence: engine.Convergence(w.Convergence), RequiresLock: w.RequiresLock,
+		LeavesProcesses: w.LeavesProcesses,
 	}
 	if w.Transform != nil {
 		h, err := hookFromWire(*w.Transform)
@@ -149,6 +150,7 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
 		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence), RequiresLock: s.RequiresLock,
+		LeavesProcesses: s.LeavesProcesses,
 	}
 	if s.Transform != nil {
 		t := hookToWire(*s.Transform)
@@ -212,6 +214,7 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 		ExitCode: s.ExitCode, Stdout: string(s.Stdout), Stderr: string(s.Stderr), Error: s.Error,
 		FailureKind: string(s.FailureKind), Recorded: s.Recorded, OutputPruned: s.OutputPruned,
 		Actor: s.Actor, Brief: s.Brief, Summary: s.Summary,
+		SurvivingProcesses: s.SurvivingProcesses,
 	}
 	// Live, not stored: while the stage is executing, its own cgroup already knows
 	// its high-water mark and how often the kernel throttled it. Read at report

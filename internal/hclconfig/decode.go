@@ -77,6 +77,7 @@ type StageHCL struct {
 	Needs                 []string           `hcl:"needs,optional"`
 	Convergence           string             `hcl:"convergence,optional"`
 	RequiresLock          string             `hcl:"requires_lock,optional"`
+	LeavesProcesses       bool               `hcl:"leaves_processes,optional"`
 	FansOut               bool               `hcl:"fans_out,optional"`
 	Debug                 bool               `hcl:"debug,optional"`
 	RequiredRole          string             `hcl:"required_role,optional"`
@@ -444,6 +445,7 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 		Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout,
 		Command: cmd, Debug: sh.Debug,
 		Needs: sh.Needs, Convergence: sh.Convergence, RequiresLock: sh.RequiresLock,
+		LeavesProcesses: sh.LeavesProcesses,
 	}
 	switch sh.Type {
 	case "command":

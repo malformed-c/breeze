@@ -994,6 +994,34 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		}
 	}
 
+	// scopeDir is resolved SYNCHRONOUSLY in OnStart, with a short retry: systemd-run
+	// has not created the transient scope yet at the instant the process starts, so
+	// a single read there returns the daemon's own cgroup and is discarded — and
+	// doing it in a goroutine loses the race outright against a command that exits
+	// in milliseconds, which is exactly the shape being guarded against (a stage
+	// that returns immediately having backgrounded a build).
+	//
+	// Only attempted when the limits actually produce a scope, so a stage with none
+	// pays nothing rather than waiting out a retry loop that cannot succeed.
+	expectScope := e.EffectiveLimits(tmpl.ResourceLimits).NeedsCgroup()
+	scopeDir := ""
+	findScope := func(pid int) {
+		if !expectScope {
+			return
+		}
+		deadline := time.Now().Add(300 * time.Millisecond)
+		for {
+			if dir := hook.ScopeDirOf(pid); dir != "" {
+				scopeDir = dir
+				return
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
 	runCtx, runCancel := context.WithCancel(context.Background())
 	e.registerRunningCancel(runKey, runCancel)
 	result := hook.Run(runCtx, hook.Template{
@@ -1015,10 +1043,17 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		// Record which OS process owns this stage while it runs, so a daemon that
 		// comes back after a crash can tell a runner that died with the machine from
 		// one that survived a hard kill of its parent.
-		OnStart: func(pid int) { e.recordRunner(pipelineName, stageName, key, pid) },
+		// The scope is captured while the process is ALIVE: after it exits there is
+		// nothing left to ask which cgroup it was in, and that cgroup is the only
+		// place a survivor can be found.
+		OnStart: func(pid int) {
+			e.recordRunner(pipelineName, stageName, key, pid)
+			findScope(pid)
+		},
 	}, params)
 	e.clearRunner(pipelineName, stageName, key)
 	e.unregisterRunningCancel(runKey)
+	e.reapSurvivors(pipelineName, stageName, key, actor, scopeDir)
 	// wasCancelled must be captured BEFORE the runCancel() cleanup call below —
 	// once that's called, runCtx.Err() is non-nil unconditionally (that's just
 	// what calling a context's own CancelFunc does), which would make every
@@ -1104,6 +1139,54 @@ func limitEnv(rl *hook.ResourceLimits) []string {
 		add("BREEZE_CPU_QUOTA_PERCENT", strconv.FormatUint(v, 10))
 	}
 	return out
+}
+
+// reapSurvivors deals with processes still running in a stage's scope after its
+// command has exited.
+//
+// breeze killed on timeout and on cancel, and did NOTHING on a normal exit — so a
+// stage whose command returned 0 having backgrounded a build left it running, with
+// no record anywhere. That is how a dozen linkers took a machine to load average 72
+// while `breeze operator` showed nothing in flight. The count is recorded whether or
+// not they are reaped, because the silence was the larger half of that incident.
+//
+// Reaped by default, because a stage is a command that completes; a stage that
+// deliberately starts something meant to outlive it says so with
+// leaves_processes = true, and then only the record is kept. Declared rather than
+// inferred: reaping a deliberate daemon would be a silent breakage, and NOT reaping
+// a leak is the far more common one.
+//
+// Only possible for a run with a scope of its own — an unlimited stage shares the
+// daemon's cgroup, where "what is still running" cannot be asked about the stage and
+// killing would take the daemon. `show pipeline` says which stages those are.
+func (e *Engine) reapSurvivors(pipelineName, stageName string, key StageKey, actor, scopeDir string) {
+	survivors := hook.SurvivorsIn(scopeDir)
+	if len(survivors) == 0 {
+		return
+	}
+
+	e.mu.Lock()
+	declared := false
+	if p, ok := e.pipelines[pipelineName]; ok {
+		if i := p.StageIndex(stageName); i >= 0 {
+			declared = p.Stages[i].LeavesProcesses
+		}
+	}
+	if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
+		inst.SurvivingProcesses = len(survivors)
+		e.changed()
+	}
+	verb := "reaped"
+	if declared {
+		verb = "left running (leaves_processes = true)"
+	}
+	e.audit("stage.survivors", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — %d process(es) still running when the command exited, %s: %v",
+		pipelineName, stageName, key, len(survivors), verb, survivors))
+	e.mu.Unlock()
+
+	if !declared {
+		hook.KillScope(scopeDir)
+	}
 }
 
 // stageLockKey names the resource lock a `stage claim` reserves — distinct from

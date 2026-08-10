@@ -203,6 +203,17 @@ type StageDef struct {
 	// the first incident and waited for the second to show it did not generalize
 	// past the person who wrote the fix.
 	RequiresLock string
+	// LeavesProcesses opts a stage out of the survivor reap below. Default false:
+	// when a stage's command exits, anything still running in its scope is killed
+	// and recorded, because "the command finished and left a build running" is
+	// otherwise completely silent — breeze kills on timeout and cancel, and did
+	// nothing at all on a normal exit.
+	//
+	// Set it true for a stage that deliberately starts something meant to outlive
+	// the run. That is a real pattern and reaping it would be a silent breakage, so
+	// it has to be expressible — but it has to be DECLARED, because the far more
+	// common case is a build that leaked and nobody noticed.
+	LeavesProcesses bool
 }
 
 type Pipeline struct {
@@ -469,6 +480,11 @@ type StageInstance struct {
 	// bytes are gone. Distinguishes "this stage printed nothing" from "breeze no
 	// longer has what it printed", which are the same empty string otherwise.
 	OutputPruned bool
+	// SurvivingProcesses counts what was still running in the stage's scope when its
+	// command exited. Non-zero means the command finished and left work behind —
+	// reaped unless the stage declares LeavesProcesses, and recorded either way so
+	// the fact is visible rather than inferred from a load average later.
+	SurvivingProcesses int
 	// Summary is a stage's transform output (see StageDef.Transform) — a short
 	// human-readable rendering of what the raw output means. Empty when the stage
 	// has no transform, which is every stage that doesn't opt in.

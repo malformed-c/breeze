@@ -60,3 +60,40 @@ func TestSnapshotWriterSingleSubmitRoundTrips(t *testing.T) {
 		t.Fatalf("expected Seq=7, got %d", got.Seq)
 	}
 }
+
+// A stage resolving touches state several times in quick succession, and the
+// snapshot is rewritten WHOLE each time — 391 mutations against a 2.5 MB file was
+// ~1 GB of rewrites in a day on one live daemon, on a spinning disk. The writer
+// coalesces a burst into one write; this asserts it, because "there is a sleep in
+// there" is not the same claim.
+func TestWriterCoalescesABurstIntoFewerWrites(t *testing.T) {
+	dir := t.TempDir()
+	w := newSnapshotWriter(filepath.Join(dir, "state.json"))
+
+	const burst = 40
+	for i := 0; i < burst; i++ {
+		w.submit(engine.Snapshot{Seq: i})
+	}
+	if !w.waitIdle(10 * time.Second) {
+		t.Fatal("writer never went idle")
+	}
+
+	w.mu.Lock()
+	writes := w.writes
+	w.mu.Unlock()
+	if writes >= burst {
+		t.Errorf("a burst of %d mutations produced %d writes — no coalescing", burst, writes)
+	}
+	t.Logf("%d mutations -> %d write(s)", burst, writes)
+
+	// And the LAST state must win: coalescing may drop intermediate snapshots, never
+	// the newest one. Losing the latest would be a correctness bug, not an
+	// optimisation.
+	snap, err := engine.LoadSnapshotFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if snap.Seq != burst-1 {
+		t.Errorf("coalescing must keep the NEWEST snapshot, got Seq=%d want %d", snap.Seq, burst-1)
+	}
+}

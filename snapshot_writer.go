@@ -27,7 +27,27 @@ type snapshotWriter struct {
 	mu      sync.Mutex
 	pending *engine.Snapshot // most recent not-yet-written snapshot, or nil
 	writing bool             // a drain loop is currently active
+	// writes and lastWrite exist so a stall is self-diagnosing. A shutdown once
+	// waited out its whole 5s budget here and the warning said only that it had —
+	// leaving "was one write slow, or were there hundreds?" unanswerable after the
+	// fact. A single write of the largest live snapshot measures ~29ms, so the
+	// distinction matters: 5s is either an IO stall or ~170 queued mutations, and
+	// those have nothing to do with each other.
+	writes    int
+	lastWrite time.Duration
 }
+
+// coalesceWindow delays the start of a drain so a burst of mutations becomes one
+// write instead of several. A stage resolving touches state several times in quick
+// succession (runner cleared, status, output, audit), and the snapshot is rewritten
+// WHOLE each time — on one live daemon that was 391 mutations against a 2.5 MB file
+// in a day, ~1 GB of rewrites, on a spinning disk.
+//
+// The cost is bounded and stated: up to this much recent state can be lost in a HARD
+// crash. A graceful stop or restart is unaffected, because shutdown now writes
+// synchronously (see daemonServer.persistFinalState), and breeze already treats a
+// hard crash as losing in-flight work — that is what orphan reconciliation is for.
+const coalesceWindow = 250 * time.Millisecond
 
 func newSnapshotWriter(path string) *snapshotWriter {
 	return &snapshotWriter{path: path}
@@ -44,7 +64,10 @@ func (w *snapshotWriter) submit(snap engine.Snapshot) {
 	}
 	w.writing = true
 	w.mu.Unlock()
-	go w.drain()
+	go func() {
+		time.Sleep(coalesceWindow) // let a burst finish arriving before writing it
+		w.drain()
+	}()
 }
 
 // drain writes pending snapshots one at a time until there's nothing left to write —
@@ -62,7 +85,14 @@ func (w *snapshotWriter) drain() {
 		}
 		w.mu.Unlock()
 
-		if err := engine.SaveSnapshot(w.path, *snap); err != nil {
+		start := time.Now()
+		err := engine.SaveSnapshot(w.path, *snap)
+		took := time.Since(start)
+		w.mu.Lock()
+		w.writes++
+		w.lastWrite = took
+		w.mu.Unlock()
+		if err != nil {
 			log.Printf("warning: failed to save snapshot: %v", err)
 		}
 	}
@@ -78,6 +108,9 @@ func (w *snapshotWriter) drain() {
 // claiming it, even though file locks and everything else persisted fine (those
 // mutations were older and had long since finished writing).
 func (w *snapshotWriter) waitIdle(timeout time.Duration) bool {
+	w.mu.Lock()
+	before := w.writes
+	w.mu.Unlock()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		w.mu.Lock()
@@ -88,5 +121,11 @@ func (w *snapshotWriter) waitIdle(timeout time.Duration) bool {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	w.mu.Lock()
+	during, last := w.writes-before, w.lastWrite
+	w.mu.Unlock()
+	log.Printf("snapshot writer did not go idle within %s: %d write(s) during the wait, last took %s — %s",
+		timeout, during, last,
+		map[bool]string{true: "a single slow write, i.e. the disk", false: "a backlog of mutations, i.e. not the disk"}[during <= 1])
 	return false
 }

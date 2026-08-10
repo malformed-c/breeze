@@ -2381,6 +2381,11 @@ func statusLine(inst wire.StageInstance) string {
 	// slow: the kernel counts every throttling event and nothing was reading it.
 	// Shown on the status line itself rather than behind --json, because the
 	// question it answers ("why is this taking so long") is asked by looking here.
+	// A stage that finished and left work running was completely silent before this:
+	// breeze killed on timeout and cancel and did nothing on a normal exit.
+	if inst.SurvivingProcesses > 0 {
+		s += fmt.Sprintf("  [%d process(es) were still running when the command exited]", inst.SurvivingProcesses)
+	}
 	if inst.MemoryHighEvents > 0 {
 		s += fmt.Sprintf("  [THROTTLED: hit memory_high %d times, peak %s — it is not slow, it is over its memory ceiling]",
 			inst.MemoryHighEvents, humanBytes(inst.MemoryPeak))

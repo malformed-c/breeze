@@ -418,6 +418,9 @@ type StageDef struct {
 	// pipeline that LOOKS serialized and is not — the failure mode the feature
 	// exists to prevent, reintroduced by version skew.
 	RequiresLock string `json:"requiresLock,omitempty"`
+	// LeavesProcesses: this stage deliberately leaves work running after its
+	// command exits, so survivors are recorded but not reaped.
+	LeavesProcesses bool `json:"leavesProcesses,omitempty"`
 }
 
 type Pipeline struct {
@@ -500,6 +503,9 @@ type StageInstance struct {
 	// of failing, so without this the only symptom is slowness.
 	MemoryPeak       uint64 `json:"memoryPeak,omitempty"`
 	MemoryHighEvents uint64 `json:"memoryHighEvents,omitempty"`
+	// SurvivingProcesses: still running in the stage's scope when its command
+	// exited. See engine.StageInstance.SurvivingProcesses.
+	SurvivingProcesses int `json:"survivingProcesses,omitempty"`
 	// Summary is the stage transform's output — a short rendering of what the raw
 	// output means, when the stage defines one. See engine.StageDef.Transform.
 	Summary string `json:"summary,omitempty"`

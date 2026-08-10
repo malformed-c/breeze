@@ -442,10 +442,10 @@ func TestNiceAloneDoesNotRequireASystemdScope(t *testing.T) {
 	if nice.IsZero() {
 		t.Fatal("a nice-only block is not empty")
 	}
-	if nice.needsCgroup() {
+	if nice.NeedsCgroup() {
 		t.Fatal("a nice-only block must not require the systemd-run wrapper")
 	}
-	if !(&ResourceLimits{MemoryHigh: "1G"}).needsCgroup() {
+	if !(&ResourceLimits{MemoryHigh: "1G"}).NeedsCgroup() {
 		t.Fatal("a cgroup limit must still require the wrapper")
 	}
 }

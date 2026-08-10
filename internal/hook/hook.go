@@ -367,7 +367,7 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		// scope being started by a niced systemd-run.
 		path, args = WrapWithNice(path, args, tmpl.ResourceLimits.Nice)
 	}
-	if tmpl.ResourceLimits.needsCgroup() {
+	if tmpl.ResourceLimits.NeedsCgroup() {
 		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
 	}
 
@@ -662,7 +662,8 @@ func ownCgroupDir() (string, error) {
 // nice(1) and needs no cgroup at all, so a nice-only block must not drag in a
 // transient scope unit — which would be pure overhead at best, and on a host with
 // no usable per-user systemd session would turn a working stage into a failing one.
-func (rl *ResourceLimits) needsCgroup() bool {
+// NeedsCgroup reports whether these limits produce a systemd scope of their own.
+func (rl *ResourceLimits) NeedsCgroup() bool {
 	if rl == nil {
 		return false
 	}
@@ -765,6 +766,58 @@ func cgroupDirOf(pid int) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no unified (0::) cgroup entry for pid %d", pid)
+}
+
+// ScopeDirOf returns the transient scope cgroup a running command occupies, or ""
+// if it has none of its own (an unlimited stage shares the daemon's cgroup, whose
+// membership says nothing about the stage). Captured while the process is alive,
+// because after it exits there is nothing left to ask.
+func ScopeDirOf(pid int) string {
+	dir, err := cgroupDirOf(pid)
+	if err != nil || !strings.HasSuffix(dir, ".scope") {
+		return ""
+	}
+	if own, err := ownCgroupDir(); err == nil && (dir == own || strings.HasPrefix(own, dir+"/")) {
+		return ""
+	}
+	return dir
+}
+
+// SurvivorsIn lists the processes still in a scope cgroup. Called AFTER the stage's
+// command has exited, where a non-empty answer means the command finished and left
+// something running — a stage that exits 0 having backgrounded a build gets no
+// cleanup at all today, and nothing says so.
+//
+// An empty or missing cgroup is the normal case: systemd removes a transient scope
+// once it is empty, so "the directory is gone" is itself the answer "nothing
+// survived".
+func SurvivorsIn(scopeDir string) []int {
+	if scopeDir == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(scopeDir, "cgroup.procs"))
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, line := range strings.Fields(string(data)) {
+		if pid, err := strconv.Atoi(line); err == nil {
+			out = append(out, pid)
+		}
+	}
+	return out
+}
+
+// KillScope kills everything left in a scope cgroup. Same guards as KillByCgroup:
+// only a transient scope, never our own and never an ancestor of ours.
+func KillScope(scopeDir string) bool {
+	if scopeDir == "" || !strings.HasSuffix(scopeDir, ".scope") {
+		return false
+	}
+	if own, err := ownCgroupDir(); err == nil && (scopeDir == own || strings.HasPrefix(own, scopeDir+"/")) {
+		return false
+	}
+	return os.WriteFile(filepath.Join(scopeDir, "cgroup.kill"), []byte("1"), 0) == nil
 }
 
 // CgroupStats reports what a running command's own cgroup knows about its memory:
