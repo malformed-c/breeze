@@ -1081,13 +1081,27 @@ between a policy and a convention — the host it protects doesn't care who forg
 is read at startup, so `breeze restart daemon` is how a change takes effect, and a
 malformed one makes the daemon **refuse to start** (silently running everything
 unlimited is the one outcome nobody wants, and it would look exactly like a working
-daemon). A stage can still escape a machine default, but only by saying so —
-`cpu_quota = "infinity"` — which is visible in review and in `show pipeline`, unlike
-escaping by forgetting.
+daemon).
 
-**Seeing what actually applies.** `breeze status` prints the machine-level limits,
+**Merging is per-field SUBSTITUTION, not containment — and this is the part people get
+wrong.** A stage that names a field replaces the machine's value for that field, and
+may name a **larger** one. A stage declaring `cpu_quota = "2800%"` under a machine
+default of `"1400%"` gets all 28 cores; measured, not assumed. Fields the stage does
+not name still come from the machine, so a stage that only raises its memory ceiling
+still inherits the machine's CPU policy.
+
+So a machine-level value is a **default for everything that does not say otherwise**,
+never a ceiling on what a stage may ask for. What it protects against is escaping by
+*forgetting*; escaping deliberately is one line in the pipeline and is visible in
+review and in `show pipeline`. The word "under" was doing real damage here: breeze's
+own output said "machine limits (under every stage below)" and a machine-wide config
+comment on this very machine read "HARD CAP … breeze never takes more than half",
+while a stage two directories away was configured for double it and getting it. Anyone
+sizing work from those two artifacts would have been wrong.
+
+**Seeing what actually applies.** `breeze status` prints the machine-level defaults,
 and `breeze show pipeline <name>` prints each stage's effective limits plus the
-machine floor underneath them. Worth knowing: `--json` omits `resourceLimits`
+machine defaults it may replace. Worth knowing: `--json` omits `resourceLimits`
 entirely for a stage that has none, so reading the JSON of a pipeline that doesn't
 use limits can't distinguish "unset" from "unsupported" — that exact ambiguity once
 led to a document asserting breeze couldn't limit anything.

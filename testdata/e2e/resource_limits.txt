@@ -38,9 +38,23 @@ exec breeze restart daemon
 exec breeze status
 stdout 'resource limits \(every command this daemon runs\): cpu_weight=20 memory_high=2G'
 
-# it also shows up above the stages it silently applies under
+# The machine-level values are DEFAULTS, not a ceiling, and the display has to say
+# which. "under every stage below" read as containment, and a config comment on a real
+# machine said "HARD CAP ... breeze never takes more than half" while a stage two
+# directories away was configured for double it and getting it.
 exec breeze show pipeline capped
-stdout 'machine limits \(this daemon, under every stage below\): cpu_weight=20 memory_high=2G'
+stdout 'machine defaults \(this daemon\) — a stage REPLACES any it names, per field: cpu_weight=20 memory_high=2G'
+
+# THE SEMANTICS, not the wording: "heavy" declares cpu_quota=2800% while the PIPELINE
+# default is 1400%, and the effective value shown for that stage must be the stage's
+# own — larger than the level above it. A wording assertion alone would not have
+# caught the wrong claim; this is the one that pins the mechanism.
+exec breeze show pipeline capped
+stdout 'cpu_quota=2800%'
+# ...and a field the stage does NOT name still comes from the level above it, which is
+# the other half of "per field" and the reason this is substitution rather than
+# all-or-nothing replacement.
+stdout 'tasks_max=512'
 
 # a stage still runs normally under all of it (this asserts the wrapper doesn't
 # break execution; on a host without a usable systemd --user session the stage

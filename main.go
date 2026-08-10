@@ -2224,7 +2224,12 @@ func machineLimits(p paths) *hook.ResourceLimits {
 func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 	fmt.Printf("pipeline %q\n", pl.Name)
 	if !machine.IsZero() {
-		fmt.Printf("  machine limits (this daemon, under every stage below): %s\n", describeLimits(machine))
+		// "under" read as CONTAINMENT and the mechanism is SUBSTITUTION: a stage that
+		// names a field REPLACES the machine's value for it, per field, and can name a
+		// larger one. Measured — a stage declaring cpu_quota = "400%" under a machine
+		// default of 200% gets 400%. The old wording implied no stage could exceed
+		// these, which is exactly the belief someone doing capacity arithmetic acts on.
+		fmt.Printf("  machine defaults (this daemon) — a stage REPLACES any it names, per field: %s\n", describeLimits(machine))
 	}
 	if pl.FanOutAt < len(pl.Stages) {
 		fmt.Printf("  fan-out at: %s (environments: %v)\n", pl.Stages[pl.FanOutAt].Name, pl.Environments)
