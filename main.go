@@ -800,7 +800,14 @@ func cmdStatus(p paths, args []string) error {
 		}{p.dir, ping, ps, inv, pipe})
 		return nil
 	}
-	fmt.Printf("breeze daemon: pid %d, version %s, dir %s\n", ping.Pid, versionString(ping.Version, ping.BuildTime), p.dir)
+	// STAMPED, because this output gets pasted between people as evidence and a
+	// stale read is indistinguishable from a fresh one without it. An all-clear was
+	// broadcast four minutes before it stopped being true tonight, unstamped, into a
+	// message people would re-read exactly when deciding whether to start work. A
+	// point-in-time claim that carries its own age can go stale honestly; one that
+	// does not goes stale silently.
+	fmt.Printf("breeze daemon: pid %d, version %s, dir %s   [as of %s]\n",
+		ping.Pid, versionString(ping.Version, ping.BuildTime), p.dir, time.Now().Format("15:04:05"))
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
 	// Machine-level limits are daemon policy an operator has to be able to see
@@ -932,6 +939,10 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 	sort.SliceStable(out.RecentFailures, func(i, j int) bool { return out.RecentFailures[i].Pipeline < out.RecentFailures[j].Pipeline })
 	sort.SliceStable(out.RecentSuccesses, func(i, j int) bool { return out.RecentSuccesses[i].Pipeline < out.RecentSuccesses[j].Pipeline })
 
+	// Same reason as `breeze status`: this is the view people quote at each other to
+	// argue about what the machine is doing, and every one of those quotes was
+	// undated.
+	fmt.Printf("operator view  [as of %s]\n", time.Now().Format("15:04:05"))
 	fmt.Printf("Needs review (%d):\n", len(out.PendingApprovals))
 	printGroupedByPipeline(out.PendingApprovals, func(a wire.PendingApproval) string { return a.Pipeline }, func(a wire.PendingApproval) {
 		fmt.Printf("    %-10s %-10s %-8s %d/%d approvals (role: %s) waiting %s\n",
