@@ -33,8 +33,13 @@ stdout 'svc/slow'
 ! exec breeze restart daemon
 stderr 'queued for a machine slot'
 
+# Freeing the slot deterministically rather than waiting out a sleep: under load the
+# holder would otherwise finish before the assertions above ran, and the test would
+# pass for the wrong reason (nothing in flight) or fail for a timing reason.
+exec breeze cancel stage svc slow abc --as ci --token-file ci.token --reason 'freeing the slot'
+
 # Once the slot frees, the queued stage runs — it waited, it did not fail.
-exec sh -c 'sleep 5; cat $WORK/quick.out'
+exec sh -c 'sleep 3; cat $WORK/quick.out'
 stdout 'succeeded'
 
 exec breeze stop
@@ -44,7 +49,7 @@ pipeline "svc" {
   stage "slow" {
     type    = "command"
     timeout = "60s"
-    command = ["/bin/sleep", "4"]
+    command = ["/bin/sleep", "30"]
   }
   stage "quick" {
     type    = "command"

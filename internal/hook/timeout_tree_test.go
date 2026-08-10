@@ -40,8 +40,8 @@ func TestTimeoutKillsTheWholeTree(t *testing.T) {
 			// is how we detect survival rather than assuming it.
 			script := "#!/bin/sh\n" +
 				"( while true; do date >> " + marker + "; sleep 0.2; done ) &\n" +
-				"sleep 30\n"
-			tmpl := Template{Script: script, Timeout: 1500 * time.Millisecond, ResourceLimits: c.limits}
+				"sleep 20\n"
+			tmpl := Template{Script: script, Timeout: 700 * time.Millisecond, ResourceLimits: c.limits}
 			if c.outputDir {
 				tmpl.OutputDir = t.TempDir()
 			}
@@ -49,9 +49,9 @@ func TestTimeoutKillsTheWholeTree(t *testing.T) {
 			if !res.TimedOut {
 				t.Fatalf("expected a timeout, got %+v", res)
 			}
-			time.Sleep(700 * time.Millisecond)
+			time.Sleep(400 * time.Millisecond)
 			before, _ := os.ReadFile(marker)
-			time.Sleep(900 * time.Millisecond)
+			time.Sleep(600 * time.Millisecond)
 			after, _ := os.ReadFile(marker)
 			if len(after) > len(before) {
 				t.Errorf("GRANDCHILD SURVIVED the stage timeout: marker grew from %d to %d bytes after the kill (%d lines still being written)",
