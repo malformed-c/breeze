@@ -60,3 +60,50 @@ func TestTimeoutKillsTheWholeTree(t *testing.T) {
 		})
 	}
 }
+
+// platform's measurement, reproduced: a stage script with `set -m` gets job control,
+// which gives every background job its OWN process group — so the group kill aims at
+// a group the children are no longer in. Five linkers survived a timeout by twenty
+// minutes that way, all still inside the stage's scope cgroup.
+//
+// The distinguishing property: a script CAN move its children out of the process
+// group it was started in, and CANNOT move them out of the cgroup.
+func TestTimeoutKillsChildrenThatEscapedTheProcessGroup(t *testing.T) {
+	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
+		t.Skipf("systemd-run --user --scope unusable: %v", err)
+	}
+	marker := t.TempDir() + "/alive"
+	// set -m is the whole point: with it, the backgrounded subshell lands in a
+	// process group of its own, out of reach of kill(-pgid).
+	script := "#!/bin/bash\nset -m\n" +
+		"( while true; do date >> " + marker + "; sleep 0.2; done ) &\n" +
+		"sleep 20\n"
+	res := Run(context.Background(), Template{
+		Script:         script,
+		Interpreter:    []string{"/bin/bash"},
+		Timeout:        700 * time.Millisecond,
+		ResourceLimits: &ResourceLimits{MemoryHigh: "1G"}, // gives the run its own scope
+	}, nil)
+	if !res.TimedOut {
+		t.Fatalf("expected a timeout, got %+v", res)
+	}
+	time.Sleep(400 * time.Millisecond)
+	before, _ := os.ReadFile(marker)
+	time.Sleep(600 * time.Millisecond)
+	after, _ := os.ReadFile(marker)
+	if len(after) > len(before) {
+		t.Errorf("a child in its own process group survived the timeout: marker grew %d -> %d bytes after the kill",
+			len(before), len(after))
+	}
+}
+
+// The guard that carries all the risk: killing a cgroup that contains this process
+// would take the daemon, or the whole session, with it.
+func TestKillByCgroupRefusesItsOwnAndAnyAncestor(t *testing.T) {
+	if KillByCgroup(os.Getpid()) {
+		t.Fatal("KillByCgroup must never accept this process's own cgroup")
+	}
+	if KillByCgroup(1) {
+		t.Fatal("KillByCgroup must never accept pid 1's cgroup")
+	}
+}

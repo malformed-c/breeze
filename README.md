@@ -403,6 +403,30 @@ then re-login
 This applies to `io_weight` too, which shipped long before the caps and had been
 quietly doing nothing on exactly this kind of host.
 
+#### How a stage is killed
+
+On timeout or cancel, breeze kills the run's **cgroup**, falling back to its process
+group when there is no cgroup of its own to kill.
+
+That order is not a preference, it is the difference between working and not. A stage
+that timed out once left five linkers running twenty minutes later, in **five
+distinct process groups, none of them the runner's** — the script had `set -m`, and
+job control gives every background job its own process group, so the very option
+added to make the build killable as a tree is what exempted it from a group kill.
+Every survivor was still inside the stage's scope cgroup.
+
+The general property, which is what decides it: a stage script **can** move its
+children out of the process group it was started in, and **cannot** move them out of
+the cgroup. Killing by process group depends on the script's cooperation and fails
+silently when it does not cooperate.
+
+The cgroup path is only taken for a run with a scope of its own — i.e. one with
+`resource_limits`. A stage with no limits shares the daemon's own cgroup, where
+killing everything would take the daemon with it, so that case is declined and falls
+back to the group kill. The guard also refuses any **ancestor** of breeze's own
+cgroup, which is the dangerous case: an ancestor contains us and otherwise looks like
+an ordinary different path.
+
 #### A machine-wide stage queue
 
 `resource_limits` bound what one command may consume. The queue bounds **how many run

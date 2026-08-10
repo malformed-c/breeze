@@ -369,6 +369,14 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		if cmd.Process == nil {
 			return nil
 		}
+		// Cgroup first: a script that uses job control puts its children in process
+		// groups the group kill below cannot reach, and cannot move them out of the
+		// cgroup. Falls back when there is no scope of our own to kill (an
+		// unlimited stage shares the daemon's cgroup, where killing everything
+		// would take the daemon with it).
+		if KillByCgroup(cmd.Process.Pid) {
+			return nil
+		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = 2 * time.Second
@@ -402,10 +410,12 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 
 	timedOut := ctx.Err() == context.DeadlineExceeded
 	if timedOut && cmd.Process != nil {
-		// Belt-and-suspenders: cmd.Cancel above already sent this on timeout, but a
-		// second SIGKILL to a possibly-already-reaped group is harmless, and this
+		// Belt-and-suspenders: cmd.Cancel above already did this on timeout, but a
+		// second kill of a possibly-already-reaped group is harmless, and this
 		// covers the case where Wait raced ahead of Cancel's goroutine.
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if !KillByCgroup(cmd.Process.Pid) {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
 	}
 
 	res := Result{
@@ -672,4 +682,62 @@ func NicenessApplicable(nice *int) (bool, string) {
 	return false, fmt.Sprintf("nice = %d asks for HIGHER priority than default, which requires privilege — "+
 		"a non-root daemon's nice(1) reports \"cannot set niceness: Permission denied\", exits 0, and runs at the original priority. "+
 		"Positive values (lower priority) work without privilege", *nice)
+}
+
+// KillByCgroup kills every process in pid's cgroup, returning false if it declined.
+//
+// Why this exists, measured rather than theorised: a stage that timed out left five
+// linkers running twenty minutes later, in FIVE DISTINCT PROCESS GROUPS, none of
+// them the runner's — the script had `set -m`, and job control gives every
+// background job its own process group, so the very option added to make a build
+// killable as a tree is what exempted it from a process-group kill. Every survivor
+// was still inside the stage's own scope cgroup.
+//
+// That is the general property and it decides the approach: a stage script CAN move
+// its children out of the process group it was started in, and it CANNOT move them
+// out of the cgroup. Killing by process group depends on the script's cooperation
+// and fails silently when it does not cooperate; killing by cgroup does not.
+// (Diagnosed by platform, who produced the pgid measurement that showed my
+// group-kill could never have reached them.)
+//
+// THE GUARDS ARE THE WHOLE RISK HERE. Writing cgroup.kill to the wrong cgroup kills
+// the daemon, or the user's whole session. So this refuses unless the target is a
+// transient .scope, is not our own cgroup, and is not an ANCESTOR of our own — that
+// last one is the dangerous case, because an ancestor contains us and looks like an
+// ordinary different path. A stage running without resource limits shares the
+// daemon's cgroup and is correctly declined here, falling back to the group kill.
+func KillByCgroup(pid int) bool {
+	own, err := ownCgroupDir()
+	if err != nil {
+		return false
+	}
+	theirs, err := cgroupDirOf(pid)
+	if err != nil || theirs == "" {
+		return false
+	}
+	// Only ever a transient scope: that is what systemd-run --scope creates for us,
+	// and it is the only shape we have any business killing wholesale.
+	if !strings.HasSuffix(theirs, ".scope") {
+		return false
+	}
+	// Not us, and not anything containing us.
+	if theirs == own || strings.HasPrefix(own, theirs+"/") {
+		return false
+	}
+	return os.WriteFile(filepath.Join(theirs, "cgroup.kill"), []byte("1"), 0) == nil
+}
+
+// cgroupDirOf resolves pid's cgroup v2 directory, or an error if it has no unified
+// entry (cgroup v1, or the process is gone).
+func cgroupDirOf(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "0::"); ok {
+			return filepath.Join("/sys/fs/cgroup", strings.TrimSpace(rest)), nil
+		}
+	}
+	return "", fmt.Errorf("no unified (0::) cgroup entry for pid %d", pid)
 }

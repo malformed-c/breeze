@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"breeze/internal/hook"
 )
 
 // procStartToken returns a process's own start time as recorded by the kernel
@@ -84,8 +86,14 @@ func killRunner(pid int, startToken string) (anomaly string) {
 		}
 		return fmt.Sprintf("could not kill the identified runner (pid %d): %v", pid, err)
 	}
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Sprintf("killed runner pid %d but could not signal the rest of its process group: %v", pid, err)
+	// Prefer the cgroup: a stage script using job control scatters its children
+	// across process groups the signal below cannot reach, and cannot move them out
+	// of the scope's cgroup. Only reachable when the run had its own scope; an
+	// unlimited run shares the daemon's cgroup and is declined by KillByCgroup.
+	if !hook.KillByCgroup(pid) {
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return fmt.Sprintf("killed runner pid %d but could not signal the rest of its process group: %v", pid, err)
+		}
 	}
 	// If a process now holds that number with a DIFFERENT start time, the number
 	// was recycled between the two signals and the group kill may have hit
