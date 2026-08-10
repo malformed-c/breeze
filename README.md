@@ -1086,9 +1086,18 @@ daemon).
 **Merging is per-field SUBSTITUTION, not containment — and this is the part people get
 wrong.** A stage that names a field replaces the machine's value for that field, and
 may name a **larger** one. A stage declaring `cpu_quota = "2800%"` under a machine
-default of `"1400%"` gets all 28 cores; measured, not assumed. Fields the stage does
-not name still come from the machine, so a stage that only raises its memory ceiling
-still inherits the machine's CPU policy.
+default of `"1400%"` is given 2800%, not clamped to 1400%. Fields the stage does not
+name still come from the machine, so a stage that only raises its memory ceiling still
+inherits the machine's CPU policy.
+
+Precisely what is measured, since this is the kind of claim that gets overstated:
+breeze **passes** the stage's larger value rather than the machine's (observed on
+`cpu_quota`, by reading what a stage actually receives), and the **kernel honours** a
+stage value larger than the machine default (observed on `memory_high` — a stage
+declaring `16G` under a machine default of `12G` had `memory.high = 17179869184` in
+its live scope, with every parent cgroup at `max`). Those are two different
+assertions on two different keys; neither on its own establishes the other, and
+"configured for 2800%" is not the same claim as "got 28 cores".
 
 So a machine-level value is a **default for everything that does not say otherwise**,
 never a ceiling on what a stage may ask for. What it protects against is escaping by
