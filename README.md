@@ -403,6 +403,30 @@ then re-login
 This applies to `io_weight` too, which shipped long before the caps and had been
 quietly doing nothing on exactly this kind of host.
 
+#### Where a stage does its work — `run_dir`
+
+Each stage gets a scratch directory and its captured output under
+`<state-dir>/runs`, exposed to the command as `$BREEZE_RUN_DIR`. That default puts
+the work **next to the repo**, and a repo is wherever someone cloned it:
+
+```hcl
+# ~/.config/breeze/defaults.hcl (or a single daemon's own defaults.hcl)
+run_dir = "/mnt/nvme_data/breeze"
+```
+
+On the machine this was written for, every stage was checking out a
+Kubernetes-scale worktree onto a 5900-rpm surveillance HDD and running a hundred
+build cycles against it, three slots at a time on one head — while a 931 GB NVMe sat
+85% empty. Where the *state* lives and where the *work* happens are different
+questions, and only one of them has to follow the repo.
+
+A configured `run_dir` is **namespaced per daemon** (`<run_dir>/<repo>-<hash>`).
+Sharing one directory would put two repos' runs of the same pipeline, stage and
+commit in the same place, which is a collision between two live runs' scratch and
+output — the exact class of problem breeze exists to prevent. A relative path is
+refused rather than resolved, since the daemon does not share your working
+directory. `breeze status` prints the resolved location.
+
 #### Why a stage is slow: throttling, and knowing your own grant
 
 `memory_high` throttles and reclaims rather than OOM-killing, so a stage over its

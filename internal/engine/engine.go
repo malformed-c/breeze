@@ -397,6 +397,15 @@ func (e *Engine) SetRunDir(dir string) {
 	e.runDir = dir
 }
 
+// RunDir reports where stage runs do their work, for `breeze status` — a
+// performance-relevant fact that is otherwise invisible, since it defaults to
+// sitting beside the repo and a repo is wherever someone cloned it.
+func (e *Engine) RunDir() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.runDir
+}
+
 // runOutputDir is the per-instance directory a live run writes its output into.
 // Derived from the instance key rather than stored anywhere, so a restarted daemon
 // can find a run's output knowing only what it already has in the snapshot.

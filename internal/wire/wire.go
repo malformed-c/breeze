@@ -175,6 +175,11 @@ type PingResponse struct {
 	// MACHINE rather than this daemon: the slots are shared with every other breeze
 	// daemon running as the same user, and none of them can see each other's state.
 	Queue *QueueStatus `json:"queue,omitempty"`
+	// RunDir is where this daemon puts each stage's scratch and captured output.
+	// Reported because it is a performance-relevant fact nobody can see otherwise:
+	// it defaults to sitting next to the repo, and a repo is wherever someone
+	// cloned it — which may be a spinning disk while an NVMe sits idle.
+	RunDir string `json:"runDir,omitempty"`
 }
 
 type WhoAmIResponse struct {

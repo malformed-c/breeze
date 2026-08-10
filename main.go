@@ -812,6 +812,9 @@ func cmdStatus(p paths, args []string) error {
 		limits += " — set one in " + p.defaults + " for this daemon, or " + p.globalDefaults + " for every daemon on this machine"
 	}
 	fmt.Printf("resource limits (every command this daemon runs): %s\n", limits)
+	if ping.RunDir != "" {
+		fmt.Printf("stage scratch + output: %s\n", ping.RunDir)
+	}
 	if q := ping.Queue; q != nil {
 		fmt.Printf("machine-wide stage budget: %d concurrent, %d in use at the time of asking (slots in %s, shared with every breeze daemon on this machine)\n",
 			q.Max, len(q.InUse), q.Dir)
@@ -2235,6 +2238,17 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 		// pipeline-level default has already been merged in at apply time.
 		if rl := resourceLimitsFromWire(s.Command.ResourceLimits); !rl.IsZero() {
 			fmt.Printf("  %-12s  %-9s  limits: %s\n", "", "", describeLimits(rl))
+		} else if s.Type == "command" || s.Type == "deploy" {
+			// On timeout or cancel breeze kills the run's CGROUP when it has a scope
+			// of its own, and falls back to its process group when it does not — so
+			// the stronger cleanup is COUPLED to having resource_limits, and nothing
+			// about a pipeline's config said so. A stage script using job control
+			// scatters its children into process groups a group kill cannot reach;
+			// that is not hypothetical, it left five linkers running twenty minutes
+			// past a timeout. Whether you are covered should not be something you
+			// learn from the survivors. (platform, who noticed their own coverage was
+			// luck — they had added limits for an unrelated reason.)
+			fmt.Printf("  %-12s  %-9s  cleanup: process group only — no resource_limits means no cgroup to kill, and a script using `set -m` can escape it\n", "", "")
 		}
 		// Shown here because `stage status` deliberately does NOT evaluate it — a
 		// status query has no actor, so "do you hold the lock" has no answer there.

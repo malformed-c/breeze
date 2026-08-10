@@ -5,6 +5,7 @@ package main
 // "what the daemon does once it's actually running and serving requests."
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"syscall"
 	"time"
@@ -265,7 +267,12 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	// here, before serving, so a caller never sees a "running" stage that nothing is
 	// running (reported live: a host crash left stages stuck running indefinitely,
 	// which also BLOCKED their retry until someone cancelled them by hand).
-	eng.SetRunDir(p.runs)
+	runDir, err := resolveRunDir(p)
+	if err != nil {
+		log.Printf("refusing to start: %v", err)
+		return nil, err
+	}
+	eng.SetRunDir(runDir)
 	if n := eng.ReapStrayChildren(); n > 0 {
 		log.Printf("reaped %d stray child process(es) left unwaited by the previous image", n)
 	}
@@ -450,4 +457,41 @@ func loadQueue(eng *engine.Engine, p paths) error {
 	eng.SetQueue(engine.QueueConfig{Dir: dir, StateDir: p.dir, Max: q.MaxConcurrent, WaitTimeout: q.WaitTimeout})
 	log.Printf("machine-wide stage budget: %d concurrent, slots in %s (shared with every breeze daemon running as this user)", q.MaxConcurrent, dir)
 	return nil
+}
+
+// resolveRunDir decides where this daemon's stage runs do their work: run_dir from
+// the per-daemon defaults, else the machine-wide one, else <state-dir>/runs.
+//
+// A configured run_dir is NAMESPACED per daemon rather than shared. Every daemon on
+// this machine would otherwise write run directories named
+// <pipeline>_<stage>_<key> into one place, and two repos with the same pipeline and
+// stage names on the same commit would land in the same directory — which is a
+// collision between two live runs' scratch and output, i.e. exactly the class of
+// problem breeze exists to prevent. The suffix is the state directory's own path
+// hashed short, so it is stable across restarts and unique per daemon, with the
+// repo name in front so the directory is still recognisable by eye.
+func resolveRunDir(p paths) (string, error) {
+	configured := ""
+	for _, f := range []string{p.defaults, p.globalDefaults} {
+		if f == "" {
+			continue
+		}
+		d, err := hclconfig.ParseRunDir(f)
+		if err != nil {
+			return "", fmt.Errorf("loading %s: %w", f, err)
+		}
+		if d != "" {
+			configured = d
+			break
+		}
+	}
+	if configured == "" {
+		return p.runs, nil
+	}
+	sum := sha256.Sum256([]byte(p.dir))
+	name := filepath.Base(filepath.Dir(filepath.Dir(p.dir))) // <repo>/.git/breeze -> <repo>
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "breeze"
+	}
+	return filepath.Join(configured, fmt.Sprintf("%s-%x", name, sum[:4])), nil
 }

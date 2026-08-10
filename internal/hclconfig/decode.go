@@ -183,6 +183,8 @@ func ParseFile(path string) ([]wire.Pipeline, error) {
 type DefaultsHCL struct {
 	ResourceLimits *ResourceLimitsHCL `hcl:"resource_limits,block"`
 	Queue          *QueueHCL          `hcl:"queue,block"`
+	// RunDir relocates where stage runs do their work — see ParseRunDir.
+	RunDir string `hcl:"run_dir,optional"`
 }
 
 // QueueHCL configures the MACHINE-WIDE stage budget: at most MaxConcurrent stage
@@ -237,6 +239,36 @@ func ParseDefaults(path string) (*wire.ResourceLimits, error) {
 		return nil, err
 	}
 	return translateResourceLimits(cfg.ResourceLimits), nil
+}
+
+// ParseRunDir reads run_dir from a defaults file: where breeze puts each stage's
+// scratch directory and captured output ($BREEZE_RUN_DIR), instead of the default
+// <state-dir>/runs.
+//
+// It exists because the state directory lives next to the repo, and a repo is
+// wherever someone cloned it — which on the machine this was written for is a
+// 5900-rpm surveillance HDD, while a 931 GB NVMe sat 85% empty. Every stage was
+// checking out a Kubernetes-scale worktree onto the spindle and running a hundred
+// build cycles against it, three slots at a time, on one head. Where the state lives
+// and where the WORK happens are different questions and only one of them has to
+// follow the repo.
+//
+// Empty means the default. Returns ("", nil) for a missing file.
+func ParseRunDir(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var cfg DefaultsHCL
+	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
+		return "", err
+	}
+	if cfg.RunDir != "" && !filepath.IsAbs(cfg.RunDir) {
+		return "", fmt.Errorf("run_dir %q must be an absolute path — it is resolved by the daemon, which does not share your working directory", cfg.RunDir)
+	}
+	return cfg.RunDir, nil
 }
 
 // ParseQueue reads the queue block from a defaults file. Missing file or missing

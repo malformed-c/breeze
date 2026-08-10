@@ -713,3 +713,26 @@ pipeline "p" {
 		t.Fatalf("an explicit nice = 0 must override the pipeline default, got %v", n)
 	}
 }
+
+// run_dir decides which DISK every stage does its work on, so a silently-dropped or
+// relative value would be an expensive no-op: the default sits beside the repo, and
+// a repo is wherever someone cloned it.
+func TestParseRunDir(t *testing.T) {
+	abs := writeFixture(t, "run_dir = \"/mnt/nvme_data/breeze\"\n")
+	got, err := ParseRunDir(abs)
+	if err != nil || got != "/mnt/nvme_data/breeze" {
+		t.Fatalf("run_dir = %q (err %v)", got, err)
+	}
+
+	// Relative is refused rather than resolved: the daemon does not share the
+	// caller's working directory, so "./runs" would silently mean somewhere else.
+	rel := writeFixture(t, "run_dir = \"runs\"\n")
+	if _, err := ParseRunDir(rel); err == nil {
+		t.Fatal("a relative run_dir must be refused, not resolved against the daemon's cwd")
+	}
+
+	none := writeFixture(t, "resource_limits {\n  memory_high = \"4G\"\n}\n")
+	if got, err := ParseRunDir(none); err != nil || got != "" {
+		t.Fatalf("absent run_dir must mean the default, got %q (err %v)", got, err)
+	}
+}
