@@ -196,12 +196,28 @@ type DefaultsHCL struct {
 type QueueHCL struct {
 	MaxConcurrent int    `hcl:"max_concurrent,optional"`
 	WaitTimeout   string `hcl:"wait_timeout,optional"`
+	// SlotDir overrides where the shared slot files live. Almost nobody should set
+	// it: the default is derived from uid and home so that every daemon agrees
+	// without being told, which is the property that makes the budget a budget.
+	//
+	// It exists because that same property makes the budget GLOBAL to the user, so
+	// a test suite — or anything else wanting its own budget — would otherwise
+	// contend with real work. Found the honest way: with the machine at
+	// max_concurrent = 1, breeze's own e2e queued behind a colleague's live build.
+	//
+	// Config rather than an environment variable, deliberately. The hazard being
+	// avoided is a daemon silently getting a DIFFERENT directory from its peers; an
+	// ambient $VAR does exactly that, while a path written in the same file that
+	// names the budget is read identically by everyone who reads that file, and
+	// `breeze status` prints it.
+	SlotDir string `hcl:"slot_dir,optional"`
 }
 
 // Queue is a parsed queue block. WaitTimeout of 0 means wait indefinitely.
 type Queue struct {
 	MaxConcurrent int
 	WaitTimeout   time.Duration
+	SlotDir       string
 }
 
 // ParseDefaults reads a daemon's defaults.hcl. A missing file is not an error —
@@ -240,7 +256,7 @@ func ParseQueue(path string) (*Queue, error) {
 	if cfg.Queue == nil {
 		return nil, nil
 	}
-	q := &Queue{MaxConcurrent: cfg.Queue.MaxConcurrent}
+	q := &Queue{MaxConcurrent: cfg.Queue.MaxConcurrent, SlotDir: cfg.Queue.SlotDir}
 	if q.MaxConcurrent < 0 {
 		return nil, fmt.Errorf("queue: max_concurrent must be >= 0 (0 means no budget), got %d", q.MaxConcurrent)
 	}

@@ -242,12 +242,15 @@ func usage() {
 
 -- stages --
   start stage   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
-  start stage   <pipeline> <deploy-stage> <commit> --env NAME --force --brief "why"
-                                         # break glass: deploy skipping the review,
-                                         # environment-dependency and staleness gates.
-                                         # Keeps RBAC, the (target,environment) lock and
-                                         # pre-gate hooks; requires a written reason, and
-                                         # is recorded as outcome "forced" in deploy history
+  start stage   <pipeline> <stage> <commit> [--env NAME] --force --brief "why"
+                                         # break glass: run it skipping the ORDERING
+                                         # gates — prerequisites, environment
+                                         # dependencies, and (deploy) staleness.
+                                         # Works on command AND deploy stages.
+                                         # Keeps RBAC, requires_lock, max_concurrent,
+                                         # the (target,environment) lock and pre-gate
+                                         # hooks. Requires a written reason; audited,
+                                         # and a deploy is recorded as outcome "forced"
   approve stage <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
   status stage  <pipeline> <stage> <commit> [--env NAME] [--json]
   wait stage    <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--json]
@@ -2464,7 +2467,13 @@ func cmdStage(p paths, args []string) error {
 		var payload []byte
 		if sub == "start" {
 			if f.force {
-				if err := requireDaemonFeature(p, wire.FeatureForceDeploy, "--force"); err != nil {
+				// FeatureForceCommandStage, not FeatureForceDeploy: a daemon that has
+				// the latter but predates the former does not ignore --force on a
+				// command stage, it refuses with "--force applies to deploy stages
+				// only" — which is now a false statement about breeze rather than a
+				// true one about that daemon, and would send someone off to edit
+				// their pipeline instead of restarting.
+				if err := requireDaemonFeature(p, wire.FeatureForceCommandStage, "--force"); err != nil {
 					return err
 				}
 			}

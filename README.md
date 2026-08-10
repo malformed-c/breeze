@@ -294,6 +294,34 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### `--force`: skipping the ordering gates
+
+```sh
+breeze start stage <pipeline> <stage> <commit> [--env NAME] --force --brief "why"
+```
+
+Skips **ordering only** — the predecessor-succeeded check, environment dependencies,
+and (for a deploy) the monotonic-staleness rule. It keeps everything that is not
+ordering: `required_role`, `requires_lock`, `max_concurrent`, the deploy
+`(target, environment)` lock, and the stage's pre-gate hooks, which can still stop
+it. A written `--brief` is mandatory and the forced run is audited, because a forced
+run nobody wrote a reason for is the one every post-mortem asks about.
+
+It applies to **command and deploy stages alike**. It used to be deploy-only, and a
+command stage was refused with advice to set `debug = true` instead — which is worse
+than what it was recommended over: `debug` is a *standing* exemption written into the
+pipeline, permanently removing ordering for every future run of that stage, where a
+forced run is one commit, one caller, one audit line, with the gates back in place
+immediately afterwards.
+
+What `--force` deliberately does **not** do:
+
+- **grant authority.** An actor without the role is refused, forced or not.
+- **bypass `requires_lock`.** Forcing past it would mean running next to the holder —
+  the exact collision the requirement was declared to prevent. The escape hatch there
+  is releasing or waiting for the lock, not overriding the gate that noticed.
+- **skip the machine queue.** A budget you can opt out of is not a budget.
+
 #### Scheduling priority — `nice`
 
 ```hcl
@@ -418,6 +446,15 @@ Mechanics worth knowing:
   its own private budget — two half-budgets that each look like a working one, which
   is worse than no budget at all. `breeze status` prints the path so a split would be
   visible rather than inferred.
+- **`slot_dir` overrides where the slots live**, and almost nobody should set it.
+  The default is global to the user by design, which means a test suite — or
+  anything else wanting its own budget — otherwise contends with real work.
+  (Found the honest way: with the box at `max_concurrent = 1`, breeze's own e2e
+  queued behind a colleague's live build.) It is config rather than an environment
+  variable for the same reason the default takes no env input: an ambient `$VAR`
+  is exactly how one daemon silently gets a different directory from its peers,
+  while a path written in the file that names the budget is read identically by
+  everyone who reads that file.
 - **Only the machine-wide file may set it.** A per-daemon `queue` block is refused at
   startup: three daemons each declaring `max_concurrent = 2` is not a budget of two,
   it is a budget of six wearing the word two, and it would read as correct in every

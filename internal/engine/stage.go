@@ -359,6 +359,39 @@ func gateErr(format string, args ...any) error {
 // instance re-runs every check from scratch. Pre/post hooks are wired in a later
 // step; this only runs the stage's own Command.
 func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, false)
+}
+
+// ForceCommandStage is the command-stage counterpart of ForceDeployStage: it skips
+// Gate 1 (the predecessor-succeeded check) and Gate 2 (environment dependencies),
+// and skips NOTHING else. The actor still needs the stage's required role, a
+// declared requires_lock is still enforced, MaxConcurrent still applies, the stage's
+// pre-gate hooks still run and can still stop it, and the run still takes its own
+// exclusivity lock.
+//
+// It exists because --force meant different things on different stage types: a
+// deploy stage could be forced, a command stage was refused with "--force applies to
+// deploy stages only", and the refusal pointed at `debug = true` as the workaround.
+// That advice made things worse — debug is a STANDING exemption written into the
+// pipeline, permanently removing ordering for every future run of that stage,
+// whereas a forced run is one commit, one caller, one audit line, with the gates
+// back in place immediately afterwards. Recommending the permanent hole to avoid
+// the temporary one is backwards.
+//
+// brief is mandatory for the same reason it is on a forced deploy: the record is the
+// entire point, and a forced run nobody wrote a reason for is the one every
+// post-mortem asks about.
+func (e *Engine) ForceCommandStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+	if strings.TrimSpace(brief) == "" {
+		return nil, gateErr("a forced run requires a written reason: pass --brief \"why this is running without its gates\"")
+	}
+	e.mu.Lock()
+	e.audit("stage.command.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
+	e.mu.Unlock()
+	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, true)
+}
+
+func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment, actor, brief string, force bool) (*StageInstance, error) {
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
@@ -389,14 +422,20 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 		}
 	}
 
-	if ok, reason := e.checkPrerequisite(p, i, key); !ok {
-		e.mu.Unlock()
-		return nil, gateErr("%s", reason)
+	if !force {
+		if ok, reason := e.checkPrerequisite(p, i, key); !ok {
+			e.mu.Unlock()
+			return nil, gateErr("%s", reason)
+		}
+		if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
+			e.mu.Unlock()
+			return nil, gateErr("%s", reason)
+		}
 	}
-	if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
-		e.mu.Unlock()
-		return nil, gateErr("%s", reason)
-	}
+	// Outside the !force block, deliberately: RBAC, the required lock and the
+	// concurrency limit are not ordering. --force means "I know test has not run,
+	// run it anyway" — it has never meant "and also let someone unauthorized do it,
+	// next to whoever holds the lock".
 	if stage.CommandPolicy.RequiredRole != "" {
 		id, ok := e.identities[actor]
 		if !ok || !id.HasRole(stage.CommandPolicy.RequiredRole) {

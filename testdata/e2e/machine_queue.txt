@@ -63,4 +63,8 @@ pipeline "svc" {
 queue {
   max_concurrent = 1
   wait_timeout   = "60s"
+  # Its own slot directory: the default is shared by every daemon this user runs,
+  # so without this the test queues behind whatever real work is on the machine —
+  # which is exactly what happened the first time this ran with the box serial.
+  slot_dir = "$WORK/slots"
 }

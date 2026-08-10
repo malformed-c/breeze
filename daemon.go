@@ -543,16 +543,15 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
-		// Silently ignoring --force on a stage that has no gates to force would be
-		// the worst kind of no-op: the caller believes a gate was skipped.
-		if p.Force && pipeline.Stages[i].Type != engine.StageDeploy {
-			return errResponse(fmt.Errorf("--force applies to deploy stages only; %q is a %s stage (for a command stage, `debug = true` in the pipeline is the standing exemption from ordering)", p.Stage, pipeline.Stages[i].Type))
-		}
 		var inst *engine.StageInstance
 		var err error
 		switch pipeline.Stages[i].Type {
 		case engine.StageCommand:
-			inst, err = d.eng.StartCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			if p.Force {
+				inst, err = d.eng.ForceCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			} else {
+				inst, err = d.eng.StartCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+			}
 		case engine.StageDeploy:
 			if p.Force {
 				inst, err = d.eng.ForceDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)

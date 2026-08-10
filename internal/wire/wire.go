@@ -95,11 +95,18 @@ const (
 	// refusal, because refusing would make it impossible to restart an old daemon
 	// onto a new binary, i.e. the safety check would block its own rollout.
 	FeatureRestartGuard = "restart-guard" // RestartRequest.Force
+	// FeatureForceCommandStage means --force works on a COMMAND stage, not only a
+	// deploy one. Advertised separately from FeatureForceDeploy because an older
+	// daemon does not silently ignore it — it refuses with "--force applies to
+	// deploy stages only", which after this change is a FALSE statement about
+	// breeze rather than a true one about that daemon. A misleading refusal sends
+	// someone off to change their pipeline; a version answer sends them to restart.
+	FeatureForceCommandStage = "force-command-stage"
 )
 
 // Features is what a daemon built from this source advertises.
 func Features() []string {
-	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard}
+	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard, FeatureForceCommandStage}
 }
 
 // CodeLockConflict marks a failure caused purely by someone else holding a

@@ -3,6 +3,7 @@ package engine
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // forceablePipeline is build -> review(approval) -> deploy(fan-out), i.e. a deploy
@@ -107,5 +108,80 @@ func TestForceDeployBecomesTheNewBaseline(t *testing.T) {
 	_, err := e.StartDeployStage("release", "deploy", "newer", "staging", "ci", "")
 	if err == nil || !strings.Contains(err.Error(), "prerequisite") {
 		t.Fatalf("expected the ordinary review gate, not a staleness rejection, got %v", err)
+	}
+}
+
+// --force used to mean different things on different stage types: a deploy stage
+// could be forced, a command stage was refused outright, and the refusal recommended
+// `debug = true` — a STANDING exemption written into the pipeline, permanently
+// removing ordering for every future run, in place of a one-off with an audit line.
+func TestForceCommandStageSkipsOrderingOnly(t *testing.T) {
+	e := New()
+	var events []AuditEvent
+	e.SetAuditFn(func(ev AuditEvent) { events = append(events, ev) })
+	registerReleasePipeline(t, e)
+
+	// "test" sits after the fan-out and needs "deploy" for that environment.
+	if _, err := e.StartCommandStage("release", "test", "abc", "staging", "ci", ""); err == nil {
+		t.Fatal("test setup bug: the stage must be gated for this test to mean anything")
+	}
+
+	// Forced without a reason: refused. The record is the whole point.
+	if _, err := e.ForceCommandStage("release", "test", "abc", "staging", "ci", ""); err == nil {
+		t.Fatal("a forced run with no written reason must be refused")
+	}
+
+	inst, err := e.ForceCommandStage("release", "test", "abc", "staging", "ci", "sev1: proving the box before the deploy lands")
+	if err != nil {
+		t.Fatalf("a forced command stage must skip Gate 1: %v", err)
+	}
+	if inst.Status != StageSucceeded {
+		t.Fatalf("status = %s (%s)", inst.Status, inst.Error)
+	}
+	// The forcing must be legible afterwards, not inferable only from the absence
+	// of a predecessor.
+	found := false
+	for _, ev := range events {
+		if ev.Kind == "stage.command.forced" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a forced run must leave a stage.command.forced audit event")
+	}
+}
+
+// --force means "I know the prerequisite has not run, run it anyway". It has never
+// meant "and also let someone unauthorized do it, next to whoever holds the lock".
+func TestForceCommandStageDoesNotBypassAuthorizationOrLocks(t *testing.T) {
+	e := New()
+	p := examplePipeline()
+	p.Stages[3].CommandPolicy = &CommandPolicy{RequiredRole: "tester"}
+	p.Stages[3].RequiresLock = "test-slot"
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
+		t.Fatalf("register identity: %v", err)
+	}
+
+	_, err := e.ForceCommandStage("release", "test", "abc", "staging", "nobody", "trying it on")
+	if err == nil || !strings.Contains(err.Error(), "lacks required role") {
+		t.Fatalf("--force must not grant authority, got %v", err)
+	}
+
+	// Now authorized, but the declared lock is held by someone else.
+	if _, err := e.RegisterIdentity("tester1", ""); err != nil {
+		t.Fatalf("register identity: %v", err)
+	}
+	if err := e.AssignRole("tester1", "tester"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	if _, ok, err := e.TryAcquireResourceLock("someone-else", []string{"test-slot"}, LockExclusive, time.Minute, true); err != nil || !ok {
+		t.Fatalf("acquire: ok=%v err=%v", ok, err)
+	}
+	_, err = e.ForceCommandStage("release", "test", "abc", "staging", "tester1", "forcing past the gates")
+	if err == nil || !strings.Contains(err.Error(), "test-slot") {
+		t.Fatalf("--force must not run a stage next to the holder of its required lock, got %v", err)
 	}
 }

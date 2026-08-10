@@ -439,7 +439,10 @@ func loadQueue(eng *engine.Engine, p paths) error {
 	if q == nil || q.MaxConcurrent <= 0 {
 		return nil
 	}
-	dir := slots.Dir()
+	dir := q.SlotDir
+	if dir == "" {
+		dir = slots.Dir()
+	}
 	if dir == "" {
 		return fmt.Errorf("a queue is configured in %s but no shared slot directory could be determined (no /run/user/%d and no home directory), so the budget could not be enforced",
 			p.globalDefaults, os.Getuid())

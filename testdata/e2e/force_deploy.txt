@@ -34,10 +34,22 @@ cp stdout nobody.token
 ! exec breeze start stage svc deploy def456 --env prod --force --brief 'trying it on' --as nobody --token-file nobody.token
 stderr 'lacks required role'
 
-# ...nor a flag you can wave at a stage that has no ordering gates to skip: a
-# silent no-op there would leave the caller believing a gate was bypassed.
-! exec breeze start stage svc build abc123 --force --brief 'why' --as ci --token-file ci.token
-stderr 'applies to deploy stages only'
+# --force is not deploy-only. A COMMAND stage with an unmet prerequisite is refused
+# normally and runs when forced — the flag used to mean different things on
+# different stage types, and the refusal pointed at `debug = true`, which is a
+# STANDING exemption: permanently weaker than the one-off it was recommended over.
+! exec breeze start stage svc smoke def456 --env prod --as ci --token-file ci.token
+stderr 'prerequisite "deploy"'
+
+! exec breeze start stage svc smoke def456 --env prod --force --as ci --token-file ci.token
+stderr 'requires a written reason'
+
+exec breeze start stage svc smoke def456 --env prod --force --brief 'sev1: proving the box is alive before the deploy lands' --as ci --token-file ci.token
+stdout 'smoke: succeeded'
+
+# ...and forcing a command stage is still not a way around authorization.
+! exec breeze start stage svc smoke def456 --env prod --force --brief 'trying it on' --as nobody --token-file nobody.token
+stderr 'lacks required role'
 
 exec breeze stop
 
@@ -61,5 +73,11 @@ pipeline "svc" {
     required_role = "deployer"
     timeout       = "10s"
     command       = ["/bin/true", "{commit}", "{environment}"]
+  }
+  stage "smoke" {
+    type          = "command"
+    required_role = "deployer"
+    timeout       = "10s"
+    command       = ["/bin/true", "{commit}"]
   }
 }
