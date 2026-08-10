@@ -741,3 +741,44 @@ func cgroupDirOf(pid int) (string, error) {
 	}
 	return "", fmt.Errorf("no unified (0::) cgroup entry for pid %d", pid)
 }
+
+// CgroupStats reports what a running command's own cgroup knows about its memory:
+// the high-water mark, and how many times it was THROTTLED against memory_high.
+// ok is false when the process has no scope of its own (an unlimited stage shares
+// the daemon's cgroup, whose numbers say nothing about the stage) or the kernel
+// does not expose these files.
+//
+// This exists because memory_high degrades instead of failing. A stage 3 GB over a
+// 4 GB soft ceiling does not error — it throttles and reclaims, and the symptom is a
+// run that takes 25 minutes and produces nothing, which reads as a slow build rather
+// than as a limit. The kernel counts every one of those throttling events in
+// memory.events, and nobody knew to look: two people asked for this on the same
+// evening, in the same words — the counter exists, and "high is non-zero" is a
+// one-word answer to "why is this taking so long".
+func CgroupStats(pid int) (peak, highEvents uint64, ok bool) {
+	dir, err := cgroupDirOf(pid)
+	if err != nil || !strings.HasSuffix(dir, ".scope") {
+		return 0, 0, false
+	}
+	if own, err := ownCgroupDir(); err == nil && (dir == own || strings.HasPrefix(own, dir+"/")) {
+		return 0, 0, false // the daemon's own cgroup: its numbers are not this stage's
+	}
+	peak = readCgroupUint(filepath.Join(dir, "memory.peak"))
+	if data, err := os.ReadFile(filepath.Join(dir, "memory.events")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if v, found := strings.CutPrefix(line, "high "); found {
+				highEvents, _ = strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+			}
+		}
+	}
+	return peak, highEvents, true
+}
+
+func readCgroupUint(path string) uint64 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	return v
+}

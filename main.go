@@ -2352,6 +2352,16 @@ func statusLine(inst wire.StageInstance) string {
 	if !inst.Recorded {
 		s += "  [no run recorded for this commit — this is what the gates would say if you triggered it]"
 	}
+	// A stage being throttled against memory_high has no other symptom than being
+	// slow: the kernel counts every throttling event and nothing was reading it.
+	// Shown on the status line itself rather than behind --json, because the
+	// question it answers ("why is this taking so long") is asked by looking here.
+	if inst.MemoryHighEvents > 0 {
+		s += fmt.Sprintf("  [THROTTLED: hit memory_high %d times, peak %s — it is not slow, it is over its memory ceiling]",
+			inst.MemoryHighEvents, humanBytes(inst.MemoryPeak))
+	} else if inst.MemoryPeak > 0 {
+		s += fmt.Sprintf("  [peak memory %s]", humanBytes(inst.MemoryPeak))
+	}
 	return s
 }
 
@@ -2403,6 +2413,19 @@ func printOutput(inst wire.StageInstance, tail int) {
 // quote the guard count behind a gate they had just passed.
 func wantsOutput(status string, f flagSet) bool {
 	return f.tailSet || status == "failed" || status == "gate_failed"
+}
+
+// humanBytes renders a byte count the way someone comparing it to a memory_high
+// setting needs to read it — "7.1G" against "12G", not 7074484224.
+func humanBytes(n uint64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0fM", float64(n)/(1<<20))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 // defaultTailLines is what a failure shows unasked: enough to hold a test summary

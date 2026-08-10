@@ -403,6 +403,40 @@ then re-login
 This applies to `io_weight` too, which shipped long before the caps and had been
 quietly doing nothing on exactly this kind of host.
 
+#### Why a stage is slow: throttling, and knowing your own grant
+
+`memory_high` throttles and reclaims rather than OOM-killing, so a stage over its
+ceiling has **no symptom except being slow**. The kernel counts every throttling
+event; nothing was reading it. `breeze status stage` now does:
+
+```
+verify-guards: running  [THROTTLED: hit memory_high 268 times, peak 68M
+                         — it is not slow, it is over its memory ceiling]
+```
+
+Read live from the stage's own cgroup while it runs, so it is current rather than
+recorded. A stage under its ceiling shows its peak instead, which is the number you
+compare against the limit when picking one.
+
+Stages also get their **own limits in the environment**, because a script that reads
+`nproc` gets the host's cores rather than its grant, and cannot see its memory
+ceiling at all:
+
+```sh
+BREEZE_CPU_QUOTA=1400%   BREEZE_MEMORY_HIGH=12G
+BREEZE_MEMORY_MAX=16G    BREEZE_TASKS_MAX=1024
+```
+
+Only limits that are actually set appear — an empty `BREEZE_MEMORY_HIGH` would read
+as "there is a ceiling and it is nothing", which is worse than absent.
+
+This is not hypothetical tidiness. A stage sized its own parallelism at `cores/2`,
+which meant seven simultaneous Go builds asking for ~45 GB against a 4 GB soft
+ceiling, and the symptom was a 25-minute run that produced nothing. Raising the
+ceiling alone would not have fixed it — it only moves where the thrashing starts,
+because when one build peaks at 7 GB the concurrency has to be derived from **memory,
+not cores**.
+
 #### How a stage is killed
 
 On timeout or cancel, breeze kills the run's **cgroup**, falling back to its process

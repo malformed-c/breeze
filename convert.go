@@ -206,13 +206,23 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 	for _, a := range s.Approvals {
 		approvals = append(approvals, wire.Approval{Identity: a.Identity, Role: string(a.Role), At: a.At, Brief: a.Brief})
 	}
-	return wire.StageInstance{
+	out := wire.StageInstance{
 		Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
 		Status: string(s.Status), Approvals: approvals, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
 		ExitCode: s.ExitCode, Stdout: string(s.Stdout), Stderr: string(s.Stderr), Error: s.Error,
 		FailureKind: string(s.FailureKind), Recorded: s.Recorded, OutputPruned: s.OutputPruned,
 		Actor: s.Actor, Brief: s.Brief, Summary: s.Summary,
 	}
+	// Live, not stored: while the stage is executing, its own cgroup already knows
+	// its high-water mark and how often the kernel throttled it. Read at report
+	// time so the answer is current, and only for a running stage — a finished
+	// one's scope is gone, and a queued one has no process yet.
+	if s.Status == engine.StageRunning && s.RunnerPID > 0 {
+		if peak, high, ok := hook.CgroupStats(s.RunnerPID); ok {
+			out.MemoryPeak, out.MemoryHighEvents = peak, high
+		}
+	}
+	return out
 }
 
 func deployRecordToWire(d engine.DeployRecord) wire.DeployHistoryEntry {

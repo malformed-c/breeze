@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -976,7 +977,7 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		// PID, cleaned in an EXIT trap — which loses its cleanup to exactly the
 		// signals that need it most, and accumulates until the disk fills and
 		// unrelated commands start failing for reasons nobody connects to it.
-		Env:            append(append([]string(nil), tmpl.Env...), "BREEZE_RUN_DIR="+RunScratchDir(outputDir)),
+		Env:            append(append(append([]string(nil), tmpl.Env...), "BREEZE_RUN_DIR="+RunScratchDir(outputDir)), limitEnv(e.EffectiveLimits(tmpl.ResourceLimits))...),
 		OutputDir:      outputDir,
 		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
 		// Record which OS process owns this stage while it runs, so a daemon that
@@ -998,6 +999,41 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		e.ReleaseLock(lock.ID, actor, true)
 	}
 	return result, wasCancelled
+}
+
+// limitEnv exports the limits a stage is actually running under, so a script can
+// size itself against its GRANT rather than against the machine.
+//
+// A build that reads nproc gets the host's 28 cores while its cgroup allows 14, and
+// cannot see its memory ceiling at all. That is not hypothetical: a stage sized its
+// own parallelism at cores/2, which meant seven simultaneous Go builds asking for
+// ~45 GB against a 4 GB soft ceiling, and the symptom was a 25-minute run that
+// produced nothing. Raising the ceiling would not have fixed it — it only moves
+// where the thrashing starts, because concurrency has to be derived from MEMORY
+// rather than cores when a single build peaks at 7 GB.
+//
+// breeze already knows every one of these numbers, having just set them. Making a
+// script read them back out of its own cgroup is asking it to rediscover what the
+// thing that limited it could simply have said. (platform, who fixed their own
+// script that way and then pointed out that any pipeline building large binaries on
+// this box has the same problem.)
+func limitEnv(rl *hook.ResourceLimits) []string {
+	if rl == nil {
+		return nil
+	}
+	var out []string
+	add := func(k, v string) {
+		if v != "" {
+			out = append(out, k+"="+v)
+		}
+	}
+	add("BREEZE_CPU_QUOTA", rl.CPUQuota)
+	add("BREEZE_MEMORY_HIGH", rl.MemoryHigh)
+	add("BREEZE_MEMORY_MAX", rl.MemoryMax)
+	if rl.TasksMax > 0 {
+		add("BREEZE_TASKS_MAX", strconv.Itoa(rl.TasksMax))
+	}
+	return out
 }
 
 // stageLockKey names the resource lock a `stage claim` reserves — distinct from

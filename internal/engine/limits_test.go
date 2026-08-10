@@ -218,3 +218,30 @@ func TestIOCapAloneIsNotZero(t *testing.T) {
 		t.Fatal("an empty block must stay zero")
 	}
 }
+
+// A build that reads nproc gets the host's cores, not its grant, and cannot see its
+// memory ceiling at all — which is how a stage came to run seven simultaneous Go
+// builds asking for ~45 GB against a 4 GB soft ceiling. breeze set those limits, so
+// breeze can say what they are instead of making the script rediscover them.
+func TestEffectiveLimitsReachTheStageEnvironment(t *testing.T) {
+	env := limitEnv(&hook.ResourceLimits{
+		CPUQuota: "1400%", MemoryHigh: "12G", MemoryMax: "16G", TasksMax: 1024,
+	})
+	joined := strings.Join(env, " ")
+	for _, want := range []string{
+		"BREEZE_CPU_QUOTA=1400%", "BREEZE_MEMORY_HIGH=12G",
+		"BREEZE_MEMORY_MAX=16G", "BREEZE_TASKS_MAX=1024",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in: %s", want, joined)
+		}
+	}
+	// An unset limit must not appear at all: an empty BREEZE_MEMORY_HIGH would read
+	// as "there is a ceiling and it is nothing", which is worse than absent.
+	if got := limitEnv(&hook.ResourceLimits{CPUQuota: "200%"}); len(got) != 1 {
+		t.Errorf("only the limits that are set may be exported, got %v", got)
+	}
+	if got := limitEnv(nil); got != nil {
+		t.Errorf("no limits means no variables, got %v", got)
+	}
+}

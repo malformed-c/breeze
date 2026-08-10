@@ -488,6 +488,13 @@ type StageInstance struct {
 	// OutputPruned is true when retention dropped this run's captured output. The
 	// verdict is unaffected. See engine.StageInstance.OutputPruned.
 	OutputPruned bool `json:"outputPruned,omitempty"`
+	// MemoryPeak and MemoryHighEvents are read LIVE from a running stage's own
+	// cgroup, not stored: the high-water mark, and how many times the kernel
+	// throttled it against memory_high. Non-zero MemoryHighEvents is the one-word
+	// answer to "why is this stage taking so long" — memory_high degrades instead
+	// of failing, so without this the only symptom is slowness.
+	MemoryPeak       uint64 `json:"memoryPeak,omitempty"`
+	MemoryHighEvents uint64 `json:"memoryHighEvents,omitempty"`
 	// Summary is the stage transform's output — a short rendering of what the raw
 	// output means, when the stage defines one. See engine.StageDef.Transform.
 	Summary string `json:"summary,omitempty"`
