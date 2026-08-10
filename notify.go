@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"breeze/internal/engine"
+	"breeze/internal/hook"
 )
 
 // messSender is who the DAEMON sends as. It has to be explicit: mess resolves a
@@ -159,4 +162,30 @@ func notifyViaMessTopic(topic, message, thread string) {
 		}
 		runMessBestEffort(messPath, oneLineMess(message)+" (to topic "+topic+")", args...)
 	}()
+}
+
+// ioLimitStatus reports, for `breeze status`, that this daemon has an IO limit
+// configured which cannot possibly take effect — empty when there is nothing to say.
+//
+// It is checked and reported rather than silently tolerated because every ordinary
+// signal says the limit worked: systemd-run accepts the property and exits 0, and
+// `systemctl show` reads it back verbatim. Only the cgroup itself disagrees, and
+// nobody looks there. Measured on the host this was written for, the io controller
+// is delegated to the system manager and NOT to the per-user one, so every IO limit
+// a non-root breeze sets is inert — including io_weight, which shipped long before
+// the caps and had been quietly doing nothing.
+//
+// Deliberately silent when no IO limit is configured: an undelegated controller is
+// not a problem for a daemon that never asks for it, and a warning that fires when
+// nothing is wrong is how a warning stops being read.
+func ioLimitStatus(eng *engine.Engine) string {
+	rl := eng.DefaultResourceLimits()
+	if !rl.UsesIO() {
+		return ""
+	}
+	if ok, why := hook.IOControllerAvailable(); !ok {
+		return why + " — the limit is accepted by systemd and reported back by `systemctl show`, but nothing enforces it. " +
+			"Fix by delegating the controller to your user manager: a drop-in for user@.service with `Delegate=cpu io memory pids`, then re-login"
+	}
+	return ""
 }

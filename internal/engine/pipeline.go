@@ -218,6 +218,7 @@ func validateTemplatePlaceholders(tmpl CommandTemplate) error {
 var (
 	cpuQuotaRe   = regexp.MustCompile(`^\d+(\.\d+)?%$`)
 	memorySizeRe = regexp.MustCompile(`^\d+(\.\d+)?([KMGTPE](i?B)?|B)?$`)
+	ioPSRe       = regexp.MustCompile(`^\d+$`)
 )
 
 // validateResourceLimits rejects a malformed limit at registration time rather
@@ -250,10 +251,68 @@ func validateResourceLimits(rl *hook.ResourceLimits) error {
 	if rl.IOWeight != 0 && (rl.IOWeight < 1 || rl.IOWeight > 10000) {
 		return fmt.Errorf("resource_limits: io_weight must be between 1 and 10000")
 	}
+	// The IO caps take systemd's device-qualified form, "PATH VALUE" — a shape that
+	// is easy to get wrong in a way that reads fine ("50M" alone, or "/dev/sda,50M"),
+	// and whose failure is otherwise invisible: an unparseable property makes the
+	// scope fail to start partway through a run, and on a host without the io
+	// controller it does not even do that.
+	for _, m := range []struct {
+		name, value string
+		iops        bool
+	}{
+		{"io_read_bandwidth_max", rl.IOReadBandwidthMax, false},
+		{"io_write_bandwidth_max", rl.IOWriteBandwidthMax, false},
+		{"io_read_iops_max", rl.IOReadIOPSMax, true},
+		{"io_write_iops_max", rl.IOWriteIOPSMax, true},
+	} {
+		if err := validateIOLimit(m.name, m.value, m.iops); err != nil {
+			return err
+		}
+	}
 	if rl.TasksMax < 0 {
 		return fmt.Errorf("resource_limits: tasks_max must be >= 0")
 	}
 	return nil
+}
+
+// validateIOLimit checks one device-qualified IO cap. systemd wants a path and a
+// value separated by whitespace, where the path may be a block device node or any
+// file whose backing device systemd resolves ("/var/lib 50M" is as valid as
+// "/dev/sda 50M"). Shape only, as everywhere else here: breeze does not go looking
+// for the device or decide whether the number is sensible.
+func validateIOLimit(name, value string, iops bool) error {
+	if value == "" {
+		return nil
+	}
+	fields := strings.Fields(value)
+	if len(fields) != 2 {
+		return fmt.Errorf("resource_limits: %s %q must be a device and a value separated by a space, e.g. %q — systemd applies an IO limit per device, so a bare value has nothing to apply to",
+			name, value, ioLimitExample(name, iops))
+	}
+	if !strings.HasPrefix(fields[0], "/") {
+		return fmt.Errorf("resource_limits: %s %q: %q is not a path — give a block device (\"/dev/sda\") or any file on the device you mean (\"/var/lib\"), which systemd resolves to its backing device",
+			name, value, fields[0])
+	}
+	if fields[1] == "max" || fields[1] == "infinity" {
+		return nil
+	}
+	if iops {
+		if !ioPSRe.MatchString(fields[1]) {
+			return fmt.Errorf("resource_limits: %s %q: %q must be a whole number of operations per second, or \"max\"", name, value, fields[1])
+		}
+		return nil
+	}
+	if !memorySizeRe.MatchString(fields[1]) {
+		return fmt.Errorf("resource_limits: %s %q: %q must be a bytes-per-second rate like \"50M\", or \"max\"", name, value, fields[1])
+	}
+	return nil
+}
+
+func ioLimitExample(name string, iops bool) string {
+	if iops {
+		return "/dev/sda 1000"
+	}
+	return "/dev/sda 50M"
 }
 
 func (e *Engine) Pipeline(name string) (*Pipeline, bool) {

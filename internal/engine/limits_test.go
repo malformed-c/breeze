@@ -154,3 +154,67 @@ func TestMergeResourceLimitsIsPerField(t *testing.T) {
 		t.Fatalf("merging must not mutate its inputs")
 	}
 }
+
+// The IO caps take systemd's device-qualified "PATH VALUE" form. A bare value is
+// the natural mistake and it is one systemd would reject partway through a run —
+// or, on a host without the io controller, would not even reject.
+func TestValidateIOCapShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		rl      hook.ResourceLimits
+		wantErr string
+	}{
+		{"bandwidth ok", hook.ResourceLimits{IOWriteBandwidthMax: "/dev/sda 50M"}, ""},
+		{"file path ok", hook.ResourceLimits{IOReadBandwidthMax: "/var/lib 2G"}, ""},
+		{"iops ok", hook.ResourceLimits{IOReadIOPSMax: "/dev/sda 1000"}, ""},
+		{"max ok", hook.ResourceLimits{IOWriteIOPSMax: "/dev/sda max"}, ""},
+		{"bare value", hook.ResourceLimits{IOWriteBandwidthMax: "50M"}, "separated by a space"},
+		{"comma instead of space", hook.ResourceLimits{IOReadBandwidthMax: "/dev/sda,50M"}, "separated by a space"},
+		{"relative device", hook.ResourceLimits{IOReadBandwidthMax: "sda 50M"}, "is not a path"},
+		{"bandwidth not a size", hook.ResourceLimits{IOWriteBandwidthMax: "/dev/sda fast"}, "bytes-per-second"},
+		{"iops not a number", hook.ResourceLimits{IOReadIOPSMax: "/dev/sda 10M"}, "whole number"},
+		{"unset ok", hook.ResourceLimits{}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateResourceLimits(&c.rl)
+			switch {
+			case c.wantErr == "" && err != nil:
+				t.Fatalf("expected %+v to be accepted, got %v", c.rl, err)
+			case c.wantErr != "" && err == nil:
+				t.Fatalf("expected %+v to be rejected", c.rl)
+			case c.wantErr != "" && !strings.Contains(err.Error(), c.wantErr):
+				t.Fatalf("error %q must explain the shape (%q)", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// An IO cap has to reach the systemd-run argv, or it is config that does nothing —
+// which is the whole failure mode this feature had to be careful about.
+func TestIOCapsReachTheSystemdRunArgv(t *testing.T) {
+	_, args := hook.WrapWithSystemdRun("/bin/true", nil, &hook.ResourceLimits{
+		IOReadBandwidthMax: "/dev/sda 50M", IOWriteIOPSMax: "/var/lib 900",
+	})
+	joined := strings.Join(args, " ")
+	for _, want := range []string{
+		"--property=IOReadBandwidthMax=/dev/sda 50M",
+		"--property=IOWriteIOPSMax=/var/lib 900",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in: %s", want, joined)
+		}
+	}
+}
+
+// IsZero decides whether a command gets wrapped at all, so an IO-cap-only block
+// that reported "zero" would be silently dropped before systemd ever saw it.
+func TestIOCapAloneIsNotZero(t *testing.T) {
+	rl := &hook.ResourceLimits{IOWriteBandwidthMax: "/dev/sda 50M"}
+	if rl.IsZero() {
+		t.Fatal("a block setting only an IO cap must still wrap the command")
+	}
+	if !(&hook.ResourceLimits{}).IsZero() {
+		t.Fatal("an empty block must stay zero")
+	}
+}

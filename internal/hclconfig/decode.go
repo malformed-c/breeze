@@ -121,6 +121,12 @@ type ResourceLimitsHCL struct {
 	MemoryHigh string `hcl:"memory_high,optional"`
 	TasksMax   int    `hcl:"tasks_max,optional"`
 	IOWeight   int    `hcl:"io_weight,optional"`
+	// Device-qualified IO caps, systemd's own "PATH VALUE" syntax:
+	//   io_write_bandwidth_max = "/var/lib 50M"
+	IOReadBandwidthMax  string `hcl:"io_read_bandwidth_max,optional"`
+	IOWriteBandwidthMax string `hcl:"io_write_bandwidth_max,optional"`
+	IOReadIOPSMax       string `hcl:"io_read_iops_max,optional"`
+	IOWriteIOPSMax      string `hcl:"io_write_iops_max,optional"`
 }
 
 // RoleHCL is accepted syntactically (so a config file can document the roles a
@@ -379,6 +385,8 @@ func translateResourceLimits(rl *ResourceLimitsHCL) *wire.ResourceLimits {
 		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
 		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
+		IOReadBandwidthMax: rl.IOReadBandwidthMax, IOWriteBandwidthMax: rl.IOWriteBandwidthMax,
+		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax,
 	}
 }
 
@@ -441,6 +449,18 @@ func mergeLimits(own, def *wire.ResourceLimits) *wire.ResourceLimits {
 	}
 	if merged.IOWeight == 0 {
 		merged.IOWeight = def.IOWeight
+	}
+	if merged.IOReadBandwidthMax == "" {
+		merged.IOReadBandwidthMax = def.IOReadBandwidthMax
+	}
+	if merged.IOWriteBandwidthMax == "" {
+		merged.IOWriteBandwidthMax = def.IOWriteBandwidthMax
+	}
+	if merged.IOReadIOPSMax == "" {
+		merged.IOReadIOPSMax = def.IOReadIOPSMax
+	}
+	if merged.IOWriteIOPSMax == "" {
+		merged.IOWriteIOPSMax = def.IOWriteIOPSMax
 	}
 	return &merged
 }

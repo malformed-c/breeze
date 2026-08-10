@@ -47,6 +47,8 @@ func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
 		CPUQuota: w.CPUQuota, CPUWeight: w.CPUWeight,
 		MemoryMax: w.MemoryMax, MemoryHigh: w.MemoryHigh,
 		TasksMax: w.TasksMax, IOWeight: w.IOWeight,
+		IOReadBandwidthMax: w.IOReadBandwidthMax, IOWriteBandwidthMax: w.IOWriteBandwidthMax,
+		IOReadIOPSMax: w.IOReadIOPSMax, IOWriteIOPSMax: w.IOWriteIOPSMax,
 	}
 }
 
@@ -58,6 +60,8 @@ func resourceLimitsToWire(rl *hook.ResourceLimits) *wire.ResourceLimits {
 		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
 		TasksMax: rl.TasksMax, IOWeight: rl.IOWeight,
+		IOReadBandwidthMax: rl.IOReadBandwidthMax, IOWriteBandwidthMax: rl.IOWriteBandwidthMax,
+		IOReadIOPSMax: rl.IOReadIOPSMax, IOWriteIOPSMax: rl.IOWriteIOPSMax,
 	}
 }
 
@@ -245,6 +249,16 @@ func describeLimits(rl *hook.ResourceLimits) string {
 	}
 	if rl.IOWeight > 0 {
 		add("io_weight", strconv.Itoa(rl.IOWeight))
+	}
+	for _, m := range []struct{ name, value string }{
+		{"io_read_bandwidth_max", rl.IOReadBandwidthMax},
+		{"io_write_bandwidth_max", rl.IOWriteBandwidthMax},
+		{"io_read_iops_max", rl.IOReadIOPSMax},
+		{"io_write_iops_max", rl.IOWriteIOPSMax},
+	} {
+		if m.value != "" {
+			add(m.name, m.value)
+		}
 	}
 	return strings.Join(parts, " ")
 }

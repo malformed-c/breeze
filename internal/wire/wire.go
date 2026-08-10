@@ -146,6 +146,12 @@ type PingResponse struct {
 	// identity, mess missing) previously failed identically to a peer being offline
 	// — invisibly, forever. This is where that becomes visible.
 	NotifyProblem string `json:"notifyProblem,omitempty"`
+	// IOLimitProblem is non-empty when an IO limit is configured on this daemon but
+	// the io cgroup controller is not actually available to it — in which case
+	// systemd accepts the property, `systemctl show` echoes it back, and it does
+	// nothing. Carried on ping because it is a fact about the HOST, not the config:
+	// the same pipeline is correctly limited on a machine that delegates io.
+	IOLimitProblem string `json:"ioLimitProblem,omitempty"`
 }
 
 type WhoAmIResponse struct {
@@ -327,6 +333,11 @@ type ResourceLimits struct {
 	MemoryHigh string `json:"memoryHigh,omitempty"`
 	TasksMax   int    `json:"tasksMax,omitempty"`
 	IOWeight   int    `json:"ioWeight,omitempty"`
+	// Device-qualified IO caps ("PATH VALUE"), systemd's own syntax.
+	IOReadBandwidthMax  string `json:"ioReadBandwidthMax,omitempty"`
+	IOWriteBandwidthMax string `json:"ioWriteBandwidthMax,omitempty"`
+	IOReadIOPSMax       string `json:"ioReadIOPSMax,omitempty"`
+	IOWriteIOPSMax      string `json:"ioWriteIOPSMax,omitempty"`
 }
 
 type Hook struct {

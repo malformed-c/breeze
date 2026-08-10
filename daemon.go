@@ -341,7 +341,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 
 	switch req.Op {
 	case wire.OpPing:
-		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, Features: wire.Features(), DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits()), LimitSources: d.eng.LimitSources(), NotifyProblem: notifierStatus()})
+		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, Features: wire.Features(), DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits()), LimitSources: d.eng.LimitSources(), NotifyProblem: notifierStatus(), IOLimitProblem: ioLimitStatus(d.eng)})
 
 	case wire.OpStop:
 		close(d.stop)

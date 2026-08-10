@@ -294,6 +294,52 @@ can't be hit at run time. Everything else is unchanged: a `needs` name that isn'
 declared stage, a forward reference, a self-reference or an unknown `convergence` is
 rejected by `breeze apply`, not discovered mid-run.
 
+#### Capping IO
+
+Alongside `io_weight` (a priority — who yields when the disk is busy) there are four
+caps, which apply whether or not anything else wants the disk:
+
+```hcl
+resource_limits {
+  io_write_bandwidth_max = "/var/lib 50M"
+  io_read_bandwidth_max  = "/var/lib 50M"
+  io_write_iops_max      = "/var/lib 2000"
+  io_read_iops_max       = "/var/lib 2000"
+}
+```
+
+They take systemd's own device-qualified syntax, `"PATH VALUE"` — `PATH` is a block
+device node or any file whose backing device systemd resolves, so `/var/lib` and
+`/dev/sda` are both fine. breeze checks the shape at `breeze apply` (a bare `"50M"`
+with no device is the mistake people actually make) and otherwise passes the value
+through untouched.
+
+**Check `breeze status` before believing them.** On most hosts the `io` cgroup
+controller is delegated to the *system* manager and not to the per-user one, and a
+non-root breeze creates its scopes through the user manager. In that state systemd
+accepts the property, exits 0, and `systemctl show` reads it back verbatim — while
+the cgroup has no `io.max` file at all and nothing is enforced. Measured:
+
+```
+memory.max  536870912        <- MemoryMax applied
+io.max      (no such file)   <- the io controller is not in the cgroup
+systemctl show ... IOReadBandwidthMax=/ 10000000   <- reported anyway
+```
+
+Every ordinary signal says it worked. So if you configure an IO limit on a host that
+cannot apply it, `breeze status` says so and names the fix:
+
+```
+io limits: NOT IN FORCE — the io cgroup controller is not available in this daemon's
+own cgroup (… lists: cpu memory pids) — the limit is accepted by systemd and reported
+back by `systemctl show`, but nothing enforces it. Fix by delegating the controller to
+your user manager: a drop-in for user@.service with `Delegate=cpu io memory pids`,
+then re-login
+```
+
+This applies to `io_weight` too, which shipped long before the caps and had been
+quietly doing nothing on exactly this kind of host.
+
 #### Restarting while work is in flight
 
 `breeze restart daemon` **refuses** while stages are running, and names them:

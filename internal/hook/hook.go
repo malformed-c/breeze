@@ -106,6 +106,56 @@ type ResourceLimits struct {
 	MemoryHigh string // systemd MemoryHigh=, same syntax — soft cap: throttle + reclaim, no kill
 	TasksMax   int    // systemd TasksMax=; 0 = unset
 	IOWeight   int    // systemd IOWeight=, 1-10000; 0 = unset — relative share under contention
+	// The IO CAPS, the counterpart to IOWeight in the same way CPUQuota is to
+	// CPUWeight: a weight only decides who yields under contention and costs
+	// nothing on an idle disk, a cap applies always. Each takes systemd's own
+	// device-qualified syntax — "PATH VALUE", where PATH is a block device node
+	// or any file whose backing device systemd resolves ("/var/lib 50M" is as
+	// valid as "/dev/sda 50M"). Empty = unset.
+	//
+	// Read IMPORTANT: on a typical desktop/server the io controller is NOT
+	// delegated to the per-user systemd manager, so every one of these — and
+	// IOWeight, which shipped before them — is accepted, reported back by
+	// `systemctl show` as if in force, and silently does nothing. See
+	// IOControllerAvailable.
+	IOReadBandwidthMax  string // systemd IOReadBandwidthMax=, e.g. "/dev/sda 50M"
+	IOWriteBandwidthMax string // systemd IOWriteBandwidthMax=
+	IOReadIOPSMax       string // systemd IOReadIOPSMax=, e.g. "/dev/sda 1000"
+	IOWriteIOPSMax      string // systemd IOWriteIOPSMax=
+}
+
+// ioProperties pairs each IO-cap field with its systemd property name, so the
+// wrapper, the validator and the "is any IO limit set" check cannot drift apart by
+// someone adding a fifth field to one of them.
+func (rl *ResourceLimits) ioProperties() []struct{ Property, Value string } {
+	if rl == nil {
+		return nil
+	}
+	return []struct{ Property, Value string }{
+		{"IOReadBandwidthMax", rl.IOReadBandwidthMax},
+		{"IOWriteBandwidthMax", rl.IOWriteBandwidthMax},
+		{"IOReadIOPSMax", rl.IOReadIOPSMax},
+		{"IOWriteIOPSMax", rl.IOWriteIOPSMax},
+	}
+}
+
+// UsesIO reports whether rl asks for anything the io cgroup controller has to
+// provide — the caps above or the older IOWeight. Callers use it to decide whether
+// IOControllerAvailable's answer is worth telling anyone about: on a host with no
+// io limits configured, an undelegated io controller is not a problem.
+func (rl *ResourceLimits) UsesIO() bool {
+	if rl == nil {
+		return false
+	}
+	if rl.IOWeight > 0 {
+		return true
+	}
+	for _, p := range rl.ioProperties() {
+		if p.Value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // IsZero reports whether no limit at all is set — used to decide whether a
@@ -113,7 +163,7 @@ type ResourceLimits struct {
 // like no block.
 func (rl *ResourceLimits) IsZero() bool {
 	return rl == nil || (rl.CPUQuota == "" && rl.CPUWeight == 0 && rl.MemoryMax == "" &&
-		rl.MemoryHigh == "" && rl.TasksMax == 0 && rl.IOWeight == 0)
+		rl.MemoryHigh == "" && rl.TasksMax == 0 && !rl.UsesIO())
 }
 
 // WrapWithSystemdRun rewrites (path, args) into a systemd-run invocation that
@@ -152,6 +202,11 @@ func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string,
 	}
 	if rl.IOWeight > 0 {
 		sdArgs = append(sdArgs, fmt.Sprintf("--property=IOWeight=%d", rl.IOWeight))
+	}
+	for _, p := range rl.ioProperties() {
+		if p.Value != "" {
+			sdArgs = append(sdArgs, "--property="+p.Property+"="+p.Value)
+		}
 	}
 	sdArgs = append(sdArgs, "--", path)
 	sdArgs = append(sdArgs, args...)
@@ -480,4 +535,68 @@ func EnvFor(event, actor, pipeline, stage, commit, environment string, params Pa
 		env = append(env, "BREEZE_PARAM_"+strings.ToUpper(k)+"="+v)
 	}
 	return env
+}
+
+// IOControllerAvailable reports whether the io cgroup controller is actually
+// usable for the scopes this process creates, and if not, why.
+//
+// This exists because the failure it detects is invisible. On a typical
+// desktop/server the io controller is NOT delegated to the per-user systemd
+// manager — `user@.service` gets `cpu memory pids` and nothing else — so an IO
+// limit set through `systemd-run --user` is accepted, exits 0, is echoed back by
+// `systemctl show` as if in force, and does nothing at all. Measured on the
+// machine this was written for:
+//
+//	memory.max  536870912        <- MemoryMax applied
+//	io.max      (no such file)   <- the io controller is not in the cgroup
+//	systemctl show ... IOReadBandwidthMax=/ 10000000   <- reported anyway
+//
+// So every check that would normally catch a bad limit passes. Only reading the
+// cgroup itself tells the truth, which is what this does.
+//
+// A controller cannot appear in a child that its parent does not have, so the
+// controllers available at our own cgroup bound what any scope we create can get.
+// Running as root is the exception worth handling: those scopes go to the SYSTEM
+// manager, where io is normally present even though this process's own cgroup is a
+// user scope — so root's answer comes from the root cgroup instead.
+func IOControllerAvailable() (bool, string) {
+	path := "/sys/fs/cgroup/cgroup.controllers"
+	where := "the system manager's root cgroup"
+	if os.Geteuid() != 0 {
+		own, err := ownCgroupDir()
+		if err != nil {
+			return false, "could not determine this process's cgroup (" + err.Error() + "), so whether io limits apply is unknown"
+		}
+		path = filepath.Join(own, "cgroup.controllers")
+		where = "this daemon's own cgroup"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, "could not read " + path + " (" + err.Error() + "), so whether io limits apply is unknown"
+	}
+	for _, c := range strings.Fields(string(data)) {
+		if c == "io" {
+			return true, ""
+		}
+	}
+	return false, "the io cgroup controller is not available in " + where + " (" + path +
+		" lists: " + strings.Join(strings.Fields(string(data)), " ") + ")"
+}
+
+// ownCgroupDir resolves this process's cgroup v2 directory under /sys/fs/cgroup.
+// Only the unified hierarchy is handled: the "0::" line. On a cgroup v1 host there
+// is no such line and this reports an error, which the caller renders as "unknown"
+// rather than as "unavailable" — a thing breeze cannot determine must not be
+// announced as a thing breeze has determined.
+func ownCgroupDir() (string, error) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(line, "0::"); ok {
+			return filepath.Join("/sys/fs/cgroup", rest), nil
+		}
+	}
+	return "", fmt.Errorf("no unified (0::) entry in /proc/self/cgroup — cgroup v2 is required for resource limits")
 }

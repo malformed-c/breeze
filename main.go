@@ -219,7 +219,9 @@ func usage() {
                                          #   script / interpreter — an inline program body
                                          #     instead of command = [...]; jq, python, sh
                                          #   resource_limits { cpu_quota, memory_max,
-                                         #     tasks_max, io_weight } — caps a stage's or
+                                         #     tasks_max, io_weight,
+                                         #     io_{read,write}_bandwidth_max,
+                                         #     io_{read,write}_iops_max } — caps a stage's or
                                          #     hook's cgroup footprint (same systemd-run
                                          #     --scope wrapper 'exec lock' uses), so a
                                          #     runaway build can't starve the host
@@ -807,6 +809,9 @@ func cmdStatus(p paths, args []string) error {
 		limits += " — set one in " + p.defaults + " for this daemon, or " + p.globalDefaults + " for every daemon on this machine"
 	}
 	fmt.Printf("resource limits (every command this daemon runs): %s\n", limits)
+	if ping.IOLimitProblem != "" {
+		fmt.Printf("io limits: NOT IN FORCE — %s\n", ping.IOLimitProblem)
+	}
 	if ping.NotifyProblem != "" {
 		fmt.Printf("mess notifications: FAILING — %s\n  (stage outcomes are unaffected; nobody is being told about them)\n", ping.NotifyProblem)
 	}
