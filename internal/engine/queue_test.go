@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"breeze/internal/slots"
 )
 
 func queuePipeline(t *testing.T, e *Engine, sleep string) {
@@ -147,6 +149,10 @@ func TestQueueTimeoutFailsWithWhoHasIt(t *testing.T) {
 	e.CancelRunningStages("test over")
 }
 
+// slotHolders lets a test wait for the semaphore itself rather than for a stage
+// status, so "is the slot actually taken" is answered by the thing that decides it.
+func slotHolders(dir string, max int) []slots.Holder { return slots.Holders(dir, max) }
+
 // No budget configured must be exactly the old behavior, not a slower version of it.
 func TestNoQueueConfiguredRunsImmediately(t *testing.T) {
 	e := New()
@@ -157,5 +163,54 @@ func TestNoQueueConfiguredRunsImmediately(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("an unbudgeted stage must not go anywhere near the semaphore, took %s", elapsed)
+	}
+}
+
+// A deploy is what you reach for when something is already broken, so making it
+// wait behind a pile of test runs inverts the priority exactly when it matters —
+// a production deploy sat queued eleven minutes behind an unrelated repo's image
+// build the first evening this budget was on. And the queue buys a deploy nothing:
+// deploys already hold an exclusive (target, environment) lock for their whole
+// duration, so two cannot collide however many slots exist.
+func TestDeployStagesAreQueueExempt(t *testing.T) {
+	e := New()
+	// The occupying stage must actually OCCUPY: examplePipeline's build runs
+	// /bin/true and is gone before the poll below can see it, which made the first
+	// version of this test pass by timing rather than by the exemption.
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"5"}}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := e.RegisterIdentity("dep", ""); err != nil {
+		t.Fatalf("register identity: %v", err)
+	}
+	if err := e.AssignRole("dep", "deployer"); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+	dir := t.TempDir()
+	e.SetQueue(QueueConfig{Dir: dir, StateDir: "/tmp/repo", Max: 1, WaitTimeout: 2 * time.Second})
+
+	// Occupy the only slot with a non-deploy stage and wait until it really holds it.
+	go e.StartCommandStage("release", "build", "abc", "", "ci", "")
+	deadline := time.Now().Add(3 * time.Second)
+	for len(slotHolders(dir, 1)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the occupying stage never took the slot")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The deploy must run anyway rather than waiting out the 2s timeout.
+	start := time.Now()
+	inst, err := e.ForceDeployStage("release", "deploy", "abc", "staging", "dep", "queue exemption check")
+	if err != nil {
+		t.Fatalf("a deploy must not be blocked by the machine budget: %v", err)
+	}
+	if inst.Status != StageSucceeded {
+		t.Fatalf("status = %s (%s)", inst.Status, inst.Error)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the deploy waited %s — it should not have touched the semaphore at all", elapsed)
 	}
 }

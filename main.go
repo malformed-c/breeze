@@ -935,10 +935,17 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 			a.Stage, shortCommitForDisplay(a.Commit), envOrDash(a.Environment), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole, since(a.StartedAt))
 	})
 
-	fmt.Printf("Running now (%d):\n", len(out.Running))
+	// "In flight" rather than "Running": a stage waiting for a machine slot is not
+	// running, and calling it that was the bug — but omitting it was worse, because
+	// this is the view people check to answer "what is this box doing".
+	fmt.Printf("In flight now (%d):\n", len(out.Running))
 	printGroupedByPipeline(out.Running, func(r wire.RunningStage) string { return r.Pipeline }, func(r wire.RunningStage) {
-		fmt.Printf("    %-10s %-10s %-8s actor=%-10s running %s\n",
-			r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, since(r.StartedAt))
+		state := "running"
+		if r.Queued {
+			state = "QUEUED for a slot"
+		}
+		fmt.Printf("    %-10s %-10s %-8s actor=%-10s %s %s\n",
+			r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, state, since(r.StartedAt))
 	})
 
 	fmt.Printf("Recent failures (%d):\n", len(out.RecentFailures))

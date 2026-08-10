@@ -1117,7 +1117,7 @@ func operatorSurfaceToWire(surface engine.OperatorSurface) wire.OperatorSurfaceR
 	for _, r := range surface.Running {
 		out.Running = append(out.Running, wire.RunningStage{
 			Pipeline: r.Pipeline, Stage: r.Stage, Commit: r.Key.Commit, Environment: r.Key.Environment,
-			Actor: r.Actor, StartedAt: r.StartedAt,
+			Actor: r.Actor, StartedAt: r.StartedAt, Queued: r.Queued,
 		})
 	}
 	for _, f := range surface.RecentFailures {

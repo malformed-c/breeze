@@ -22,6 +22,14 @@ type RunningStage struct {
 	Key             StageKey
 	Actor           string
 	StartedAt       time.Time
+	// Queued is true when the stage has passed its gates and is waiting for one of
+	// the machine's stage slots rather than executing. It is listed here rather
+	// than omitted because `breeze operator` is the "what is this machine doing"
+	// view, and a stage nobody can see waiting is the same absence-as-nothing this
+	// whole status was added to remove — I introduced exactly that by adding the
+	// queued state and not teaching this view about it: `status stage` said queued,
+	// the restart guard said queued 9m7s, and operator said "Running now (0)".
+	Queued bool
 }
 
 // RecentFailure is one stage instance that resolved to failed/gate_failed, newest first.
@@ -83,10 +91,11 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 				ApprovalsGiven: len(inst.Approvals), ApprovalsRequired: required, ApproverRole: role,
 				StartedAt: inst.StartedAt,
 			})
-		case StageRunning:
+		case StageRunning, StageQueued:
 			out.Running = append(out.Running, RunningStage{
 				Pipeline: inst.Pipeline, Stage: inst.Stage, Key: inst.Key,
 				Actor: inst.Actor, StartedAt: inst.StartedAt,
+				Queued: inst.Status == StageQueued,
 			})
 		case StageFailed, StageGateFailed:
 			out.RecentFailures = append(out.RecentFailures, RecentFailure{

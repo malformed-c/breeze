@@ -665,6 +665,8 @@ type RunningStage struct {
 	Environment string    `json:"environment,omitempty"`
 	Actor       string    `json:"actor,omitempty"`
 	StartedAt   time.Time `json:"startedAt"`
+	// Queued: waiting for a machine stage slot rather than executing.
+	Queued bool `json:"queued,omitempty"`
 }
 
 type RecentFailure struct {

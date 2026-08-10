@@ -1113,8 +1113,29 @@ func (e *Engine) PipelineStatus(pipelineName, commit string) ([]StageInstance, e
 func (e *Engine) acquireMachineSlot(pipelineName, stageName string, key StageKey, actor string) (*slots.Slot, error) {
 	e.mu.Lock()
 	q := e.queue
+	isDeploy := false
+	if p, ok := e.pipelines[pipelineName]; ok {
+		if i := p.StageIndex(stageName); i >= 0 {
+			isDeploy = p.Stages[i].Type == StageDeploy
+		}
+	}
 	e.mu.Unlock()
 	if q.Max <= 0 {
+		return &slots.Slot{}, nil
+	}
+	// DEPLOYS DO NOT QUEUE. Two reasons, and the second is the one that decides it.
+	//
+	// A deploy is what you do when something is broken, so making it wait behind a
+	// pile of test runs inverts the priority exactly when it matters: a production
+	// deploy sat queued for five and a half minutes behind a build the first evening
+	// this budget was switched on, which is how the exemption got asked for.
+	//
+	// And the queue buys a deploy nothing anyway. Deploys already hold an exclusive
+	// (target, environment) lock for their whole duration, so two of them cannot
+	// collide on the same thing no matter how many slots exist — the collision the
+	// budget prevents is between long CPU-heavy stages, which is what test and sweep
+	// stages are and what a deploy is not.
+	if isDeploy {
 		return &slots.Slot{}, nil
 	}
 
