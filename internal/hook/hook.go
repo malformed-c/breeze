@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,6 +51,13 @@ type Template struct {
 	// ["jq", "-rf"], ["awk", "-f"]. Empty means /bin/sh, or direct execution when
 	// the script carries a shebang.
 	Interpreter []string
+	// UnsetEnv names variables to REMOVE from the inherited environment, before Env
+	// is applied. Not setting a variable is not the same as unsetting it: the child
+	// inherits the parent's, and a daemon that itself runs under breeze passes its
+	// own BREEZE_RUN_DIR straight through — so a stage with no scratch directory
+	// received a path belonging to somebody else's run. Found only because breeze
+	// runs its own test suite as a breeze stage.
+	UnsetEnv []string
 	// ResourceLimits, when set, wraps this command's execution in a transient
 	// systemd scope so a runaway build/test/deploy can't starve the host or
 	// other concurrent work. See ResourceLimits and WrapWithSystemdRun.
@@ -229,6 +237,23 @@ func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string,
 	return "systemd-run", sdArgs
 }
 
+// filterEnv drops the named variables from env. Removing an inherited variable is
+// the only way to express "this does not exist" — appending nothing leaves whatever
+// the parent had, which is confidently wrong rather than absent.
+func filterEnv(env, unset []string) []string {
+	if len(unset) == 0 {
+		return env
+	}
+	out := env[:0:0]
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !slices.Contains(unset, name) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // writeScript materializes an inline Script as a private temp file. 0700 and a
 // per-run file rather than a stable path: two concurrent stages must never share
 // (or race to overwrite) one script, and nothing but this user should be able to
@@ -351,7 +376,7 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		cmd.Stdin = bytes.NewReader(tmpl.Stdin)
 	}
 	cmd.Dir = Substitute(tmpl.Dir, params)
-	cmd.Env = os.Environ()
+	cmd.Env = filterEnv(os.Environ(), tmpl.UnsetEnv)
 	for _, e := range tmpl.Env {
 		cmd.Env = append(cmd.Env, Substitute(e, params))
 	}

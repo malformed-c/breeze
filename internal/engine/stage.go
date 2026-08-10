@@ -974,9 +974,23 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	// was false at the first step, which is why the one team who tried it kept
 	// rolling their own and their directories survived kills that breeze's sweep
 	// would have reaped.
+	scratch := ""
 	if outputDir != "" {
 		if err := os.MkdirAll(RunScratchDir(outputDir), 0o700); err != nil {
-			return hook.Result{ExitCode: -1, Err: fmt.Errorf("creating the stage's scratch directory: %w", err)}, false
+			// UNSET rather than fail the stage, and rather than advertise a path that
+			// is not there. Failing would turn a scratch problem into a total outage
+			// for every stage that never touches scratch — on a disk people are
+			// deliberately filling, which is where this is most likely to happen.
+			// Advertising it anyway is the bug immediately above, in the other
+			// direction. A script written defensively (${BREEZE_RUN_DIR:-...}, or a
+			// writability probe) then takes its own path, which is exactly what the
+			// one team who had to work around the original bug already does.
+			e.mu.Lock()
+			e.audit("stage.scratch_unavailable", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s: %v — BREEZE_RUN_DIR is unset for this run",
+				pipelineName, stageName, key, err))
+			e.mu.Unlock()
+		} else {
+			scratch = RunScratchDir(outputDir)
 		}
 	}
 
@@ -991,7 +1005,11 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		// PID, cleaned in an EXIT trap — which loses its cleanup to exactly the
 		// signals that need it most, and accumulates until the disk fills and
 		// unrelated commands start failing for reasons nobody connects to it.
-		Env:            append(append(append([]string(nil), tmpl.Env...), "BREEZE_RUN_DIR="+RunScratchDir(outputDir)), limitEnv(e.EffectiveLimits(tmpl.ResourceLimits))...),
+		Env: append(append(append([]string(nil), tmpl.Env...), scratchEnv(scratch)...), limitEnv(e.EffectiveLimits(tmpl.ResourceLimits))...),
+		// Explicitly removed when there is no scratch directory: this daemon may
+		// itself be running under breeze, in which case the child would inherit
+		// the OUTER run's BREEZE_RUN_DIR and be handed somebody else's scratch.
+		UnsetEnv:       scratchUnset(scratch),
 		OutputDir:      outputDir,
 		ResourceLimits: e.EffectiveLimits(tmpl.ResourceLimits),
 		// Record which OS process owns this stage while it runs, so a daemon that
@@ -1013,6 +1031,27 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		e.ReleaseLock(lock.ID, actor, true)
 	}
 	return result, wasCancelled
+}
+
+// scratchEnv sets BREEZE_RUN_DIR only when there really is a directory. An
+// environment variable naming a path that does not exist is worse than no variable:
+// the caller cannot tell the difference between "breeze gave me somewhere to work"
+// and "breeze gave me a string", which is precisely how the original bug survived
+// unnoticed for as long as it did.
+// scratchUnset names BREEZE_RUN_DIR for removal when breeze has no directory to
+// offer, so the stage cannot inherit one from whatever launched the daemon.
+func scratchUnset(dir string) []string {
+	if dir == "" {
+		return []string{"BREEZE_RUN_DIR"}
+	}
+	return nil
+}
+
+func scratchEnv(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	return []string{"BREEZE_RUN_DIR=" + dir}
 }
 
 // limitEnv exports the limits a stage is actually running under, so a script can

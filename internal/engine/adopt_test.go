@@ -321,3 +321,57 @@ func TestScratchDirExistsAndIsWritableDuringTheRun(t *testing.T) {
 		t.Errorf("the run directory must be cleaned when the run resolves, still present: %v", entries)
 	}
 }
+
+// If the scratch directory cannot be made, breeze must neither fail the stage nor
+// hand out a path that is not there.
+//
+// Failing would turn a scratch problem into a total outage for every stage that
+// never touches scratch — most likely to happen on a full disk, which is exactly
+// when the rest of the pipeline still needs to run and report. Advertising the path
+// anyway is the original bug in the other direction. Unset lets a defensively
+// written script (${BREEZE_RUN_DIR:-...}) take its own path, which is what the team
+// who had to work around the original bug already does.
+func TestUnavailableScratchUnsetsTheVariableRatherThanFailingTheStage(t *testing.T) {
+	e := New()
+	// Precisely the intended condition: the OUTPUT directory is fine (so the stage
+	// can still write stdout/stderr and genuinely run), and only the scratch
+	// subdirectory cannot be created — here because a FILE already occupies its
+	// name. An output dir that cannot be made is a different, legitimate failure.
+	// The daemon may itself be running under breeze — breeze's own test suite runs
+	// as a breeze stage — so the parent environment can already carry a
+	// BREEZE_RUN_DIR belonging to a DIFFERENT run. Not setting ours would let the
+	// child inherit that one and be handed somebody else's scratch directory, which
+	// is confidently wrong rather than absent. This is how that was found.
+	t.Setenv("BREEZE_RUN_DIR", "/somebody/elses/run/scratch")
+
+	runDir := t.TempDir()
+	e.SetRunDir(runDir)
+	out := filepath.Join(runDir, "release_build_abc")
+	if err := os.MkdirAll(out, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(out, "scratch"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	p := examplePipeline()
+	p.Stages[0].Command = CommandTemplate{
+		Path: "/bin/sh",
+		Args: []string{"-c", `echo "run_dir=[${BREEZE_RUN_DIR-UNSET}]"`},
+	}
+	if err := e.RegisterPipeline(p, "admin"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	inst, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
+	if err != nil {
+		t.Fatalf("an unusable scratch dir must not fail the start: %v", err)
+	}
+	if inst.Status != StageSucceeded {
+		t.Fatalf("a stage that never touches scratch must still run: %s — %s",
+			inst.Status, strings.TrimSpace(string(inst.Stderr)))
+	}
+	if got := strings.TrimSpace(string(inst.Stdout)); got != "run_dir=[UNSET]" {
+		t.Errorf("BREEZE_RUN_DIR must be UNSET rather than naming a path that is not there, got %q", got)
+	}
+}
