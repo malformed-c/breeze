@@ -180,6 +180,16 @@ func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
 	return ch, cancel
 }
 
+// SnapshotNow returns the engine's current state, for a caller that must persist it
+// SYNCHRONOUSLY rather than through the async writer — specifically the shutdown
+// path, where "the write is still queued" and "the write happened" have to stop
+// being indistinguishable before the process is replaced.
+func (e *Engine) SnapshotNow() Snapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.snapshotLocked()
+}
+
 func (e *Engine) snapshotLocked() Snapshot {
 	snap := Snapshot{
 		Seq: e.lockSeq,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -588,5 +589,51 @@ func TestRestartUnguardedWhenIdle(t *testing.T) {
 	d := newTestDaemon()
 	if resp := restartRequest(t, d, false); !resp.OK {
 		t.Fatalf("an idle daemon must restart without --force: %+v", resp)
+	}
+}
+
+// A restart that re-execs with a STALE snapshot comes back believing a finished
+// stage is still Running, finds its runner gone, and records it as orphaned —
+// turning a success into a failure in the queryable state while the audit log still
+// says exitCode=0. That happened to a real deploy: succeeded at 21:25:49, the async
+// writer was still behind when the restart landed, and the reloaded daemon marked it
+// failed. So shutdown must persist SYNCHRONOUSLY, not merely wait and hope.
+//
+// The writer here is deliberately wedged so waitIdle times out, which is the exact
+// condition that produced the incident — a test that only exercised the happy path
+// would pass with or without the fix.
+func TestShutdownPersistsFinalStateEvenWhenTheWriterIsStuck(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+
+	d := &daemonServer{
+		eng:   engine.New(),
+		paths: paths{state: statePath},
+		saver: newSnapshotWriter(statePath),
+		stop:  make(chan struct{}),
+	}
+	// Wedge the async writer: it will never report idle, so waitIdle times out.
+	d.saver.mu.Lock()
+	d.saver.writing = true
+	d.saver.mu.Unlock()
+
+	if _, err := d.eng.RegisterIdentity("late-arrival", ""); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	start := time.Now()
+	d.persistFinalState(50 * time.Millisecond)
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("persistFinalState must be bounded by its wait, took %s", time.Since(start))
+	}
+
+	snap, err := engine.LoadSnapshotFile(statePath)
+	if err != nil {
+		t.Fatalf("nothing was written despite the stuck writer: %v", err)
+	}
+	reloaded := engine.New()
+	reloaded.Load(snap)
+	if _, ok := reloaded.Identity("late-arrival"); !ok {
+		t.Fatal("a mutation made before shutdown must survive even when the async writer never drains; without the synchronous write a finished stage reloads as orphaned")
 	}
 }

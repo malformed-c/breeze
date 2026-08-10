@@ -167,9 +167,7 @@ func runDaemon(p paths, args []string) error {
 				// still be queued in the async writer, and without this, the
 				// flock/socket cleanup (or a restart's re-exec) would proceed while
 				// it was still pending, silently losing that last mutation on reload.
-				if !d.saver.waitIdle(5 * time.Second) {
-					log.Printf("warning: shutting down with a snapshot save still in flight after 5s — some recent state may not persist")
-				}
+				d.persistFinalState(5 * time.Second)
 				syscall.Flock(d.lockFD, syscall.LOCK_UN)
 				syscall.Close(d.lockFD)
 				os.Remove(p.sock)
@@ -1234,4 +1232,28 @@ func queueStatus(eng *engine.Engine) *wire.QueueStatus {
 		out.InUse = append(out.InUse, h.String())
 	}
 	return out
+}
+
+// persistFinalState makes the on-disk snapshot match the engine before the process
+// is torn down or replaced. It waits for the async writer, and then writes
+// SYNCHRONOUSLY regardless of whether that wait succeeded.
+//
+// The wait alone was not enough, and the gap is not "some recent state may not
+// persist" as the old warning put it — it is worse. A restart that re-execs with a
+// stale snapshot comes back believing a finished stage is still Running, finds its
+// runner gone, and records it as ORPHANED: a success rewritten as a failure. That
+// happened to a real deploy — succeeded with exitCode=0 at 21:25:49 per the audit
+// log, the writer was still behind when the restart landed at 21:26:04, and the
+// reloaded daemon marked it failed. The audit log had the truth and the queryable
+// state did not, which is the one thing a coordination daemon must not get wrong.
+//
+// One write of a few hundred KB, and the last thing to happen before the image is
+// replaced: nothing is being served by then, so no later mutation can race it.
+func (d *daemonServer) persistFinalState(wait time.Duration) {
+	if !d.saver.waitIdle(wait) {
+		log.Printf("warning: a snapshot save was still in flight after %s — writing the current state synchronously before shutting down", wait)
+	}
+	if err := engine.SaveSnapshot(d.paths.state, d.eng.SnapshotNow()); err != nil {
+		log.Printf("warning: final snapshot write failed: %v — state on disk may be behind, and a stage that finished may reload as orphaned", err)
+	}
 }
