@@ -93,11 +93,13 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 	if inst.Error != "" {
 		fmt.Fprintf(&section, "\n### Error\n%s\n", inst.Error)
 	}
-	if tail := string(inst.Stdout) + string(inst.Stderr); tail != "" {
-		if len(tail) > 2048 {
-			tail = tail[len(tail)-2048:]
+	if out := string(inst.Stdout) + string(inst.Stderr); out != "" {
+		body, elided := elideMiddle(out, briefHeadBytes, briefTailBytes)
+		heading := "Output"
+		if elided > 0 {
+			heading = fmt.Sprintf("Output (%d bytes elided from the middle — `breeze status stage … --tail N` has all of it)", elided)
 		}
-		fmt.Fprintf(&section, "\n### Output (tail)\n```\n%s\n```\n", tail)
+		fmt.Fprintf(&section, "\n### %s\n```\n%s\n```\n", heading, body)
 	}
 
 	callBriefFnSafely(fn, briefsDir, filename, header.String(), section.String())
@@ -111,4 +113,31 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 func callBriefFnSafely(fn func(dir, filename, header, section string), dir, filename, header, section string) {
 	defer func() { recover() }()
 	fn(dir, filename, header, section)
+}
+
+// briefHeadBytes/briefTailBytes bound what a brief carries. Both ends are kept
+// because the useful line is at neither reliably: `go test` prints a failure where
+// it happens and its summary at the end, so a tail-only excerpt can hold "FAIL" with
+// no package name while the head holds the race report and neither is the whole
+// story.
+const (
+	briefHeadBytes = 1536
+	briefTailBytes = 1536
+)
+
+// elideMiddle keeps the first head and last tail bytes of s and reports how many
+// bytes it dropped between them.
+//
+// The count is the point. A brief previously kept a silent tail: a truncated list of
+// test results and a complete one render identically, so a reader cannot tell whether
+// they are looking at everything. Someone hunting a -race failure could not name the
+// failing package and had no way to know the name had scrolled off rather than never
+// existing — which is the same defect as an undated snapshot or a probe that cannot
+// fail, in the one artifact people reach for when something has just gone red.
+func elideMiddle(s string, head, tail int) (string, int) {
+	if len(s) <= head+tail {
+		return s, 0
+	}
+	elided := len(s) - head - tail
+	return s[:head] + fmt.Sprintf("\n\n... %d bytes elided ...\n\n", elided) + s[len(s)-tail:], elided
 }

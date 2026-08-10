@@ -235,3 +235,38 @@ func TestRecordBriefFailureDoesNotBlockResolution(t *testing.T) {
 		t.Fatalf("inst=%+v err=%v", inst, err)
 	}
 }
+
+// A brief kept a silent tail of the output. A truncated list of test results and a
+// complete one render identically, so someone hunting a -race failure could not name
+// the failing package and had no way to know the name had scrolled off rather than
+// never existing. Same defect as an undated snapshot, in the artifact people reach
+// for when something has just gone red.
+func TestElideMiddleSaysWhatItDropped(t *testing.T) {
+	// Short enough to keep whole: nothing elided, nothing claimed.
+	if got, n := elideMiddle("short", 100, 100); got != "short" || n != 0 {
+		t.Fatalf("output that fits must be untouched, got %q / %d", got, n)
+	}
+
+	// The failing package name is at the START of a go test failure; the summary is
+	// at the END. A tail-only excerpt loses the first, which is exactly what happened.
+	head := "--- FAIL: TestSomething\n    race detected in package foo\n"
+	middle := strings.Repeat("noise\n", 2000)
+	tail := "FAIL\tbreeze/internal/foo\nexit status 1\n"
+	body, elided := elideMiddle(head+middle+tail, 64, 64)
+
+	if elided == 0 {
+		t.Fatal("a truncated brief must report that it truncated")
+	}
+	if !strings.Contains(body, "elided") {
+		t.Errorf("the body must say so where a reader will see it, got: %q", body)
+	}
+	if !strings.Contains(body, "FAIL: TestSomething") {
+		t.Error("the HEAD must survive — the failing test name is at the start, and a tail-only excerpt is what lost it")
+	}
+	if !strings.Contains(body, "exit status 1") {
+		t.Error("the TAIL must survive too — the summary is at the end")
+	}
+	if strings.Contains(body, middle) {
+		t.Error("the middle is what gets dropped")
+	}
+}
