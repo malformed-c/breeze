@@ -236,10 +236,36 @@ func TestEffectiveLimitsReachTheStageEnvironment(t *testing.T) {
 			t.Errorf("missing %q in: %s", want, joined)
 		}
 	}
+	// The same values as plain integers, so a script dividing a budget does not have
+	// to reimplement systemd's suffix rules — the failure that produced "7 concurrent
+	// builds" from a 16G ceiling was shell arithmetic on "16G" yielding 16.
+	for _, want := range []string{
+		"BREEZE_MEMORY_HIGH_BYTES=12884901888", // 12G
+		"BREEZE_MEMORY_MAX_BYTES=17179869184",  // 16G
+		"BREEZE_CPU_QUOTA_PERCENT=1400",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in: %s", want, joined)
+		}
+	}
+	// A value that cannot be parsed exports NOTHING rather than a guess: a wrong
+	// integer gets acted on, an absent variable gets noticed.
+	unparseable := strings.Join(limitEnv(&hook.ResourceLimits{MemoryHigh: "infinity", CPUQuota: "infinity"}), " ")
+	if strings.Contains(unparseable, "_BYTES") || strings.Contains(unparseable, "_PERCENT") {
+		t.Errorf("infinity must not produce a derived integer, got: %s", unparseable)
+	}
+
 	// An unset limit must not appear at all: an empty BREEZE_MEMORY_HIGH would read
 	// as "there is a ceiling and it is nothing", which is worse than absent.
-	if got := limitEnv(&hook.ResourceLimits{CPUQuota: "200%"}); len(got) != 1 {
-		t.Errorf("only the limits that are set may be exported, got %v", got)
+	// Only the limits that are SET may appear — each may contribute its systemd
+	// notation and its derived integer, so assert on WHICH names appear rather than
+	// how many, which was the brittle version.
+	only := strings.Join(limitEnv(&hook.ResourceLimits{CPUQuota: "200%"}), " ")
+	if !strings.Contains(only, "BREEZE_CPU_QUOTA=200%") || !strings.Contains(only, "BREEZE_CPU_QUOTA_PERCENT=200") {
+		t.Errorf("a set limit must export both its notation and its integer, got %q", only)
+	}
+	if strings.Contains(only, "BREEZE_MEMORY") || strings.Contains(only, "BREEZE_TASKS") {
+		t.Errorf("an unset limit must not appear at all, got %q", only)
 	}
 	if got := limitEnv(nil); got != nil {
 		t.Errorf("no limits means no variables, got %v", got)

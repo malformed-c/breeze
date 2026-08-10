@@ -807,3 +807,60 @@ func readCgroupUint(path string) uint64 {
 	v, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
 	return v
 }
+
+// ParseSize converts a systemd byte size ("512M", "2G", "1.5Gi", "8000") into bytes.
+// ok is false for "infinity", an empty string, or anything it cannot parse — callers
+// must then export NOTHING rather than a guess, because a wrong integer is worse
+// than an absent one.
+//
+// This exists so breeze can hand a stage the number instead of the notation. A
+// script that needs to divide a memory ceiling by a per-build figure was doing shell
+// arithmetic on "16G" and getting 16, which produced "7 concurrent builds x 2
+// threads" from a 16 GB budget — and it was caught only because that script printed
+// its derived value next to its inputs, where 16/7 being 2 was visible. One parser
+// here beats N consumers each getting the suffix right; the first of them did not.
+func ParseSize(s string) (uint64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "infinity" {
+		return 0, false
+	}
+	// Strip systemd's optional B / iB tail, remembering that "i" means binary.
+	unit := uint64(1)
+	body := s
+	for suffix, mult := range map[string]uint64{
+		"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40, "P": 1 << 50, "E": 1 << 60,
+	} {
+		for _, tail := range []string{suffix, suffix + "B", suffix + "iB"} {
+			if rest, found := strings.CutSuffix(body, tail); found && rest != "" {
+				unit, body = mult, rest
+				goto parsed
+			}
+		}
+	}
+	body = strings.TrimSuffix(body, "B")
+parsed:
+	f, err := strconv.ParseFloat(strings.TrimSpace(body), 64)
+	if err != nil || f < 0 {
+		return 0, false
+	}
+	return uint64(f * float64(unit)), true
+}
+
+// ParsePercent converts a systemd CPU quota ("1400%", "12.5%") into whole percent.
+// Same contract as ParseSize: no guess when it cannot parse. A script sizing its own
+// parallelism has to do arithmetic on this, and "1400%" is not a number in shell.
+func ParsePercent(s string) (uint64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "infinity" {
+		return 0, false
+	}
+	body, found := strings.CutSuffix(s, "%")
+	if !found {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(body), 64)
+	if err != nil || f < 0 {
+		return 0, false
+	}
+	return uint64(f), true
+}

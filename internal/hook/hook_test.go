@@ -474,3 +474,54 @@ func TestNegativeNiceIsReportedAsInapplicableForANonRootDaemon(t *testing.T) {
 		t.Errorf("the reason must quote what actually happens, got %q", why)
 	}
 }
+
+// A script that has to divide a memory budget cannot do arithmetic on "16G". One did,
+// in shell, and got 16 — sizing itself at seven concurrent builds against a 16 GB
+// ceiling. So breeze parses once instead of leaving every consumer to reimplement
+// systemd's suffix rules.
+func TestParseSizeAndPercent(t *testing.T) {
+	sizes := []struct {
+		in   string
+		want uint64
+		ok   bool
+	}{
+		{"512M", 512 << 20, true},
+		{"2G", 2 << 30, true},
+		{"12G", 12 << 30, true},
+		{"1G", 1 << 30, true},
+		{"8000", 8000, true},
+		{"1024B", 1024, true},
+		{"1GiB", 1 << 30, true},
+		{"1GB", 1 << 30, true},
+		// No guess: a wrong integer gets acted on, an absent variable gets noticed.
+		{"infinity", 0, false},
+		{"", 0, false},
+		{"lots", 0, false},
+		{"G", 0, false},
+	}
+	for _, c := range sizes {
+		got, ok := ParseSize(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("ParseSize(%q) = %d, %v; want %d, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+
+	percents := []struct {
+		in   string
+		want uint64
+		ok   bool
+	}{
+		{"1400%", 1400, true},
+		{"200%", 200, true},
+		{"12.5%", 12, true},
+		{"infinity", 0, false},
+		{"1400", 0, false}, // no % is not a quota; refusing beats guessing
+		{"", 0, false},
+	}
+	for _, c := range percents {
+		got, ok := ParsePercent(c.in)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("ParsePercent(%q) = %d, %v; want %d, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

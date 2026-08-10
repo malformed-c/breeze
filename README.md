@@ -451,8 +451,22 @@ BREEZE_CPU_QUOTA=1400%   BREEZE_MEMORY_HIGH=12G
 BREEZE_MEMORY_MAX=16G    BREEZE_TASKS_MAX=1024
 ```
 
+Each set limit also arrives as a **plain integer**, because a script that has to
+divide a budget cannot do arithmetic on `"16G"`:
+
+```sh
+BREEZE_MEMORY_HIGH_BYTES=17179869184   BREEZE_MEMORY_MAX_BYTES=…
+BREEZE_CPU_QUOTA_PERCENT=1400
+```
+
+One consumer did shell arithmetic on the notation and got `16`, sizing itself against
+a budget it had misread by nine orders of magnitude. One parser here beats N consumers
+each reimplementing systemd's suffix rules, and the first of them got it wrong.
+
 Only limits that are actually set appear — an empty `BREEZE_MEMORY_HIGH` would read
-as "there is a ceiling and it is nothing", which is worse than absent.
+as "there is a ceiling and it is nothing", which is worse than absent. A value that
+cannot be parsed (or `infinity`) exports no integer at all rather than a guess: a
+wrong number gets acted on, an absent variable gets noticed.
 
 This is not hypothetical tidiness. A stage sized its own parallelism at `cores/2`,
 which meant seven simultaneous Go builds asking for ~45 GB against a 4 GB soft

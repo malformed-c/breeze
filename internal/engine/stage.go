@@ -1086,6 +1086,23 @@ func limitEnv(rl *hook.ResourceLimits) []string {
 	if rl.TasksMax > 0 {
 		add("BREEZE_TASKS_MAX", strconv.Itoa(rl.TasksMax))
 	}
+	// And the same values as PLAIN INTEGERS, because a script that has to divide a
+	// budget cannot do arithmetic on "16G" or "1400%". One did, in shell, and got 16
+	// — sizing itself at seven concurrent builds against a 16 GB ceiling. Exporting
+	// the notation alone leaves every consumer to reimplement systemd's suffix rules
+	// correctly, and the first one did not.
+	//
+	// Nothing is exported when a value cannot be parsed or is "infinity": a wrong
+	// integer would be acted on, where an absent variable is noticed.
+	if v, ok := hook.ParseSize(rl.MemoryHigh); ok {
+		add("BREEZE_MEMORY_HIGH_BYTES", strconv.FormatUint(v, 10))
+	}
+	if v, ok := hook.ParseSize(rl.MemoryMax); ok {
+		add("BREEZE_MEMORY_MAX_BYTES", strconv.FormatUint(v, 10))
+	}
+	if v, ok := hook.ParsePercent(rl.CPUQuota); ok {
+		add("BREEZE_CPU_QUOTA_PERCENT", strconv.FormatUint(v, 10))
+	}
 	return out
 }
 
