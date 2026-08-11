@@ -185,11 +185,15 @@ func usage() {
                                          --as NAME -- <command...>
                                          # bounds the command's cgroup footprint via a
                                          # transient systemd-run --scope wrapper.
-                                         # quota/max are hard CAPS (apply even on an idle
-                                         # box); weight is a PRIORITY (only bites under
-                                         # contention — the one you want when CI shares a
-                                         # host with something that must stay responsive);
-                                         # memory-high throttles instead of OOM-killing
+                                         # quota/max bite even on an idle box; weight is a
+                                         # PRIORITY (only bites under contention — the one
+                                         # you want when CI shares a host with something
+                                         # that must stay responsive); memory-high
+                                         # throttles instead of OOM-killing.
+                                         # These flags are the WHOLE limit for this command:
+                                         # the daemon's defaults.hcl covers commands the
+                                         # DAEMON runs, and "exec lock" runs yours locally,
+                                         # so an unflagged command here is unlimited
   release lock <lock-id> --as NAME [--force]
   release locks --as NAME               # release every lock (any kind) NAME holds
   renew lock <lock-id> [--ttl D] --as NAME
