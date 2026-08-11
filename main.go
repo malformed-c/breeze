@@ -126,7 +126,12 @@ func exitCode(err error) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: breeze <verb> <noun> [args]
+	fmt.Fprintln(os.Stderr, usageText)
+}
+
+// Held as a constant, not inlined into usage(), so TestEveryRouteIsDocumented can
+// assert against the text users actually see rather than a copy of it that drifts.
+const usageText = `usage: breeze <verb> <noun> [args]
 
 -- daemon lifecycle --
   start daemon                          run the daemon in the foreground for THIS
@@ -168,7 +173,13 @@ func usage() {
                                          (self-service, no token needed)
   assign role <role> <identity> --as ADMIN --token T
   revoke role <role> <identity> --as ADMIN --token T
-  list roles [--json]
+  list roles [--json]                    who holds which role — the RBAC view
+  list identities [--json]               the whole identity record per row: roles, whether
+                                         a token is live, which mess agent breeze notifies,
+                                         and when it registered. "list roles" shows only
+                                         name+roles and "ps" pairs identities with locks;
+                                         this is the one that answers "is this identity
+                                         actually wired up?"
   check auth [--as NAME] [--token T] [--role R] [--json]
                                          read-only: is this credential valid (and, with
                                          --role, does it hold that role)? The probe for
@@ -294,8 +305,7 @@ func usage() {
                                          D = reconnect delay
 
 The pre-swap noun-first spellings (breeze stage start, breeze lock acquire, ...)
-still work and point at their replacement.`)
-}
+still work and point at their replacement.`
 
 // --- flag helpers (small, ad hoc — breeze payloads are structured, not free text,
 // so mess's flag-hoisting/stdin-as-body machinery is deliberately not ported) ---
@@ -1366,9 +1376,78 @@ func cmdPs(p paths, args []string) error {
 	return nil
 }
 
+// listIdentities renders what `list roles` has been discarding. The daemon has
+// always sent the whole IdentityInfo — name, roles, registration time, whether a
+// live token exists, the mess target, the notify opt-out — and the roles view prints
+// two columns of it, so four computed-and-transmitted fields had no reader.
+//
+// The mess target is the one worth surfacing. breeze identities and mess agents are
+// separate namespaces and nothing said so: every notifier failure on this machine in
+// one day was an identity whose name is not a live mess agent, and the daemon
+// reported it only as "mess notifications: FAILING" in `breeze status` — the command
+// you run once you are already suspicious. Here it is a column you cannot help
+// seeing when you look at who exists.
+//
+// HasToken matters for the same reason in the other direction: an identity with no
+// live token cannot act, and "registered" and "usable" are not the same state.
+func listIdentities(p paths, f flagSet) error {
+	req, err := readRequest(p, f, wire.OpRoleList, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := call(p, req)
+	if err != nil {
+		return err
+	}
+	out, err := decodePayload[wire.RoleListResponse](resp)
+	if err != nil {
+		return err
+	}
+	if f.jsonOut {
+		printJSON(out)
+		return nil
+	}
+	if len(out.Identities) == 0 {
+		fmt.Println("no identities registered — `breeze register identity <name>` creates one")
+		return nil
+	}
+	// Widths from the data, so a long name or role set does not shear the columns
+	// to the right of it — this is a table people scan for one row.
+	nameW, roleW, targetW := len("IDENTITY"), len("ROLES"), len("MESS TARGET")
+	rows := make([][5]string, 0, len(out.Identities))
+	for _, id := range out.Identities {
+		roles := strings.Join(id.Roles, ",")
+		if roles == "" {
+			roles = "—"
+		}
+		token := "none"
+		if id.HasToken {
+			token = "live"
+		}
+		// An empty MessAgent means breeze notifies this identity under its own name.
+		// Rendered as "= name" rather than repeating the first column, because the
+		// thing worth spotting is the row where it DIFFERS or is absent.
+		target := "= name"
+		switch {
+		case id.NotifyOptOut:
+			target = "(opted out)"
+		case id.MessAgent != "":
+			target = id.MessAgent
+		}
+		r := [5]string{id.Name, roles, token, target, id.RegisteredAt.Format("2006-01-02 15:04")}
+		nameW, roleW, targetW = max(nameW, len(r[0])), max(roleW, len(r[1])), max(targetW, len(r[3]))
+		rows = append(rows, r)
+	}
+	fmt.Printf("%-*s  %-*s  %-5s  %-*s  %s\n", nameW, "IDENTITY", roleW, "ROLES", "TOKEN", targetW, "MESS TARGET", "REGISTERED")
+	for _, r := range rows {
+		fmt.Printf("%-*s  %-*s  %-5s  %-*s  %s\n", nameW, r[0], roleW, r[1], r[2], targetW, r[3], r[4])
+	}
+	return nil
+}
+
 func cmdIdentity(p paths, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: breeze register identity | revoke identity | notify identity ...")
+		return fmt.Errorf("usage: breeze list identities | register identity | revoke identity | notify identity ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
@@ -1376,6 +1455,8 @@ func cmdIdentity(p paths, args []string) error {
 		return err
 	}
 	switch sub {
+	case "list":
+		return listIdentities(p, f)
 	case "register":
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze register identity <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")

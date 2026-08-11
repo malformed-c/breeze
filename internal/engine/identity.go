@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 // ErrAuth is returned for any identity/token failure. Deliberately generic — it never
@@ -131,6 +133,14 @@ func (e *Engine) Identity(name string) (*Identity, bool) {
 	return &cp, true
 }
 
+// Identities returns every registered identity, SORTED BY NAME.
+//
+// Sorted because this is rendered as a table people read and compare, and Go's map
+// iteration order is deliberately randomised: three consecutive `breeze list roles`
+// runs against unchanged state produced three different orderings, so two listings
+// could not be diffed and a row appearing to move meant nothing. Same defect as an
+// undated snapshot — two reads of one state that do not render alike — in the view
+// whose whole job is telling you who exists.
 func (e *Engine) Identities() []Identity {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -138,6 +148,7 @@ func (e *Engine) Identities() []Identity {
 	for _, id := range e.identities {
 		out = append(out, *id)
 	}
+	slices.SortFunc(out, func(a, b Identity) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 

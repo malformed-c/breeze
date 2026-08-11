@@ -43,6 +43,7 @@ var routes = []route{
 	{verb: "assign", nouns: []string{"role"}, legacy: []string{"role", "assign"}},
 	{verb: "revoke", nouns: []string{"role"}, legacy: []string{"role", "revoke"}},
 	{verb: "list", nouns: []string{"roles", "role"}, legacy: []string{"role", "list"}},
+	{verb: "list", nouns: []string{"identities", "identity"}, legacy: []string{"identity", "list"}},
 	{verb: "check", nouns: []string{"auth"}, legacy: []string{"auth", "check"}},
 
 	// locks

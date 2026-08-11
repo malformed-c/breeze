@@ -1,0 +1,38 @@
+# `list identities` is the full identity record per row — the view `list roles`
+# (name+roles only) and `ps` (identities paired with locks) each show part of.
+# This covers the rendering end-to-end against a real daemon, including the two
+# things that are invisible in a single run: sort order and the mess-target column.
+env BREEZE_DIR=$WORK/state
+
+# Registered deliberately out of alphabetical order, so insertion order and sorted
+# order differ. Before Identities() sorted, this table came back in a different
+# order on every call — nothing errored, it just rendered differently each time.
+exec breeze register identity zeta
+exec breeze register identity alpha
+cp stdout alpha.token
+exec breeze register identity mid --mess-agent other-agent
+
+exec breeze list identities
+stdout 'IDENTITY[\s\S]*ROLES[\s\S]*TOKEN[\s\S]*MESS TARGET[\s\S]*REGISTERED'
+# Sorted by name: alpha, then mid, then zeta — NOT the order they registered in.
+stdout 'alpha[\s\S]*mid[\s\S]*zeta'
+
+# An identity with no explicit --mess-agent notifies under its own name; one with
+# a mapping shows the agent it actually resolves to. The row worth spotting is the
+# one that DIFFERS, so the default is rendered "= name" rather than repeated.
+stdout 'alpha[\s\S]*= name'
+stdout 'mid[\s\S]*other-agent'
+
+# Every identity here was minted with a token, so none should read "none".
+! stdout 'alpha\s+\S*\s+none'
+
+# Same data, machine-readable — the flag every other list command takes.
+exec breeze list identities --json
+stdout '"name":\s*"alpha"'
+stdout '"messAgent":\s*"other-agent"'
+
+# The singular noun routes to the same place (see route.go's nouns list).
+exec breeze list identity
+stdout 'IDENTITY'
+
+exec breeze stop

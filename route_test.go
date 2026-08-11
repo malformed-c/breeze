@@ -118,6 +118,38 @@ func TestCanonicalizeRejectsBadNoun(t *testing.T) {
 	}
 }
 
+// A command that routes but isn't in `breeze help` is invisible: it works for
+// whoever added it and nobody else. The route table is the definition of what
+// exists, so it is also the checklist help has to cover.
+//
+// Matching is line-START, not substring. Substring gives false passes — "list
+// identities" occurs inside ps's description ("list identities and locks"), which
+// is exactly how this gap survived review until the check was tightened. Brackets
+// are stripped so the optional-noun spelling ("stop [daemon]") still counts.
+func TestEveryRouteIsDocumented(t *testing.T) {
+	stripped := make([]string, 0, 200)
+	for line := range strings.SplitSeq(usageText, "\n") {
+		line = strings.TrimSpace(line)
+		stripped = append(stripped, strings.NewReplacer("[", "", "]", "").Replace(line))
+	}
+	for _, r := range routes {
+		if len(r.nouns) == 0 {
+			continue
+		}
+		canon := r.verb + " " + r.nouns[0] // canonical spelling is verb + plural noun
+		documented := false
+		for _, line := range stripped {
+			if strings.HasPrefix(line, canon) {
+				documented = true
+				break
+			}
+		}
+		if !documented {
+			t.Errorf("route %q is undocumented — add a line to usageText starting with it", canon)
+		}
+	}
+}
+
 // Every route must reach a command the dispatch switch in main() actually has,
 // and no two routes may claim the same verb+noun.
 func TestRoutesAreWellFormed(t *testing.T) {
