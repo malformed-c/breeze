@@ -102,14 +102,24 @@ const (
 // otherwise idle machine, so a build capped at 4 cores leaves 24 idle whether or
 // not anything else wants them. A PRIORITY (CPUWeight, IOWeight) only bites
 // under actual contention — the command gets everything that's free and yields
-// when something else needs it. For "CI must not starve the control plane
+// when something else needs it.
+//
+// "UNCONDITIONALLY" HERE MEANS "REGARDLESS OF CONTENTION", NOT "REGARDLESS OF
+// CONFIGURATION", and the two get conflated: a cap bounds the COMMAND it is applied
+// to, and says nothing about whether a more specific level may set a larger one. It
+// may — merging is per-field substitution (see engine.MergeResourceLimits), so a
+// stage declaring cpu_quota = "2800%" under a machine default of "1400%" is given
+// 2800% and the kernel writes cpu.max = 2800000 100000 for it. Two artifacts on this
+// machine asserted the containment reading and one of them was load-bearing for
+// capacity arithmetic, so the axis this paragraph is silent about is named here
+// rather than left to be inferred from the word "cap". For "CI must not starve the control plane
 // sharing this box" the priority knobs are usually what's wanted, alone or
 // alongside a generous cap; for "this build must never exceed what I budgeted"
 // the caps are. MemoryHigh sits between: a soft ceiling that throttles and
 // reclaims rather than killing, so it degrades instead of failing the way
 // MemoryMax's OOM kill does.
 type ResourceLimits struct {
-	CPUQuota   string // systemd CPUQuota=, e.g. "200%" for 2 cores — a hard cap
+	CPUQuota   string // systemd CPUQuota=, e.g. "200%" for 2 cores — a hard ceiling on THIS command
 	CPUWeight  int    // systemd CPUWeight=, 1-10000 (default 100); 0 = unset — relative share under contention
 	MemoryMax  string // systemd MemoryMax=, e.g. "512M", "2G" — hard cap, OOM-kills past it
 	MemoryHigh string // systemd MemoryHigh=, same syntax — soft cap: throttle + reclaim, no kill
