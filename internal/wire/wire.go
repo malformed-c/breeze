@@ -102,11 +102,15 @@ const (
 	// breeze rather than a true one about that daemon. A misleading refusal sends
 	// someone off to change their pipeline; a version answer sends them to restart.
 	FeatureForceCommandStage = "force-command-stage"
+	// FeatureStageEnv means this daemon enforces StageDef.RequiresEnv and accepts
+	// StageStartRequest.Set. Same skew hazard as FeatureStageLock: silently dropped,
+	// the pipeline declares a required declaration nobody is ever asked for.
+	FeatureStageEnv = "stage-env"
 )
 
 // Features is what a daemon built from this source advertises.
 func Features() []string {
-	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard, FeatureForceCommandStage}
+	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard, FeatureForceCommandStage, FeatureStageEnv}
 }
 
 // CodeLockConflict marks a failure caused purely by someone else holding a
@@ -418,6 +422,13 @@ type StageDef struct {
 	// pipeline that LOOKS serialized and is not — the failure mode the feature
 	// exists to prevent, reintroduced by version skew.
 	RequiresLock string `json:"requiresLock,omitempty"`
+	// RequiresEnv names values the caller must supply with --set for this stage to
+	// start. See engine.StageDef.RequiresEnv. Advertised as FeatureStageEnv for the
+	// same reason as RequiresLock: an older daemon drops it silently, leaving a
+	// pipeline whose config declares a required declaration and whose daemon asks
+	// for nothing — which is worse than not having the gate, because the config
+	// reads as though the gate is there.
+	RequiresEnv []string `json:"requiresEnv,omitempty"`
 	// LeavesProcesses: this stage deliberately leaves work running after its
 	// command exits, so survivors are recorded but not reaped.
 	LeavesProcesses bool `json:"leavesProcesses,omitempty"`
@@ -521,6 +532,10 @@ type StageStartRequest struct {
 	// review/env-dependency/staleness gates, keeping RBAC, the exclusivity lock and
 	// pre-gate hooks. Requires Brief. See engine.ForceDeployStage.
 	Force bool `json:"force,omitempty"`
+	// Set carries the values a stage declared in requires_env. Only DECLARED names
+	// are accepted and exported; anything else is refused rather than quietly added
+	// to the environment of a command the daemon runs.
+	Set map[string]string `json:"set,omitempty"`
 }
 type StageStartResponse struct {
 	Instance StageInstance `json:"instance"`

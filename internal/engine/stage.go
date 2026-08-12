@@ -197,6 +197,86 @@ func (e *Engine) checkRequiredLock(s StageDef, actor string) (bool, string) {
 		s.Name, s.RequiresLock, actor, s.RequiresLock)
 }
 
+// StageOption customizes a stage start. Variadic rather than a signature change
+// because StartCommandStage alone has ~120 call sites, nearly all tests, and
+// burying a gate in that much churn is how a gate stops being reviewable.
+type StageOption func(*stageOpts)
+
+type stageOpts struct {
+	set map[string]string
+}
+
+// WithEnv supplies the values a stage declared in requires_env.
+func WithEnv(set map[string]string) StageOption {
+	return func(o *stageOpts) { o.set = set }
+}
+
+func newStageOpts(opts []StageOption) stageOpts {
+	var o stageOpts
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return o
+}
+
+// checkRequiredEnv is Gate 4: every name the stage declares in RequiresEnv must
+// have been supplied by the caller. Stages that declare none always pass, so this
+// is inert for every pipeline that hasn't opted in. Must be called with e.mu held.
+//
+// Checks SET, never GOOD — no daemon can know what a given change needs measured,
+// and a gate that judged would be one people route around. A declared skip
+// ("none: docs-only roll") is a perfectly good answer and is the entire point: it
+// makes "nothing to measure" something you TYPE rather than something you drift
+// into.
+//
+// Undeclared names are refused rather than ignored. These values land in the
+// environment of a command the daemon runs, so accepting arbitrary ones would let
+// any caller set PATH or LD_PRELOAD for it; and silently dropping a name the
+// caller believed they had set is the same silence this whole feature exists to
+// remove.
+func checkRequiredEnv(s StageDef, set map[string]string) (bool, string) {
+	for name := range set {
+		if !slices.Contains(s.RequiresEnv, name) {
+			return false, fmt.Sprintf("stage %q does not declare %q in requires_env — breeze only passes through values a stage asks for, so this would have been silently ignored (declared: %s)",
+				s.Name, name, declaredList(s.RequiresEnv))
+		}
+	}
+	var missing []string
+	for _, name := range s.RequiresEnv {
+		if strings.TrimSpace(set[name]) == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return true, ""
+	}
+	slices.Sort(missing) // map iteration otherwise; a refusal that reorders reads as a different refusal
+	return false, fmt.Sprintf("stage %q requires %s to be declared at trigger time — supply it with --set %s=VALUE. breeze does not check WHAT you set, only that you said something: a deliberate skip (--set %s=\"none: docs-only roll\") is a valid answer",
+		s.Name, strings.Join(missing, ", "), missing[0], missing[0])
+}
+
+// declaredEnv renders the caller's requires_env answers as NAME=VALUE. Sorted:
+// map iteration is randomized, and an environment whose order changes per run
+// makes two identical stages produce diffs that mean nothing.
+func declaredEnv(set map[string]string) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for name, v := range set {
+		out = append(out, name+"="+v)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func declaredList(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
 // registerRunningCancel/unregisterRunningCancel let a goroutine currently blocked
 // in hook.Run advertise a way to interrupt it — called WITHOUT e.mu held (they take
 // the lock themselves), bracketing the hook.Run call the same way a defer would.
@@ -359,8 +439,8 @@ func gateErr(format string, args ...any) error {
 // the result. Retry semantics: calling this again on an existing (non-running)
 // instance re-runs every check from scratch. Pre/post hooks are wired in a later
 // step; this only runs the stage's own Command.
-func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
-	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, false)
+func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment, actor, brief string, opts ...StageOption) (*StageInstance, error) {
+	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, false, opts...)
 }
 
 // ForceCommandStage is the command-stage counterpart of ForceDeployStage: it skips
@@ -382,17 +462,18 @@ func (e *Engine) StartCommandStage(pipelineName, stageName, commit, environment,
 // brief is mandatory for the same reason it is on a forced deploy: the record is the
 // entire point, and a forced run nobody wrote a reason for is the one every
 // post-mortem asks about.
-func (e *Engine) ForceCommandStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+func (e *Engine) ForceCommandStage(pipelineName, stageName, commit, environment, actor, brief string, opts ...StageOption) (*StageInstance, error) {
 	if strings.TrimSpace(brief) == "" {
 		return nil, gateErr("a forced run requires a written reason: pass --brief \"why this is running without its gates\"")
 	}
 	e.mu.Lock()
 	e.audit("stage.command.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
 	e.mu.Unlock()
-	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, true)
+	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, true, opts...)
 }
 
-func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment, actor, brief string, force bool) (*StageInstance, error) {
+func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment, actor, brief string, force bool, opts ...StageOption) (*StageInstance, error) {
+	so := newStageOpts(opts)
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
@@ -445,6 +526,13 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		}
 	}
 	if ok, reason := e.checkRequiredLock(stage, actor); !ok {
+		e.mu.Unlock()
+		return nil, gateErr("%s", reason)
+	}
+	// Gate 4: the caller must have declared whatever this stage asks for. Checked
+	// alongside the other gates, before anything runs, so a missing declaration
+	// costs nothing but the refusal.
+	if ok, reason := checkRequiredEnv(stage, so.set); !ok {
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
 	}
@@ -516,7 +604,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		return nil, err
 	}
 
-	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, tmpl, timeout, params)
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, so.set, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
@@ -950,7 +1038,7 @@ func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*
 // FileLock.ManualClaim). A normal completion (success or failure) always
 // releases regardless, matching the long-established behavior for both command
 // and deploy stages. Shared by StartCommandStage and runDeployStage.
-func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor, brief string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
+func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor, brief string, set map[string]string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
 	runKey := instanceKey(pipelineName, stageName, key)
 	e.mu.Lock()
 	outputDir := e.runOutputDir(pipelineName, stageName, key)
@@ -1045,6 +1133,11 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 				Commit: key.Commit, Environment: key.Environment,
 				Actor: actor, Brief: brief,
 			}.Env(),
+			// The requires_env declarations. A gate that forces a declaration the
+			// script cannot then read would be pure ceremony — the point is that the
+			// answer reaches the thing that needs it. Already validated against the
+			// stage's declared names, so this cannot introduce PATH or LD_PRELOAD.
+			declaredEnv(set),
 		),
 		// Explicitly removed when there is no scratch directory: this daemon may
 		// itself be running under breeze, in which case the child would inherit

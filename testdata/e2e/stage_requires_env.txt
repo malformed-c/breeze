@@ -1,0 +1,100 @@
+# A stage can require the CALLER to declare something before it will start. The
+# incident: a deploy convention ("take a pre-roll reading") written into a memory,
+# then into AGENTS.md, and then broken twice in four hours by the person who wrote
+# it. Two of three greens for one commit therefore rest on a binary nobody had a
+# before/after for, and those readings cannot be retaken.
+#
+# The script-side version of this gate blocked EVERY deploy on the machine for half
+# an hour, because a stage command inherits the DAEMON's environment — a variable
+# exported in the operator's shell never reaches it, so the gate was unsatisfiable.
+# Hence --set: the declaration travels with the trigger, not with a shell.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze register identity peri
+cp stdout peri.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# Legible before you trip over it, same as requires_lock: a status query has no
+# caller, so it cannot answer "did they declare it" either.
+exec breeze show pipeline guarded
+stdout 'requires env: PREROLL_CONTROL'
+
+# No declaration: refused, and the refusal says what is missing AND how to answer.
+! exec breeze start stage guarded roll abc123 --as peri --token-file peri.token
+stderr 'PREROLL_CONTROL'
+stderr '--set'
+
+# An empty declaration is not a declaration.
+! exec breeze start stage guarded roll abc123 --set PREROLL_CONTROL= --as peri --token-file peri.token
+stderr 'PREROLL_CONTROL'
+
+# A real reading satisfies it.
+exec breeze start stage guarded roll abc123 --set PREROLL_CONTROL=/tmp/before.txt --as peri --token-file peri.token
+stdout 'succeeded'
+
+# So does a DECLARED SKIP — breeze checks that you said something, never that it is
+# any good. No script can know what a given change needs measured; the point is that
+# "none" is something you type rather than something you drift into.
+exec breeze start stage guarded roll def456 --set PREROLL_CONTROL='none: docs-only roll' --as peri --token-file peri.token
+stdout 'succeeded'
+
+# A name the stage never declared is REFUSED, not quietly ignored: these values land
+# in the environment of a command the daemon runs.
+! exec breeze start stage guarded roll aaa111 --set PREROLL_CONTROL=x --set LD_PRELOAD=/tmp/evil.so --as peri --token-file peri.token
+stderr 'LD_PRELOAD'
+
+# --set that is not NAME=VALUE is caught client-side, before anything is triggered.
+! exec breeze start stage guarded roll bbb222 --set PREROLL_CONTROL --as peri --token-file peri.token
+stderr 'NAME=VALUE'
+
+# *** AND THE VALUE ACTUALLY REACHES THE COMMAND. *** A gate that forces a
+# declaration the script cannot then read would be pure ceremony — the answer has to
+# arrive at the thing that needs it. This stage exits 0 only if it does.
+exec breeze start stage guarded consume ccc333 --set PREROLL_CONTROL=/tmp/before.txt --as peri --token-file peri.token
+stdout 'succeeded'
+
+# Inert for every pipeline written before this existed.
+exec breeze start stage guarded plain abc123 --as peri --token-file peri.token
+stdout 'succeeded'
+
+# On an approval stage the value would reach nothing, so the config would claim a
+# discipline it does not have. Refused where someone is looking at the file.
+! exec breeze apply -f bad.hcl --as admin --token-file admin.token
+stderr 'requires_env is not meaningful on an approval stage'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "guarded" {
+  stage "roll" {
+    type         = "command"
+    requires_env = ["PREROLL_CONTROL"]
+    timeout      = "10s"
+    command      = ["/bin/true"]
+  }
+  stage "consume" {
+    type         = "command"
+    needs        = []
+    requires_env = ["PREROLL_CONTROL"]
+    timeout      = "10s"
+    command      = ["/bin/sh", "-c", "test \"$PREROLL_CONTROL\" = /tmp/before.txt"]
+  }
+  stage "plain" {
+    type    = "command"
+    needs   = []
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+}
+
+-- bad.hcl --
+pipeline "wrong" {
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+    requires_env       = ["PREROLL_CONTROL"]
+  }
+}

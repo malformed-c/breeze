@@ -119,7 +119,7 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		Timeout:     d,
 		Debug:       w.Debug,
 		Needs:       w.Needs,
-		Convergence: engine.Convergence(w.Convergence), RequiresLock: w.RequiresLock,
+		Convergence: engine.Convergence(w.Convergence), RequiresLock: w.RequiresLock, RequiresEnv: w.RequiresEnv,
 		LeavesProcesses: w.LeavesProcesses,
 	}
 	if w.Transform != nil {
@@ -149,7 +149,7 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 	w := wire.StageDef{
 		Name: s.Name, Type: string(s.Type), Command: commandTemplateToWire(s.Command),
 		PreGate: hooksToWire(s.PreGate), PostAction: hooksToWire(s.PostAction), Timeout: s.Timeout.String(),
-		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence), RequiresLock: s.RequiresLock,
+		Debug: s.Debug, Needs: s.Needs, Convergence: string(s.Convergence), RequiresLock: s.RequiresLock, RequiresEnv: s.RequiresEnv,
 		LeavesProcesses: s.LeavesProcesses,
 	}
 	if s.Transform != nil {

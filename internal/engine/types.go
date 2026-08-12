@@ -203,6 +203,27 @@ type StageDef struct {
 	// the first incident and waited for the second to show it did not generalize
 	// past the person who wrote the fix.
 	RequiresLock string
+	// RequiresEnv names values the TRIGGERING CALLER must supply (`--set NAME=VALUE`)
+	// for this stage to start. breeze checks that each one is SET, never that it is
+	// any good — no daemon can know what a given change needs measured. The point is
+	// to make the answer explicit, and to make "none" something you TYPE rather than
+	// something you drift into.
+	//
+	// The case it exists for: a deploy convention ("take a pre-roll reading") written
+	// into a memory, then into AGENTS.md, and then broken twice in four hours by the
+	// person who wrote it. A rule that lives in each script is one every NEXT script
+	// has to remember, and the pipeline nobody adds it to is where it fails.
+	//
+	// Caller-supplied, NOT read from the daemon's environment, and that distinction is
+	// the whole feature. A stage command inherits the DAEMON's os.Environ(), so a
+	// variable exported in the operator's shell never reaches it. The script-side
+	// version of this gate was unsatisfiable for exactly that reason and blocked every
+	// deploy on the machine for half an hour before being reverted.
+	//
+	// Only declared names are exported to the command. A caller cannot smuggle in PATH
+	// or LD_PRELOAD through this: supplying an undeclared name is an error, not a
+	// silent addition to the environment of something the daemon runs.
+	RequiresEnv []string
 	// LeavesProcesses opts a stage out of the survivor reap below. Default false:
 	// when a stage's command exits, anything still running in its scope is killed
 	// and recorded, because "the command finished and left a build running" is

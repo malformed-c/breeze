@@ -546,15 +546,15 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		switch pipeline.Stages[i].Type {
 		case engine.StageCommand:
 			if p.Force {
-				inst, err = d.eng.ForceCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+				inst, err = d.eng.ForceCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief, engine.WithEnv(p.Set))
 			} else {
-				inst, err = d.eng.StartCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+				inst, err = d.eng.StartCommandStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief, engine.WithEnv(p.Set))
 			}
 		case engine.StageDeploy:
 			if p.Force {
-				inst, err = d.eng.ForceDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+				inst, err = d.eng.ForceDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief, engine.WithEnv(p.Set))
 			} else {
-				inst, err = d.eng.StartDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
+				inst, err = d.eng.StartDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief, engine.WithEnv(p.Set))
 			}
 		default:
 			return errResponse(fmt.Errorf("stage %q is not a command/deploy stage; use stage.approve", p.Stage))

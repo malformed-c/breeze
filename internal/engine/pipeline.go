@@ -95,6 +95,12 @@ func validatePipeline(p *Pipeline) error {
 			if s.RequiresLock != "" {
 				return fmt.Errorf("pipeline %q stage %q: requires_lock is not meaningful on an approval stage — approving runs no command, so there is nothing to serialize; put it on the command or deploy stage that does the work", p.Name, s.Name)
 			}
+			// Same shape: an approval runs no command, so a declared value would have
+			// nothing to reach and the gate would be pure ceremony — while the config
+			// reads as though the declaration is enforced somewhere that matters.
+			if len(s.RequiresEnv) > 0 {
+				return fmt.Errorf("pipeline %q stage %q: requires_env is not meaningful on an approval stage — approving runs no command, so the value would reach nothing; put it on the command or deploy stage that does the work", p.Name, s.Name)
+			}
 			if s.ApprovalPolicy.RequiredApprovals < 1 {
 				return fmt.Errorf("pipeline %q stage %q: requiredApprovals must be >= 1", p.Name, s.Name)
 			}

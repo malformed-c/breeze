@@ -257,6 +257,15 @@ const usageText = `usage: breeze <verb> <noun> [args]
 
 -- stages --
   start stage   <pipeline> <stage> <commit> [--env NAME] [--brief "..."] --as WHO [--token T]
+  start stage   ... --set NAME=VALUE        answer what a stage's requires_env asks for;
+                                         repeatable. breeze checks only that you SET it,
+                                         never that it is any good — a deliberate skip
+                                         (--set PREROLL_CONTROL="none: docs-only roll")
+                                         is a valid answer, and the point is that "none"
+                                         is something you TYPE rather than drift into.
+                                         The value reaches the stage command as that
+                                         environment variable; only names the stage
+                                         declares are accepted.
   start stage   <pipeline> <stage> <commit> [--env NAME] --force --brief "why"
                                          # break glass: run it skipping the ORDERING
                                          # gates — prerequisites, environment
@@ -318,6 +327,7 @@ type flagSet struct {
 	tailSet                                                                                                      bool     // --tail was given explicitly, so output is wanted whatever the outcome
 	targets                                                                                                      []string // repeated --target NAME
 	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
+	sets                                                                                                         []string // repeated --set NAME=VALUE (the answers a stage's requires_env asks for)
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 	unknownFlag                                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
@@ -393,6 +403,11 @@ func parseFlags(args []string) flagSet {
 			i++
 			if i < len(args) {
 				f.targets = append(f.targets, args[i])
+			}
+		case "--set":
+			i++
+			if i < len(args) {
+				f.sets = append(f.sets, args[i])
 			}
 		case "--resource":
 			i++
@@ -505,6 +520,44 @@ func parseFlags(args []string) flagSet {
 // other unrecognized `--flag`-shaped token is a hard error, never silently
 // treated as a positional argument. usage is the same "breeze <cmd> ..." string
 // the subcommand would otherwise print for a plain argument-count mismatch.
+// parseSets turns repeated `--set NAME=VALUE` into the map a stage's requires_env
+// is satisfied by. The VALUE may contain anything, including "=" and spaces — it
+// is a human's declaration of what they measured, and the one thing breeze must
+// not do is have opinions about it. The NAME is validated, because it becomes an
+// environment variable name in a command the daemon runs.
+func parseSets(sets []string) (map[string]string, error) {
+	if len(sets) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(sets))
+	for _, kv := range sets {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			return nil, fmt.Errorf("--set %q is not NAME=VALUE — a declaration needs both halves (use --set %s=\"none: nothing to measure\" if that is the answer)", kv, kv)
+		}
+		if !validEnvName(name) {
+			return nil, fmt.Errorf("--set name %q is not a usable environment variable name (letters, digits and underscore, not starting with a digit)", name)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("--set %s given twice — one of them would silently win, so say which you meant", name)
+		}
+		out[name] = value
+	}
+	return out, nil
+}
+
+func validEnvName(s string) bool {
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return false
+	}
+	for _, r := range s {
+		if r != '_' && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
 func (f flagSet) rejectUnknownFlags(usage string) (bool, error) {
 	if f.help {
 		fmt.Println("usage: " + usage)
@@ -1807,6 +1860,13 @@ func cmdApply(p paths, args []string) error {
 			return err
 		}
 	}
+	// Same reasoning for requires_env: dropped silently, the config declares a
+	// required declaration and the daemon asks for nothing.
+	if declaresStageEnv(toApply) {
+		if err := requireDaemonFeature(p, wire.FeatureStageEnv, "requires_env on a stage"); err != nil {
+			return err
+		}
+	}
 
 	as := resolveIdentity(p, f)
 	token, err := resolveTokenAuto(p, f, as)
@@ -1824,6 +1884,17 @@ func cmdApply(p paths, args []string) error {
 
 // declaresStageLock reports whether any pipeline about to be applied depends on the
 // daemon understanding requires_lock.
+func declaresStageEnv(pls []wire.Pipeline) bool {
+	for _, pl := range pls {
+		for _, s := range pl.Stages {
+			if len(s.RequiresEnv) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func declaresStageLock(pls []wire.Pipeline) bool {
 	for _, pl := range pls {
 		for _, s := range pl.Stages {
@@ -2357,6 +2428,11 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 		if s.RequiresLock != "" {
 			fmt.Printf("  %-12s  %-9s  requires lock: %s (caller must already hold it)\n", "", "", s.RequiresLock)
 		}
+		// Same reason as the lock: legible before you trip over it, since a status
+		// query cannot answer "did the caller declare this" either.
+		if len(s.RequiresEnv) > 0 {
+			fmt.Printf("  %-12s  %-9s  requires env: %s (caller must pass --set NAME=VALUE)\n", "", "", strings.Join(s.RequiresEnv, ", "))
+		}
 		if i == pl.FanOutAt {
 			for _, env := range sortedKeys(pl.EnvironmentDeps) {
 				deps := pl.EnvironmentDeps[env]
@@ -2627,7 +2703,19 @@ func cmdStage(p paths, args []string) error {
 					return err
 				}
 			}
-			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief, Force: f.force})
+			set, err := parseSets(f.sets)
+			if err != nil {
+				return err
+			}
+			// A dropped --set is the same skew failure as a dropped requires_lock:
+			// the stage starts, the declaration the operator typed never reaches
+			// anything, and it looks like it worked.
+			if len(set) > 0 {
+				if err := requireDaemonFeature(p, wire.FeatureStageEnv, "--set"); err != nil {
+					return err
+				}
+			}
+			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief, Force: f.force, Set: set})
 		} else {
 			op = wire.OpStageApprove
 			payload, _ = json.Marshal(wire.StageApproveRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})

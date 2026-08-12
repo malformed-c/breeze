@@ -31,8 +31,8 @@ func deployHistoryKey(pipeline, stage, environment string) string {
 // internal exclusive resource lock on "deploy/"+target+"/"+environment for the
 // duration of the run, reusing the exact same lock engine as file locks — not a
 // second exclusivity implementation.
-func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
-	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployNormal)
+func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, actor, brief string, opts ...StageOption) (*StageInstance, error) {
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployNormal, opts...)
 }
 
 // ForceDeployStage is the break-glass forward deploy: it skips Gate 1 (so an
@@ -48,14 +48,14 @@ func (e *Engine) StartDeployStage(pipelineName, stageName, commit, environment, 
 // rollback. brief is mandatory here for exactly that reason: the record is the
 // entire point, and a forced deploy nobody wrote a reason for is the one every
 // post-mortem asks about.
-func (e *Engine) ForceDeployStage(pipelineName, stageName, commit, environment, actor, brief string) (*StageInstance, error) {
+func (e *Engine) ForceDeployStage(pipelineName, stageName, commit, environment, actor, brief string, opts ...StageOption) (*StageInstance, error) {
 	if strings.TrimSpace(brief) == "" {
 		return nil, gateErr("a forced deploy requires a written reason: pass --brief \"why this is going out without its gates\"")
 	}
 	e.mu.Lock()
 	e.audit("stage.deploy.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
 	e.mu.Unlock()
-	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployForce)
+	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployForce, opts...)
 }
 
 // RollbackDeployStage re-deploys commit to environment, deliberately bypassing Gate
@@ -182,7 +182,8 @@ const (
 
 func (o DeployOverride) skipsGates() bool { return o != DeployNormal }
 
-func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, override DeployOverride) (*StageInstance, error) {
+func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, override DeployOverride, opts ...StageOption) (*StageInstance, error) {
+	so := newStageOpts(opts)
 	e.mu.Lock()
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
@@ -235,6 +236,13 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	// the escape hatch for "someone else is deploying right now" has to be releasing
 	// or waiting for the lock, not overriding the gate that noticed.
 	if ok, reason := e.checkRequiredLock(stage, actor); !ok {
+		e.mu.Unlock()
+		return nil, gateErr("%s", reason)
+	}
+	// Gate 4: the caller must have declared whatever this stage asks for. Checked
+	// alongside the other gates, before anything runs, so a missing declaration
+	// costs nothing but the refusal.
+	if ok, reason := checkRequiredEnv(stage, so.set); !ok {
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
 	}
@@ -335,7 +343,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	// runClaimedHook releases the lock afterward — unless the run was cancelled
 	// and it's a ManualClaim (see FileLock.ManualClaim's doc comment).
-	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, tmpl, timeout, params)
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, so.set, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
