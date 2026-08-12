@@ -584,23 +584,42 @@ func knownKeys(known map[string]bool) string {
 	return strings.Join(keys, ", ")
 }
 
-// EnvFor builds the BREEZE_* context env vars documented in the design: system
-// scalars plus BREEZE_PARAM_<NAME> per caller-declared param, plus a BREEZE_CONTEXT_JSON
-// escape hatch (populated by the caller, not here, since it needs the full domain
-// object which this package deliberately doesn't know about).
-func EnvFor(event, actor, pipeline, stage, commit, environment string, params Params) []string {
-	env := []string{
-		"BREEZE_EVENT=" + event,
-		"BREEZE_ACTOR=" + actor,
-		"BREEZE_PIPELINE=" + pipeline,
-		"BREEZE_STAGE=" + stage,
-		"BREEZE_COMMIT_SHA=" + commit,
-		"BREEZE_ENVIRONMENT=" + environment,
+// StageContext is what a stage command is told about the run it belongs to.
+//
+// Until this was wired up, a stage command was told a great deal about its
+// RESOURCES (eight BREEZE_* variables: quota, memory, tasks, scratch) and nothing
+// whatsoever about its WORK — not the commit, not the environment, not who
+// triggered it. A deploy script re-derived commit and environment from argv and
+// could not attribute anything it logged, and a gate that wanted to check the
+// operator's intent had to be hand-rolled per script because breeze offered it
+// nothing to read. This closes that.
+type StageContext struct {
+	Pipeline    string
+	Stage       string
+	Commit      string
+	Environment string
+	Actor       string
+	Brief       string // the --brief text, available from the moment the stage starts
+}
+
+// Env renders the context as BREEZE_* variables for a stage command.
+//
+// EVERY variable is emitted, INCLUDING empty ones, and that is deliberate. A breeze
+// daemon may itself be running as a breeze stage — this repo's own CI does exactly
+// that — so the child would otherwise inherit the OUTER run's commit and actor and
+// report them as its own. os/exec keeps the LAST of duplicate keys (verified, not
+// assumed), so an explicit empty value overrides an inherited one while an omitted
+// variable silently does not. Same hazard scratchUnset exists for on BREEZE_RUN_DIR,
+// solved the other way round: there is always a value here, even when it is "".
+func (c StageContext) Env() []string {
+	return []string{
+		"BREEZE_PIPELINE=" + c.Pipeline,
+		"BREEZE_STAGE=" + c.Stage,
+		"BREEZE_COMMIT=" + c.Commit,
+		"BREEZE_ENVIRONMENT=" + c.Environment,
+		"BREEZE_ACTOR=" + c.Actor,
+		"BREEZE_BRIEF=" + c.Brief,
 	}
-	for k, v := range params {
-		env = append(env, "BREEZE_PARAM_"+strings.ToUpper(k)+"="+v)
-	}
-	return env
 }
 
 // IOControllerAvailable reports whether the io cgroup controller is actually

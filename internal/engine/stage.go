@@ -516,7 +516,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		return nil, err
 	}
 
-	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, tmpl, timeout, params)
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
@@ -950,7 +950,7 @@ func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*
 // FileLock.ManualClaim). A normal completion (success or failure) always
 // releases regardless, matching the long-established behavior for both command
 // and deploy stages. Shared by StartCommandStage and runDeployStage.
-func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
+func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor, brief string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
 	runKey := instanceKey(pipelineName, stageName, key)
 	e.mu.Lock()
 	outputDir := e.runOutputDir(pipelineName, stageName, key)
@@ -1033,7 +1033,19 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		// PID, cleaned in an EXIT trap — which loses its cleanup to exactly the
 		// signals that need it most, and accumulates until the disk fills and
 		// unrelated commands start failing for reasons nobody connects to it.
-		Env: append(append(append([]string(nil), tmpl.Env...), scratchEnv(scratch)...), limitEnv(e.EffectiveLimits(tmpl.ResourceLimits))...),
+		// Order matters: breeze's own variables go LAST so they win the duplicate-key
+		// resolution against anything the pipeline set, and against anything inherited
+		// from an outer breeze run.
+		Env: slices.Concat(
+			tmpl.Env,
+			scratchEnv(scratch),
+			limitEnv(e.EffectiveLimits(tmpl.ResourceLimits)),
+			hook.StageContext{
+				Pipeline: pipelineName, Stage: stageName,
+				Commit: key.Commit, Environment: key.Environment,
+				Actor: actor, Brief: brief,
+			}.Env(),
+		),
 		// Explicitly removed when there is no scratch directory: this daemon may
 		// itself be running under breeze, in which case the child would inherit
 		// the OUTER run's BREEZE_RUN_DIR and be handed somebody else's scratch.

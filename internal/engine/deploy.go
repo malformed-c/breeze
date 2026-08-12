@@ -335,7 +335,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	// runClaimedHook releases the lock afterward — unless the run was cancelled
 	// and it's a ManualClaim (see FileLock.ManualClaim's doc comment).
-	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, tmpl, timeout, params)
+	result, wasCancelled := e.runClaimedHook(pipelineName, stageName, key, lock, actor, brief, tmpl, timeout, params)
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
