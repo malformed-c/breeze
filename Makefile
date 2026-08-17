@@ -40,8 +40,18 @@ check: fmt-check vet test build
 
 lint: check
 
+## build every release target locally via goreleaser, publishing NOTHING
+## (needs goreleaser: go install github.com/goreleaser/goreleaser/v2@latest)
+release-snapshot:
+	goreleaser build --snapshot --clean
+
+## validate .goreleaser.yml without building
+release-check:
+	goreleaser check
+
 clean:
 	rm -f $(BINARY)
+	rm -rf dist
 
 ## run the daemon in the foreground (Ctrl-C to stop) — useful for watching logs live
 run-daemon:

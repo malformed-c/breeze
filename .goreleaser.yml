@@ -1,0 +1,71 @@
+# goreleaser config for breeze.
+#
+# Nothing here publishes anything on its own: `goreleaser build --snapshot --clean`
+# builds locally, and a real release only happens on `goreleaser release` against a
+# tag. Deliberately no `release:` automation and no CI workflow — this repo has no
+# .github/workflows at all, and a release that fires from a tag push is a decision
+# to make on purpose rather than one to inherit from a config file.
+#
+# NOTE, because it is easy to miss: this repo has no LICENSE. Publishing binaries
+# from it distributes them with no stated terms. Add one before running
+# `goreleaser release` for real.
+version: 2
+
+project_name: breeze
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: breeze
+    main: .
+    binary: breeze
+    # CGO off is not incidental: it is what makes cross-compilation work at all.
+    # breeze's only C-shaped dependency is SQLite, and modernc.org/sqlite is a pure
+    # Go translation precisely so no cgo toolchain is needed per target.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # -s -w strip the symbol table and DWARF: breeze ships a SQLite engine, so the
+    # binary is large enough that this is worth several MB.
+    #
+    # main.version and main.buildTime are the two the daemon reports through
+    # `breeze ping`. buildTime uses .CommitDate rather than the wall clock so the
+    # same tag rebuilt tomorrow produces the same binary — a build stamped "now"
+    # makes two builds of one commit differ for no reason anyone can act on.
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.buildTime={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: breeze
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - examples/defaults.hcl
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  # Sorted by the same grouping the commit history already uses. `docs:`/`test:`
+  # are excluded from the notes, not from the release.
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

@@ -20,7 +20,12 @@ import (
 	"breeze/internal/wire"
 )
 
-const version = "0.1.0"
+// version is a var, not a const, so a release build can stamp it: goreleaser sets
+// it with -X main.version=<tag>. A source build leaves it at this placeholder,
+// which is the honest answer — an unstamped binary is a development one, and
+// saying "0.1.0" for both a tagged release and someone's `go build .` would make
+// `breeze ping` unable to tell them apart.
+var version = "0.1.0-dev"
 
 // buildTime is overridden at link time via -ldflags "-X main.buildTime=..." (see
 // Makefile, ci/build.sh, ci/deploy.sh) — a plain `go build` with no ldflags (e.g. an
