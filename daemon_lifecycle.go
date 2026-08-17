@@ -15,11 +15,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
 	"breeze/internal/engine"
 	"breeze/internal/hclconfig"
+	"breeze/internal/hourslog"
 	"breeze/internal/slots"
 	"breeze/internal/wire"
 )
@@ -332,7 +334,82 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	eng.SetNotifyFn(notifyViaMess)
 	eng.SetNotifyTopicFn(notifyViaMessTopic)
 	eng.SetBriefFn(writeBriefFile)
+	if db := hoursDBFor(p); db != "" {
+		eng.SetTimeLogFn(func(inst *engine.StageInstance) { recordHours(db, inst) })
+	}
 	return d, nil
+}
+
+// hoursDBFor resolves hours_db from this daemon's defaults, then the machine-wide
+// ones. Empty (the default) leaves the hook unwired, so nothing is recorded and
+// nothing can fail.
+func hoursDBFor(p paths) string {
+	for _, f := range []string{p.defaults, p.globalDefaults} {
+		if f == "" {
+			continue
+		}
+		db, err := hclconfig.ParseHoursDB(f)
+		if err != nil {
+			log.Printf("hours: ignoring %s: %v", f, err)
+			continue
+		}
+		if db != "" {
+			return db
+		}
+	}
+	return ""
+}
+
+// recordHours writes one finished stage run into an `hours` database.
+//
+// Never returns an error, by design — this is a convenience artifact and a stage
+// must not fail because a time tracker was busy. But it is never SILENT either:
+// an unrecorded run is exactly the kind of gap that reads as "no work happened",
+// so every failure says which run was lost and why.
+func recordHours(dbPath string, inst *engine.StageInstance) {
+	err := hourslog.Record(dbPath, hourslog.Entry{
+		// Prefixed so these are distinguishable from whatever else the human
+		// tracks in the same database, and keyed per stage so `hours stats`
+		// answers "where does the pipeline's time actually go".
+		Task:    fmt.Sprintf("breeze: %s/%s", inst.Pipeline, inst.Stage),
+		Comment: hoursComment(inst),
+		Begin:   inst.StartedAt,
+		End:     inst.FinishedAt,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, hourslog.ErrActiveTimer):
+		// Worth its own message: hours' trigger refuses ANY insert while a timer
+		// runs, so this fires precisely when someone is sitting in the TUI — the
+		// moment they are most likely to notice the run missing and least likely
+		// to guess why.
+		log.Printf("hours: NOT recorded (%s/%s %s): a timer is running in hours, and its schema refuses any insert while one exists — stop it and this run will be missing from the log",
+			inst.Pipeline, inst.Stage, shortSHA(inst.Key.Commit))
+	default:
+		log.Printf("hours: NOT recorded (%s/%s %s): %v", inst.Pipeline, inst.Stage, shortSHA(inst.Key.Commit), err)
+	}
+}
+
+func hoursComment(inst *engine.StageInstance) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s", inst.Status, shortSHA(inst.Key.Commit))
+	if inst.Key.Environment != "" {
+		fmt.Fprintf(&b, " → %s", inst.Key.Environment)
+	}
+	if inst.Actor != "" {
+		fmt.Fprintf(&b, " (%s)", inst.Actor)
+	}
+	if inst.Brief != "" {
+		fmt.Fprintf(&b, ": %s", inst.Brief)
+	}
+	return b.String()
+}
+
+func shortSHA(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }
 
 // requestStop sends a best-effort OpStop over an already-dialed connection to an

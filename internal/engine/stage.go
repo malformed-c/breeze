@@ -600,7 +600,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		gateCp := *inst
 		e.mu.Unlock()
 		e.notifyResolution(pipelineName, stageName, &gateCp)
-		e.recordBrief(briefsDir, &gateCp)
+		e.recordResolved(briefsDir, &gateCp)
 		return nil, err
 	}
 
@@ -650,7 +650,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 	e.mu.Unlock()
 
 	e.notifyResolution(pipelineName, stageName, &cp)
-	e.recordBrief(briefsDir, &cp)
+	e.recordResolved(briefsDir, &cp)
 
 	// Post-action hooks fire after the fact, success or failure, and never block the
 	// caller — the transition has already committed by this point.
@@ -749,7 +749,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 			gateCp := *e.getInstance(pipelineName, stageName, key)
 			e.mu.Unlock()
 			e.notifyResolution(pipelineName, stageName, &gateCp)
-			e.recordBrief(p.BriefsDir, &gateCp)
+			e.recordResolved(p.BriefsDir, &gateCp)
 			return nil, err
 		}
 		e.mu.Lock()
@@ -792,7 +792,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		// Briefs are written once, bundling every approver's individual Brief into
 		// one file — not one file per approval — matching the "on terminal
 		// resolution" trigger used for command/deploy stages.
-		e.recordBrief(p.BriefsDir, &cp)
+		e.recordResolved(p.BriefsDir, &cp)
 		params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 		e.runPostActions(postAction, params, pipelineName, stageName, actor)
 	}
@@ -888,7 +888,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		// (up to the stage's own Timeout) expires on its own.
 		e.releaseStageInstanceLock(r.pipeline, r.stage, r.key)
 		e.notifyResolution(r.pipeline, r.stage, &r.cp)
-		e.recordBrief(r.briefsDir, &r.cp)
+		e.recordResolved(r.briefsDir, &r.cp)
 	}
 	return len(toNotify)
 }
@@ -963,7 +963,7 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	e.releaseStageInstanceLock(pipelineName, stageName, key)
 
 	e.notifyResolution(pipelineName, stageName, &cp)
-	e.recordBrief(briefsDir, &cp)
+	e.recordResolved(briefsDir, &cp)
 	return &cp, nil
 }
 

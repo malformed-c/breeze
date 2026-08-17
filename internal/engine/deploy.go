@@ -337,7 +337,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		gateCp := *inst
 		e.mu.Unlock()
 		e.notifyResolution(pipelineName, stageName, &gateCp)
-		e.recordBrief(p.BriefsDir, &gateCp)
+		e.recordResolved(p.BriefsDir, &gateCp)
 		return nil, gateErr
 	}
 
@@ -407,7 +407,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	e.mu.Unlock()
 
 	e.notifyResolution(pipelineName, stageName, &cp)
-	e.recordBrief(p.BriefsDir, &cp)
+	e.recordResolved(p.BriefsDir, &cp)
 	e.runPostActions(postAction, params, pipelineName, stageName, actor)
 
 	return &cp, nil

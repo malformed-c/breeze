@@ -22,6 +22,46 @@ func (e *Engine) SetBriefFn(fn func(dir, filename, header, section string)) {
 	e.mu.Unlock()
 }
 
+// SetTimeLogFn wires where finished stage runs are recorded as TIME entries, as
+// opposed to the prose brief. Same contract as SetBriefFn and for the same
+// reason: this is a convenience artifact, never load-bearing, so a failure to
+// record must never block or fail the stage resolution that triggered it.
+func (e *Engine) SetTimeLogFn(fn func(inst *StageInstance)) {
+	e.mu.Lock()
+	e.timeLogFn = fn
+	e.mu.Unlock()
+}
+
+// recordResolved is the single "this instance reached a terminal state" seam.
+//
+// Both artifacts hang off it deliberately. They were one call each at five sites,
+// and a sixth site that recorded a brief and forgot the time entry would be
+// invisible — the run would simply be missing from one of two records that are
+// supposed to describe the same event. One function means a new resolution path
+// cannot record half of it.
+func (e *Engine) recordResolved(briefsDir string, inst *StageInstance) {
+	e.recordBrief(briefsDir, inst)
+	e.recordTimeLog(inst)
+}
+
+// recordTimeLog must be called WITHOUT e.mu held (the callback does I/O).
+//
+// Only runs that actually SPENT time are recorded. A gate refusal resolves an
+// instance without running anything, and a zero-length entry in a time tracker is
+// not a small truth — it is a row asserting that work happened.
+func (e *Engine) recordTimeLog(inst *StageInstance) {
+	e.mu.Lock()
+	fn := e.timeLogFn
+	e.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	if inst.StartedAt.IsZero() || inst.FinishedAt.IsZero() || !inst.FinishedAt.After(inst.StartedAt) {
+		return
+	}
+	fn(inst)
+}
+
 func shortCommit(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]

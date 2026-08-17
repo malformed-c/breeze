@@ -98,6 +98,7 @@ type Engine struct {
 	notifyFn      func(identities []string, message, thread string)
 	notifyTopicFn func(topic, message, thread string)
 	briefFn       func(dir, filename, header, section string)
+	timeLogFn     func(inst *StageInstance)
 
 	// queue is the machine-wide stage budget (see QueueConfig). Guarded by mu like
 	// everything else, but the WAIT itself happens outside the lock — a stage may

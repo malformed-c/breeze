@@ -187,6 +187,9 @@ type DefaultsHCL struct {
 	Queue          *QueueHCL          `hcl:"queue,block"`
 	// RunDir relocates where stage runs do their work — see ParseRunDir.
 	RunDir string `hcl:"run_dir,optional"`
+	// HoursDB records finished stage runs as time entries in an `hours` database
+	// (github.com/dhth/hours) — see ParseHoursDB.
+	HoursDB string `hcl:"hours_db,optional"`
 }
 
 // QueueHCL configures the MACHINE-WIDE stage budget: at most MaxConcurrent stage
@@ -271,6 +274,31 @@ func ParseRunDir(path string) (string, error) {
 		return "", fmt.Errorf("run_dir %q must be an absolute path — it is resolved by the daemon, which does not share your working directory", cfg.RunDir)
 	}
 	return cfg.RunDir, nil
+}
+
+// ParseHoursDB reads hours_db: the path to an `hours` database
+// (github.com/dhth/hours) that finished stage runs are recorded into as time
+// entries, alongside the brief. Empty means the feature is off, which is the
+// default and preserves the behavior of every breeze that predates it.
+//
+// breeze never creates the file. hours initializes its own database on first run,
+// and a half-initialized one that hours later tries to migrate is a worse failure
+// than an absent one — so an unset or missing path simply records nothing.
+func ParseHoursDB(path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var cfg DefaultsHCL
+	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
+		return "", err
+	}
+	if cfg.HoursDB != "" && !filepath.IsAbs(cfg.HoursDB) {
+		return "", fmt.Errorf("hours_db %q must be an absolute path — it is resolved by the daemon, which does not share your working directory", cfg.HoursDB)
+	}
+	return cfg.HoursDB, nil
 }
 
 // ParseQueue reads the queue block from a defaults file. Missing file or missing

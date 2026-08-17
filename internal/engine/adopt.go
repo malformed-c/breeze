@@ -174,7 +174,7 @@ func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, dea
 		e.mu.Unlock()
 	}
 	e.notifyResolution(pipeline, stage, &cp)
-	e.recordBrief(briefsDir, &cp)
+	e.recordResolved(briefsDir, &cp)
 	e.runPostActions(postAction, params, pipeline, stage, actor)
 }
 
