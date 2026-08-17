@@ -16,6 +16,12 @@ it. For a real, working example wired to actual scripts, see `../ci/` in this re
   all run off `build` (concurrently, under `breeze run pipeline`), and `package`
   converges back on `unit` + `race`. Shows `needs` and `convergence`.
 
+- `tooling.hcl` — `type = "task"` and `type = "release"`: the stage names the
+  go-task target or the goreleaser mode and breeze builds the argv, instead of
+  every pipeline carrying its own spelling of the same invocation. Note
+  `snapshot` is opt-in, so the safe-looking spelling is never the one that
+  publishes. Both tools must be on the daemon's PATH.
+
 Apply either with:
 
 ```sh

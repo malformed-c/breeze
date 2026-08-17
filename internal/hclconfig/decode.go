@@ -74,10 +74,19 @@ type StageHCL struct {
 	// makes the stage a root that diverges from that line; needs = ["a","b"] makes
 	// it converge on a and b. gohcl preserves the absent-vs-empty distinction
 	// (nil vs []string{}), which is exactly what that convention needs.
-	Needs                 []string           `hcl:"needs,optional"`
-	Convergence           string             `hcl:"convergence,optional"`
-	RequiresLock          string             `hcl:"requires_lock,optional"`
-	RequiresEnv           []string           `hcl:"requires_env,optional"`
+	Needs        []string `hcl:"needs,optional"`
+	Convergence  string   `hcl:"convergence,optional"`
+	RequiresLock string   `hcl:"requires_lock,optional"`
+	RequiresEnv  []string `hcl:"requires_env,optional"`
+	// Task/Taskfile serve type = "task": the go-task target to run, and an
+	// optional Taskfile path. See translateStage.
+	Task     string `hcl:"task,optional"`
+	Taskfile string `hcl:"taskfile,optional"`
+	// Snapshot/ReleaseConfig serve type = "release" (goreleaser). Snapshot builds
+	// locally and publishes NOTHING; without it the stage runs a real release,
+	// which is why it is opt-out rather than opt-in.
+	Snapshot              bool               `hcl:"snapshot,optional"`
+	ReleaseConfig         string             `hcl:"release_config,optional"`
 	LeavesProcesses       bool               `hcl:"leaves_processes,optional"`
 	FansOut               bool               `hcl:"fans_out,optional"`
 	Debug                 bool               `hcl:"debug,optional"`
@@ -479,13 +488,42 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 	}
 	switch sh.Type {
 	case "command":
+		if err := rejectToolAttrs(sh, "command"); err != nil {
+			return wire.StageDef{}, err
+		}
+		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
+	case "task", "release":
+		// These declare INTENT and let breeze own the argv, so a pipeline stops
+		// hardcoding the same invocation every repo spells slightly differently.
+		//
+		// They become command stages at the engine boundary, deliberately: the
+		// engine's stage machinery — gates, locks, queue slots, adoption, survivor
+		// reaping — is exactly what these need, and inventing engine-level types
+		// would fork all of it to gain nothing. The type is an authoring
+		// convenience with validation, and it is honest to say so.
+		if len(sh.Command) > 0 || sh.Script != "" {
+			return wire.StageDef{}, fmt.Errorf("stage %q is type %q, so breeze builds the command — remove command/script, or use type = \"command\" to spell it yourself", sh.Name, sh.Type)
+		}
+		argv, err := toolArgv(sh)
+		if err != nil {
+			return wire.StageDef{}, err
+		}
+		cmd := commandFromList(argv, sh.ResourceLimits)
+		sd.Command = cmd
+		sd.Type = "command"
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
 	case "approval":
+		if err := rejectToolAttrs(sh, "approval"); err != nil {
+			return wire.StageDef{}, err
+		}
 		sd.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: sh.RequiredApprovals, RequiredRole: sh.ApproverRole, BlockPredecessorActor: sh.BlockPredecessorActor}
 	case "deploy":
+		if err := rejectToolAttrs(sh, "deploy"); err != nil {
+			return wire.StageDef{}, err
+		}
 		sd.DeployPolicy = &wire.DeployPolicy{RequiredRole: sh.RequiredRole, Target: sh.Target}
 	default:
-		return wire.StageDef{}, fmt.Errorf("unknown stage type %q (must be command, approval, or deploy)", sh.Type)
+		return wire.StageDef{}, fmt.Errorf("unknown stage type %q (must be command, task, release, approval, or deploy)", sh.Type)
 	}
 	for _, h := range sh.PreGate {
 		sd.PreGate = append(sd.PreGate, translateHook(h))
@@ -508,6 +546,63 @@ func translateHook(h HookHCL) wire.Hook {
 
 // commandFromList implements the documented convention: a command list's first
 // element is the executable path, the rest are its arguments.
+// toolArgv builds the argv for the tool-shaped stage types.
+//
+// Still a []string all the way down — never a shell string. That is the same
+// guarantee every other breeze command has, and it matters more here, not less:
+// these argvs are assembled by breeze from config values, so a `taskfile` or
+// `release_config` containing a space or a semicolon must be one argument, not an
+// opportunity.
+func toolArgv(sh StageHCL) ([]string, error) {
+	switch sh.Type {
+	case "task":
+		if strings.TrimSpace(sh.Task) == "" {
+			return nil, fmt.Errorf("stage %q is type \"task\" but names no target — add task = \"<name>\" (the target as `task --list` prints it)", sh.Name)
+		}
+		// `task` resolves its own Taskfile from the working directory, which for a
+		// stage is its checkout — so the common case needs no path at all.
+		argv := []string{"task"}
+		if sh.Taskfile != "" {
+			argv = append(argv, "--taskfile", sh.Taskfile)
+		}
+		return append(argv, sh.Task), nil
+	case "release":
+		if sh.Task != "" || sh.Taskfile != "" {
+			return nil, fmt.Errorf("stage %q is type \"release\": task/taskfile belong to type \"task\"", sh.Name)
+		}
+		// --clean on both: goreleaser refuses to start on a dirty dist/, and a
+		// stage's checkout is fresh anyway, so the failure it would produce is
+		// never the informative kind.
+		argv := []string{"goreleaser"}
+		if sh.Snapshot {
+			// Builds every target and publishes NOTHING. The safe half of
+			// goreleaser, and the one a pipeline can run on any commit.
+			argv = append(argv, "build", "--snapshot", "--clean")
+		} else {
+			argv = append(argv, "release", "--clean")
+		}
+		if sh.ReleaseConfig != "" {
+			argv = append(argv, "--config", sh.ReleaseConfig)
+		}
+		return argv, nil
+	}
+	return nil, fmt.Errorf("stage %q: unsupported tool type %q", sh.Name, sh.Type)
+}
+
+// rejectToolAttrs stops a tool attribute sitting inertly on a plain command
+// stage. `type = "command"` with `task = "build"` would otherwise register
+// happily and run whatever `command` said, ignoring the line its author believed
+// was doing the work.
+func rejectToolAttrs(sh StageHCL, kind string) error {
+	switch {
+	case sh.Task != "" || sh.Taskfile != "":
+		return fmt.Errorf("stage %q is type %q, so task/taskfile do nothing here — use type = \"task\"", sh.Name, kind)
+	case sh.Snapshot || sh.ReleaseConfig != "":
+		return fmt.Errorf("stage %q is type %q, so snapshot/release_config do nothing here — use type = \"release\"", sh.Name, kind)
+	}
+	return nil
+}
+
 func commandFromList(cmd []string, rl *ResourceLimitsHCL) wire.CommandTemplate {
 	tmpl := wire.CommandTemplate{ResourceLimits: translateResourceLimits(rl)}
 	if len(cmd) > 0 {

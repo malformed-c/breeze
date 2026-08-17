@@ -1,0 +1,99 @@
+# `type = "task"` and `type = "release"` let a stage declare INTENT and let breeze
+# own the argv, so a pipeline stops hardcoding the same invocation that every repo
+# spells slightly differently.
+#
+# They reach the engine as command stages deliberately: gates, locks, queue slots,
+# adoption and survivor reaping are exactly what they need, and an engine-level
+# type would fork all of it to gain nothing.
+env BREEZE_DIR=$WORK/state
+env PATH=$WORK/bin:$PATH
+
+chmod 0755 $WORK/bin/task
+chmod 0755 $WORK/bin/goreleaser
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# breeze invokes `task <target>` — the stub records its own argv, so this asserts
+# what actually ran rather than what the config said.
+exec breeze start stage tooling build abc123 --as admin --token-file admin.token
+stdout 'succeeded'
+exec cat $WORK/argv.txt
+stdout '^task build$'
+
+# An explicit taskfile stays ONE argument even though the path contains a space.
+# These argvs are assembled by breeze from config values, so a path that splits is
+# a config value becoming two arguments.
+exec breeze start stage tooling odd abc123 --as admin --token-file admin.token
+stdout 'succeeded'
+exec cat $WORK/argv.txt
+stdout '^task --taskfile my tasks/Taskfile.yml lint$'
+
+# A snapshot release must never reach goreleaser's publishing path.
+exec breeze start stage tooling snap abc123 --as admin --token-file admin.token
+stdout 'succeeded'
+exec cat $WORK/argv.txt
+stdout '^goreleaser build --snapshot --clean$'
+
+# A task stage that names no target is refused at apply time, where someone is
+# looking at the file — not at 3am when the stage runs.
+! exec breeze apply -f no-target.hcl --as admin --token-file admin.token
+stderr 'names no target'
+
+# An attribute that would do NOTHING is refused rather than ignored: this config
+# reads as though task="build" is what runs, and it is not.
+! exec breeze apply -f inert.hcl --as admin --token-file admin.token
+stderr 'type "command"'
+
+exec breeze stop
+
+-- bin/task --
+#!/bin/sh
+echo "task $*" > "$WORK/argv.txt"
+exit 0
+
+-- bin/goreleaser --
+#!/bin/sh
+echo "goreleaser $*" > "$WORK/argv.txt"
+exit 0
+
+-- pipeline.hcl --
+pipeline "tooling" {
+  stage "build" {
+    type    = "task"
+    task    = "build"
+    timeout = "10s"
+  }
+  stage "odd" {
+    type     = "task"
+    needs    = []
+    task     = "lint"
+    taskfile = "my tasks/Taskfile.yml"
+    timeout  = "10s"
+  }
+  stage "snap" {
+    type     = "release"
+    needs    = []
+    snapshot = true
+    timeout  = "10s"
+  }
+}
+
+-- no-target.hcl --
+pipeline "broken" {
+  stage "build" {
+    type    = "task"
+    timeout = "10s"
+  }
+}
+
+-- inert.hcl --
+pipeline "inert" {
+  stage "build" {
+    type    = "command"
+    command = ["/bin/true"]
+    task    = "build"
+    timeout = "10s"
+  }
+}
