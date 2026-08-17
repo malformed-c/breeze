@@ -92,6 +92,8 @@ func main() {
 		err = cmdDeploy(p, args)
 	case "operator":
 		err = cmdOperator(p, args)
+	case "board":
+		err = cmdBoard(p, args)
 	case "auth":
 		err = cmdAuth(p, args)
 	default:
@@ -312,6 +314,14 @@ const usageText = `usage: breeze <verb> <noun> [args]
                                          the instant an approval/failure/success needs
                                          attention; Tier-1, runs until interrupted;
                                          D = reconnect delay
+  board [--json]                        where the time went: the tasks breeze has
+                                         recorded into your "hours" database, in
+                                         columns by recency (running / today / this
+                                         week / older) with what each has cost.
+                                         Reads the database directly — no daemon
+                                         needed. Requires hours_db in defaults.hcl;
+                                         "operator" answers what needs ATTENTION,
+                                         this answers what has consumed TIME
 
 The pre-swap noun-first spellings (breeze stage start, breeze lock acquire, ...)
 still work and point at their replacement.`

@@ -80,13 +80,14 @@ var routes = []route{
 }
 
 // bareCommands are verbs that take no noun at all — either because the command has
-// no object (ping, whoami, ps, status, inventory, operator) or because the object
+// no object (ping, whoami, ps, status, inventory, operator, board) or because the object
 // is implied and singular (apply reads a config file, stop stops this directory's
 // daemon). They dispatch straight through, and a verb listed here is never reported
 // as "missing its noun".
 var bareCommands = map[string]bool{
 	"apply": true, "status": true, "ping": true, "whoami": true,
 	"ps": true, "inventory": true, "operator": true, "stop": true,
+	"board": true,
 }
 
 // legacyGroups are the pre-swap noun-first group commands. They still work — every
