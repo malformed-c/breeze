@@ -12,6 +12,10 @@ Architecture mirrors `mess` deliberately: a Go daemon behind a Unix socket, a th
 CLI, JSON wire protocol, snapshot persistence, auto-start on first use — same
 operational shape, different job.
 
+**In a hurry?** [CHEATSHEET.md](CHEATSHEET.md) is one page: every command, the
+flags that matter, and the handful of things that bite. This file is the
+reference; that one is what you keep open.
+
 ## Why
 
 Running many Claude Code sessions in parallel is easy until two of them need the
