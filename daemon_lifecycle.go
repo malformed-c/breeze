@@ -334,7 +334,13 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	eng.SetNotifyFn(notifyViaMess)
 	eng.SetNotifyTopicFn(notifyViaMessTopic)
 	eng.SetBriefFn(writeBriefFile)
-	if db := hoursDBFor(p); db != "" {
+	// A broken hours_db leaves the feature OFF and says so, rather than taking the
+	// daemon down: time logging is a convenience artifact and must never be
+	// load-bearing. Loud and inert beats quiet and wrong.
+	switch db, err := hoursDBFor(p); {
+	case err != nil:
+		log.Printf("hours: time logging is OFF — %v", err)
+	case db != "":
 		eng.SetTimeLogFn(func(inst *engine.StageInstance) { recordHours(db, inst) })
 	}
 	return d, nil
@@ -343,21 +349,26 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 // hoursDBFor resolves hours_db from this daemon's defaults, then the machine-wide
 // ones. Empty (the default) leaves the hook unwired, so nothing is recorded and
 // nothing can fail.
-func hoursDBFor(p paths) string {
+func hoursDBFor(p paths) (string, error) {
 	for _, f := range []string{p.defaults, p.globalDefaults} {
 		if f == "" {
 			continue
 		}
 		db, err := hclconfig.ParseHoursDB(f)
 		if err != nil {
-			log.Printf("hours: ignoring %s: %v", f, err)
-			continue
+			// NOT skipped on to the next file, which is what this used to do. A
+			// misplaced hours_db — appended blindly and landing inside a block, the
+			// hazard a peer spotted in my own instructions — logged one line and
+			// then fell through to the MACHINE-WIDE file, so `breeze board`
+			// reported confidently on a database the caller had never named. Off,
+			// or the one you asked for; never a third thing chosen silently.
+			return "", fmt.Errorf("%s: %w\n(a malformed hours_db is refused rather than skipped: the alternative is breeze quietly reporting on a different database than the one you configured)", f, err)
 		}
 		if db != "" {
-			return db
+			return db, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // recordHours writes one finished stage run into an `hours` database.

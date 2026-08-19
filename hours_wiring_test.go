@@ -18,11 +18,11 @@ func TestHoursDBIsOffWhenUnconfigured(t *testing.T) {
 	if err := os.WriteFile(defaults, []byte("run_dir = \"/var/tmp/breeze\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := hoursDBFor(paths{defaults: defaults}); got != "" {
+	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "" {
 		t.Errorf("a defaults file without hours_db must leave it off, got %q", got)
 	}
 	// A missing file is the overwhelmingly common case and must be silent, not an error.
-	if got := hoursDBFor(paths{defaults: filepath.Join(dir, "nope.hcl")}); got != "" {
+	if got, _ := hoursDBFor(paths{defaults: filepath.Join(dir, "nope.hcl")}); got != "" {
 		t.Errorf("a missing defaults file must leave it off, got %q", got)
 	}
 }
@@ -33,7 +33,7 @@ func TestHoursDBIsReadFromDefaults(t *testing.T) {
 	if err := os.WriteFile(defaults, []byte("hours_db = \"/home/someone/hours.db\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := hoursDBFor(paths{defaults: defaults}); got != "/home/someone/hours.db" {
+	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "/home/someone/hours.db" {
 		t.Errorf("hoursDBFor = %q, want the configured path", got)
 	}
 }
@@ -48,8 +48,39 @@ func TestABrokenHoursDBSettingDoesNotPropagate(t *testing.T) {
 	if err := os.WriteFile(defaults, []byte("hours_db = \"relative/hours.db\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := hoursDBFor(paths{defaults: defaults}); got != "" {
+	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "" {
 		t.Errorf("a rejected hours_db must leave the feature off, got %q", got)
+	}
+}
+
+// A MALFORMED hours_db is refused, not skipped past.
+//
+// It used to log one line and fall through to the next config file, so a key
+// appended blindly and landing inside a block — the hazard in this repo's own
+// setup instructions — left `breeze board` reporting confidently on the
+// MACHINE-WIDE database instead of the one the caller had named. Off, or the one
+// you asked for; never a third thing chosen silently.
+func TestAMalformedHoursDBIsRefusedNotSkipped(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo.hcl")
+	global := filepath.Join(dir, "global.hcl")
+	// hours_db inside a block, which is what a blind `>>` produces on a file that
+	// happens to end inside one.
+	if err := os.WriteFile(repo, []byte("resource_limits {\n  cpu_weight = 20\n  hours_db = \"/tmp/wrong.db\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(global, []byte("hours_db = \"/tmp/machine-wide.db\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := hoursDBFor(paths{defaults: repo, globalDefaults: global})
+	if err == nil {
+		t.Fatal("a malformed hours_db must be refused")
+	}
+	if got == "/tmp/machine-wide.db" {
+		t.Error("it fell through to the machine-wide file — reporting on a database the caller never named is the bug")
+	}
+	if got != "" {
+		t.Errorf("a refused config must select nothing, got %q", got)
 	}
 }
 

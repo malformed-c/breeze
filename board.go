@@ -19,7 +19,10 @@ func cmdBoard(p paths, args []string) error {
 	if handled, err := f.only("breeze board [--json] [--init]"); handled {
 		return err
 	}
-	db := hoursDBFor(p)
+	db, err := hoursDBFor(p)
+	if err != nil {
+		return err
+	}
 	if db == "" {
 		// Names BOTH files and the exact line, because the previous version said
 		// "the path `hours` uses" — which has no referent on a machine where hours
