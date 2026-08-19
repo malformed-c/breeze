@@ -2107,7 +2107,7 @@ func cmdPipeline(p paths, args []string) error {
 // was never asked to make on anyone's behalf.
 func cmdPipelineRun(p paths, f flagSet) error {
 	if len(f.rest) < 2 {
-		return fmt.Errorf("usage: breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--serial] --as WHO [--token T]")
+		return fmt.Errorf("usage: breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--serial] --as WHO [--token T]")
 	}
 	name, commit := f.rest[0], resolveCommit(f.rest[1])
 
@@ -2126,6 +2126,22 @@ func cmdPipelineRun(p paths, f flagSet) error {
 		return fmt.Errorf("pipeline %q fans out at stage %q across environments %v — pass --env NAME", name, pl.Stages[pl.FanOutAt].Name, pl.Environments)
 	}
 
+	set, err := parseSets(f.sets)
+	if err != nil {
+		return err
+	}
+	// A name no stage in this pipeline asks for is a typo, and dropping it quietly
+	// would put the caller back where they started: a --set that looks accepted and
+	// reaches nothing. Refused here, against the pipeline the daemon actually has.
+	if err := checkSetsAreDeclared(set, pl); err != nil {
+		return err
+	}
+	if len(set) > 0 {
+		if err := requireDaemonFeature(p, wire.FeatureStageEnv, "--set"); err != nil {
+			return err
+		}
+	}
+
 	as := resolveIdentity(p, f)
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
@@ -2135,9 +2151,43 @@ func cmdPipelineRun(p paths, f flagSet) error {
 	run := &pipelineRun{
 		paths: p, pipeline: pl, name: name, commit: commit,
 		env: f.env, brief: f.brief, as: as, token: token, serial: f.serial,
+		set:      set,
 		outcomes: make([]stageOutcome, len(pl.Stages)),
 	}
 	return run.drive()
+}
+
+// checkSetsAreDeclared refuses a --set naming something no stage in the pipeline
+// declares in requires_env, and names what IS declared so the fix is in the
+// refusal rather than in a second command.
+func checkSetsAreDeclared(set map[string]string, pl wire.Pipeline) error {
+	if len(set) == 0 {
+		return nil
+	}
+	declared := map[string]bool{}
+	var names []string
+	for _, sd := range pl.Stages {
+		for _, n := range sd.RequiresEnv {
+			if !declared[n] {
+				declared[n], names = true, append(names, n)
+			}
+		}
+	}
+	var unknown []string
+	for n := range set {
+		if !declared[n] {
+			unknown = append(unknown, n)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	slices.Sort(unknown)
+	slices.Sort(names)
+	if len(names) == 0 {
+		return fmt.Errorf("--set %s: no stage in pipeline %q declares requires_env, so this would reach nothing", strings.Join(unknown, ", "), pl.Name)
+	}
+	return fmt.Errorf("--set %s: no stage in pipeline %q asks for that — it declares %s", strings.Join(unknown, ", "), pl.Name, strings.Join(names, ", "))
 }
 
 // stageOutcome records what a single stage did during a run — its terminal status
@@ -2155,7 +2205,29 @@ type pipelineRun struct {
 	pipeline                            wire.Pipeline
 	name, commit, env, brief, as, token string
 	serial                              bool
+	set                                 map[string]string // requires_env answers, filtered per stage
 	outcomes                            []stageOutcome
+}
+
+// setFor narrows the run's --set values to the ones a given stage DECLARES.
+//
+// Passing the whole map to every stage would be wrong in the strict direction:
+// the daemon refuses a name the stage does not declare, so one --set meant for
+// the deploy stage would make every other stage in the pipeline fail. Filtering
+// here keeps that refusal meaningful for a direct `start stage` — where naming an
+// undeclared value IS a mistake — while letting a pipeline-wide answer reach only
+// the stages that asked for it.
+func (r *pipelineRun) setFor(sd wire.StageDef) map[string]string {
+	if len(r.set) == 0 || len(sd.RequiresEnv) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(sd.RequiresEnv))
+	for _, name := range sd.RequiresEnv {
+		if v, ok := r.set[name]; ok {
+			out[name] = v
+		}
+	}
+	return out
 }
 
 // stageEnv returns the environment a given stage index is keyed by: stages before
@@ -2291,7 +2363,7 @@ func (r *pipelineRun) runStage(i int) error {
 		return nil
 	}
 
-	startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env, Brief: r.brief})
+	startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env, Brief: r.brief, Set: r.setFor(sd)})
 	resp, err = call(r.paths, wire.Request{Op: wire.OpStageStart, As: r.as, Token: r.token, Payload: startPayload})
 	if err != nil {
 		return err

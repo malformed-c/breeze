@@ -55,6 +55,25 @@ stderr 'NAME=VALUE'
 exec breeze start stage guarded consume ccc333 --set PREROLL_CONTROL=/tmp/before.txt --as peri --token-file peri.token
 stdout 'succeeded'
 
+# *** AND THE SAME --set WORKS ON `run pipeline`. *** It did not, once: the flag
+# parsed (it is shared across every command) and `run pipeline` simply never read
+# it, so the stage refused with "supply it with --set" while --set was on the
+# command line. That reads as "your VALUE is malformed" and cost a caller two
+# retries aimed at the value.
+exec breeze run pipeline guarded ddd444 --set PREROLL_CONTROL=/tmp/before.txt --as peri --token-file peri.token
+stdout 'complete'
+
+# A name no stage declares is a typo, refused with what IS declared — otherwise
+# it is dropped silently and the caller is back to a flag that reaches nothing.
+! exec breeze run pipeline guarded eee555 --set PREROL_CONTROL=x --as peri --token-file peri.token
+stderr 'no stage in pipeline "guarded" asks for that'
+stderr 'PREROLL_CONTROL'
+
+# The refusal names the VERB as well as the flag, so the remedy is copy-pasteable
+# from where it is printed.
+! exec breeze start stage guarded roll fff666 --as peri --token-file peri.token
+stderr 'breeze start stage <pipeline> roll <commit> --set PREROLL_CONTROL=VALUE'
+
 # Inert for every pipeline written before this existed.
 exec breeze start stage guarded plain abc123 --as peri --token-file peri.token
 stdout 'succeeded'

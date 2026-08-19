@@ -251,8 +251,14 @@ func checkRequiredEnv(s StageDef, set map[string]string) (bool, string) {
 		return true, ""
 	}
 	slices.Sort(missing) // map iteration otherwise; a refusal that reorders reads as a different refusal
-	return false, fmt.Sprintf("stage %q requires %s to be declared at trigger time — supply it with --set %s=VALUE. breeze does not check WHAT you set, only that you said something: a deliberate skip (--set %s=\"none: docs-only roll\") is a valid answer",
-		s.Name, strings.Join(missing, ", "), missing[0], missing[0])
+	// Names the FLAG AND THE VERB, because the first version named only the flag
+	// and cost a caller two retries: they had passed --set to `run pipeline`, which
+	// silently ignored it, and a refusal saying "supply it with --set" while --set
+	// was on the command line reads as "your VALUE is malformed". Both retries went
+	// into the value. A remedy string has to be copy-pasteable from where it is
+	// printed, or it sends the fixer at the wrong half of the command.
+	return false, fmt.Sprintf("stage %q requires %s to be declared at trigger time — supply it with `breeze start stage <pipeline> %s <commit> --set %s=VALUE` (or the same --set on `breeze run pipeline`). breeze does not check WHAT you set, only that you said something: a deliberate skip (--set %s=\"none: docs-only roll\") is a valid answer",
+		s.Name, strings.Join(missing, ", "), s.Name, missing[0], missing[0])
 }
 
 // declaredEnv renders the caller's requires_env answers as NAME=VALUE. Sorted:
