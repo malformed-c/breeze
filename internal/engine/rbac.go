@@ -21,7 +21,7 @@ func errUnregistered(identity string) error {
 // AssignRole appends role to identity's role list (idempotent — assigning an already-
 // held role is a no-op, not an error). Roles are free-form strings; there is no
 // separate catalog/registry to check against.
-func (e *Engine) AssignRole(identity string, role Role) error {
+func (e *Engine) AssignRole(identity string, role Role, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	id, ok := e.identities[identity]
@@ -31,11 +31,15 @@ func (e *Engine) AssignRole(identity string, role Role) error {
 	if !slices.Contains(id.Roles, role) {
 		id.Roles = append(id.Roles, role)
 	}
+	// Audited even when idempotent: "tried to grant admin and it was already held"
+	// and "granted admin" are the same event from a provenance standpoint, and the
+	// interesting question later is who reached for it, not whether it moved.
+	e.audit("role.assigned", actorOf(opts), "role="+string(role)+" identity="+identity)
 	e.changed()
 	return nil
 }
 
-func (e *Engine) RevokeRole(identity string, role Role) error {
+func (e *Engine) RevokeRole(identity string, role Role, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	id, ok := e.identities[identity]
@@ -43,6 +47,7 @@ func (e *Engine) RevokeRole(identity string, role Role) error {
 		return errUnregistered(identity)
 	}
 	id.Roles = slices.DeleteFunc(id.Roles, func(r Role) bool { return r == role })
+	e.audit("role.revoked", actorOf(opts), "role="+string(role)+" identity="+identity)
 	e.changed()
 	return nil
 }

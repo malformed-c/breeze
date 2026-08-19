@@ -94,6 +94,8 @@ func main() {
 		err = cmdOperator(p, args)
 	case "board":
 		err = cmdBoard(p, args)
+	case "audit":
+		err = cmdAudit(p, args)
 	case "auth":
 		err = cmdAuth(p, args)
 	default:
@@ -314,6 +316,15 @@ const usageText = `usage: breeze <verb> <noun> [args]
                                          the instant an approval/failure/success needs
                                          attention; Tier-1, runs until interrupted;
                                          D = reconnect delay
+  audit [--kind K] [--as NAME] [--limit N] [--since D] [--json]
+                                         who did what, from this daemon's own log.
+                                         --kind matches a prefix ("role" finds
+                                         role.assigned and role.revoked; "stage" the
+                                         whole family). The privileged operations are
+                                         in here — role.assigned, identity.registered,
+                                         pipeline.registered — which is how "who
+                                         granted this role, and when" gets an answer
+                                         instead of a shrug
   board [--json]                        where the time went: the tasks breeze has
                                          recorded into your "hours" database, in
                                          columns by recency (running / today / this
@@ -338,6 +349,7 @@ type flagSet struct {
 	targets                                                                                                      []string // repeated --target NAME
 	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
 	sets                                                                                                         []string // repeated --set NAME=VALUE (the answers a stage's requires_env asks for)
+	auditKind, since                                                                                             string   // --kind K / --since D (breeze audit)
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 	unknownFlag                                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
@@ -522,6 +534,16 @@ func parseFlags(args []string) flagSet {
 			f.dryRun = true
 		case "--all":
 			f.all = true
+		case "--kind":
+			i++
+			if i < len(args) {
+				f.auditKind = args[i]
+			}
+		case "--since":
+			i++
+			if i < len(args) {
+				f.since = args[i]
+			}
 		case "--serial":
 			f.serial = true
 		case "--help", "-h":

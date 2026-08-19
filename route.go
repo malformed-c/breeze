@@ -87,7 +87,7 @@ var routes = []route{
 var bareCommands = map[string]bool{
 	"apply": true, "status": true, "ping": true, "whoami": true,
 	"ps": true, "inventory": true, "operator": true, "stop": true,
-	"board": true,
+	"board": true, "audit": true,
 }
 
 // legacyGroups are the pre-swap noun-first group commands. They still work — every

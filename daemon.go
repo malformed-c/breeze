@@ -410,7 +410,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				return errResponse(err)
 			}
 		}
-		token, err := d.eng.RegisterIdentity(p.Name, p.MessAgent)
+		token, err := d.eng.RegisterIdentity(p.Name, p.MessAgent, engine.By(req.As))
 		if err != nil {
 			return errResponse(err)
 		}
@@ -440,7 +440,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
-		if err := d.eng.RevokeIdentity(p.Name); err != nil {
+		if err := d.eng.RevokeIdentity(p.Name, engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
 		return okResponse(struct{}{})
@@ -453,7 +453,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
-		if err := d.eng.AssignRole(p.Identity, engine.Role(p.Role)); err != nil {
+		if err := d.eng.AssignRole(p.Identity, engine.Role(p.Role), engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
 		return okResponse(struct{}{})
@@ -466,7 +466,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
-		if err := d.eng.RevokeRole(p.Identity, engine.Role(p.Role)); err != nil {
+		if err := d.eng.RevokeRole(p.Identity, engine.Role(p.Role), engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
 		return okResponse(struct{}{})

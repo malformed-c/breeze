@@ -27,7 +27,7 @@ var ErrAuth = fmt.Errorf("authentication failed: wrong token for that identity, 
 //
 // Bootstrap rule: the first identity ever registered against an empty store
 // auto-gets the "admin" role.
-func (e *Engine) RegisterIdentity(name, messAgent string) (token string, err error) {
+func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (token string, err error) {
 	if name == "" {
 		return "", fmt.Errorf("identity name required")
 	}
@@ -71,6 +71,18 @@ func (e *Engine) RegisterIdentity(name, messAgent string) (token string, err err
 		MessAgent:    messAgent,
 		NotifyOptOut: optOut,
 	}
+	// Three materially different events share this path and the detail says which:
+	// a bootstrap (which SILENTLY GRANTS ADMIN, and is the one nobody can
+	// reconstruct later), a rotation of an existing identity's token, and an
+	// ordinary new registration.
+	what := "registered"
+	switch {
+	case bootstrap:
+		what = "registered (BOOTSTRAP — auto-granted admin)"
+	case had:
+		what = "token rotated"
+	}
+	e.audit("identity.registered", actorOf(opts), "identity="+name+" "+what)
 	e.changed()
 	return token, nil
 }
@@ -91,15 +103,30 @@ func (e *Engine) SetNotifyOptOut(name string, optOut bool) error {
 	return nil
 }
 
-func (e *Engine) RevokeIdentity(name string) error {
+func (e *Engine) RevokeIdentity(name string, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, ok := e.identities[name]; !ok {
+	id, ok := e.identities[name]
+	if !ok {
 		return ErrNotFound
 	}
+	// The roles go with it, so record what was held: after the delete there is no
+	// way to answer "what could that identity do" from anything left behind.
+	e.audit("identity.revoked", actorOf(opts), "identity="+name+" roles="+rolesString(id.Roles))
 	delete(e.identities, name)
 	e.changed()
 	return nil
+}
+
+func rolesString(roles []Role) string {
+	if len(roles) == 0 {
+		return "(none)"
+	}
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		out = append(out, string(r))
+	}
+	return strings.Join(out, ",")
 }
 
 // VerifyToken checks name+token against the stored hash. Returns ErrAuth on any

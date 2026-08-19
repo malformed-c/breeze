@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"breeze/internal/hook"
@@ -30,7 +31,17 @@ func (e *Engine) RegisterPipeline(p Pipeline, createdBy string) error {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	_, replacing := e.pipelines[p.Name]
 	e.pipelines[p.Name] = &p
+	// Registering a pipeline REPLACES its gates — the roles a stage requires, the
+	// locks it needs, what it declares in requires_env. Whoever did that is the
+	// question a later "why does this stage refuse me" turns into, and it was not
+	// recorded anywhere before this.
+	verb := "registered"
+	if replacing {
+		verb = "replaced"
+	}
+	e.audit("pipeline."+verb, createdBy, "pipeline="+p.Name+" stages="+strconv.Itoa(len(p.Stages)))
 	e.changed()
 	return nil
 }

@@ -1,0 +1,61 @@
+# breeze audits the privileged operations, and there is a way to ask.
+#
+# Neither was true before. The log recorded stages and locks and NOT the two most
+# privileged things breeze does; and there was no `audit` verb at all, so its only
+# route was knowing a JSONL sits in the state directory. On 2026-08-19 two of us
+# went looking for who had granted an agent admin on a shared daemon: one found no
+# events, the other found the identity record holds a bare role list with no
+# provenance at any layer. The answer was unrecoverable — not expensive, gone.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze register identity alice
+exec breeze assign role deployer alice --as admin --token-file admin.token
+
+# The question that could not be answered: who granted this, and when.
+exec breeze audit --kind role
+stdout 'role.assigned'
+stdout 'admin'
+stdout 'role=deployer identity=alice'
+
+# The BOOTSTRAP silently grants admin to the first identity on an empty store —
+# the most privileged thing breeze does automatically, and it used to leave no
+# trace whatsoever.
+exec breeze audit --kind identity
+stdout 'BOOTSTRAP'
+
+# Registering a pipeline REPLACES its gates: required roles, locks, requires_env.
+# "Why does this stage refuse me" turns into "who changed it", which needs an
+# answer that is not a shrug.
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+exec breeze audit --kind pipeline
+stdout 'pipeline.registered'
+stdout 'pipeline=demo'
+
+# --kind is a PREFIX, so the family is reachable without knowing exact event
+# names — otherwise the useful queries are the ones you must already know the
+# answer to.
+exec breeze audit --kind role --json
+stdout '"Kind":\s*"role.assigned"'
+
+# --as filters to one actor: "what has this identity done here".
+exec breeze audit --as admin
+stdout 'role.assigned'
+! stdout 'BOOTSTRAP'
+
+# A filter matching nothing says so, rather than printing an empty table that
+# reads identically to "this daemon has done nothing".
+exec breeze audit --kind nonesuch
+stdout 'no audit events match'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "demo" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+}
