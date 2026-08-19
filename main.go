@@ -993,6 +993,7 @@ func cmdPing(p paths) error {
 		return err
 	}
 	fmt.Printf("pong (pid %d, version %s, dir %s)\n", out.Pid, versionString(out.Version, out.BuildTime), p.dir)
+	warnVersionSkew(out.BuildTime)
 	return nil
 }
 
@@ -1000,6 +1001,37 @@ func cmdPing(p paths) error {
 // known — buildTime is "unknown" for a binary built without the normal
 // Makefile/ci scripts' -ldflags, which is itself useful signal (you're not running
 // a binary built through the normal path) rather than something to hide.
+// versionSkewed is the decision, separate from the printing so it is testable
+// without capturing stderr. Both builds must be STAMPED and differ.
+func versionSkewed(daemonBuild string) bool {
+	if buildTime == "" || buildTime == "unknown" || daemonBuild == "" || daemonBuild == "unknown" {
+		return false
+	}
+	return buildTime != daemonBuild
+}
+
+// warnVersionSkew says so when the CLI and the daemon are different builds.
+//
+// The two halves of one feature can sit at different versions on the same machine
+// and nothing in the output said so. That is not an edge case here: the restart
+// guard REFUSES while stages run — correctly, it outranks convenience — so a
+// daemon legitimately serves old behaviour for as long as someone's sweep takes,
+// while the client half of the same feature was fixed the moment the binary
+// landed. Client-side commands (board, audit) pick a fix up immediately;
+// daemon-side behaviour (time logging, gates, everything the engine decides)
+// waits for the restart.
+//
+// Only fires when BOTH builds are stamped and they differ. An unstamped build is
+// the normal state of `go run .` and a plain `go build .`, and a warning that
+// fires for every development invocation is one people stop reading.
+func warnVersionSkew(daemonBuild string) {
+	if !versionSkewed(daemonBuild) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: this CLI was built %s and the daemon %s — client-side commands (board, audit) use THIS binary, but gates, time logging and everything the engine decides stay on the daemon's until it restarts\n",
+		buildTime, daemonBuild)
+}
+
 func versionString(version, buildTime string) string {
 	if buildTime == "" || buildTime == "unknown" {
 		return fmt.Sprintf("%s (build time unknown)", version)
@@ -1069,6 +1101,7 @@ func cmdStatus(p paths, args []string) error {
 	// does not goes stale silently.
 	fmt.Printf("breeze daemon: pid %d, version %s, dir %s   [as of %s]\n",
 		ping.Pid, versionString(ping.Version, ping.BuildTime), p.dir, time.Now().Format("15:04:05"))
+	warnVersionSkew(ping.BuildTime)
 	fmt.Printf("identities: %d, file locks: %d, resources: %d, pipelines: %d\n",
 		len(ps.Identities), len(ps.Locks), len(inv.Resources), len(pipe.Pipelines))
 	// Machine-level limits are daemon policy an operator has to be able to see
