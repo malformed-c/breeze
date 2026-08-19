@@ -16,12 +16,28 @@ import (
 // read-only view of somebody's own time tracker depend on a running daemon.
 func cmdBoard(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.only("breeze board [--json]"); handled {
+	if handled, err := f.only("breeze board [--json] [--init]"); handled {
 		return err
 	}
 	db := hoursDBFor(p)
 	if db == "" {
-		return fmt.Errorf("no hours database configured — set hours_db in %s (or the machine-wide defaults) to the path `hours` uses, and breeze will record finished stage runs into it", p.defaults)
+		// Names BOTH files and the exact line, because the previous version said
+		// "the path `hours` uses" — which has no referent on a machine where hours
+		// is not installed, and that is most of them. A hint that assumes a tool
+		// you do not have is a dead end dressed as instructions.
+		return fmt.Errorf(`no hours database configured. Add this line to %s (this repo's daemon only) or %s (every daemon on this machine, which is what you want on a shared checkout):
+
+    hours_db = "%s/hours.db"
+
+then `+"`breeze restart daemon`"+` — config is inert until the daemon reloads. If the file does not exist yet, `+"`breeze board --init`"+` creates it with hours' own schema; you do not need hours installed`,
+			p.defaults, p.globalDefaults, os.Getenv("HOME"))
+	}
+	if f.initDB {
+		if err := hourslog.Init(db); err != nil {
+			return err
+		}
+		fmt.Printf("created %s with hours' v1 schema — `hours` will open it as its own\n", db)
+		return nil
 	}
 	tasks, err := hourslog.Board(db)
 	if err != nil {

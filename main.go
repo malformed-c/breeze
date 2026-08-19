@@ -343,7 +343,7 @@ const usageText = `usage: breeze <verb> <noun> [args]
                                          pipeline.registered — which is how "who
                                          granted this role, and when" gets an answer
                                          instead of a shrug
-  board [--json]                        where the time went: the tasks breeze has
+  board [--json] [--init]               where the time went: the tasks breeze has
                                          recorded into your "hours" database, in
                                          columns by recency (running / today / this
                                          week / older) with what each has cost.
@@ -361,7 +361,7 @@ still work and point at their replacement.`
 type flagSet struct {
 	as, token, tokenFile, ttl, timeout, env, brief, limit, file, to, interval, messAgent, reason, pipeline, role string
 	cpuQuota, cpuWeight, memoryMax, memoryHigh, tasksMax, ioWeight                                               string // raw --cpu-quota/--memory-max/--tasks-max/--io-weight (lock exec's systemd-run wrapping)
-	shared, wait, force, jsonOut, dryRun, prune, all, help, serial, tryLock                                      bool
+	shared, wait, force, jsonOut, dryRun, prune, all, help, serial, tryLock, initDB                              bool
 	tail                                                                                                         int      // --tail N: output lines per stream to show on failure (negative = all)
 	tailSet                                                                                                      bool     // --tail was given explicitly, so output is wanted whatever the outcome
 	targets                                                                                                      []string // repeated --target NAME
@@ -583,6 +583,8 @@ func parseFlags(args []string) flagSet {
 			if i < len(args) {
 				f.since = args[i]
 			}
+		case "--init":
+			f.initDB = true
 		case "--serial":
 			f.serial = true
 		case "--help", "-h":

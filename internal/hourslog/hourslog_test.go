@@ -15,40 +15,6 @@ import (
 // comment says these statements cannot change once released; only migrations can
 // be added. If a future hours adds one, checkSchema refuses and this fixture is
 // where the new shape gets pinned.
-const schemaV1 = `
-CREATE TABLE db_versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    version INTEGER NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE task (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    summary TEXT NOT NULL,
-    secs_spent INTEGER NOT NULL DEFAULT 0,
-    active BOOLEAN NOT NULL DEFAULT true,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE task_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER,
-    begin_ts TIMESTAMP NOT NULL,
-    end_ts TIMESTAMP,
-    secs_spent INTEGER NOT NULL DEFAULT 0,
-    comment TEXT,
-    active BOOLEAN NOT NULL,
-    FOREIGN KEY(task_id) REFERENCES task(id)
-);
-CREATE TRIGGER prevent_duplicate_active_insert
-BEFORE INSERT ON task_log
-BEGIN
-    SELECT CASE
-        WHEN EXISTS (SELECT 1 FROM task_log WHERE active = 1)
-        THEN RAISE(ABORT, 'Only one row with active=1 is allowed')
-    END;
-END;
-INSERT INTO db_versions (version, created_at) VALUES (1, CURRENT_TIMESTAMP);
-`
 
 func newDB(t *testing.T) string {
 	t.Helper()

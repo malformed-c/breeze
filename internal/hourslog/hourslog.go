@@ -22,11 +22,81 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// schemaV1 is hours' initial schema, reproduced from its InitDB. hours' own
+// comment says these statements cannot change once released and that only
+// migrations may be added, which is what makes reproducing them safe: a database
+// breeze creates this way is one hours opens, finds at version 1 — its own latest
+// — and leaves alone.
+//
+// ONE definition serves both jobs: creating a database when `hours` is not
+// installed, and asserting in tests that this is the shape breeze writes into. Two
+// copies would drift, and the drift would be silent.
+const schemaV1 = `
+CREATE TABLE db_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE task (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary TEXT NOT NULL,
+    secs_spent INTEGER NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE task_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER,
+    begin_ts TIMESTAMP NOT NULL,
+    end_ts TIMESTAMP,
+    secs_spent INTEGER NOT NULL DEFAULT 0,
+    comment TEXT,
+    active BOOLEAN NOT NULL,
+    FOREIGN KEY(task_id) REFERENCES task(id)
+);
+CREATE TRIGGER prevent_duplicate_active_insert
+BEFORE INSERT ON task_log
+BEGIN
+    SELECT CASE
+        WHEN EXISTS (SELECT 1 FROM task_log WHERE active = 1)
+        THEN RAISE(ABORT, 'Only one row with active=1 is allowed')
+    END;
+END;
+INSERT INTO db_versions (version, created_at) VALUES (1, CURRENT_TIMESTAMP);
+`
+
+// Init creates a database at path with hours' v1 schema.
+//
+// breeze does NOT do this implicitly on a missing file, and that is deliberate:
+// a half-initialized database that hours later tries to migrate is worse than an
+// absent one. But the original advice — "run `hours` once to create it" — assumed
+// hours was installed, and on a machine where it is not, the feature had no route
+// in at all. This is that route, taken on purpose rather than by accident.
+func Init(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists — refusing to write a schema over a database that is already there", path)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Exec(schemaV1); err != nil {
+		return fmt.Errorf("creating the hours schema: %w", err)
+	}
+	return nil
+}
 
 // ErrActiveTimer means hours has a running timer, and its schema refuses ANY
 // insert while one exists.
