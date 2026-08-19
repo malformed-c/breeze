@@ -341,6 +341,27 @@ type flagSet struct {
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 	unknownFlag                                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
+	// seen records which flags were actually SUPPLIED, canonicalized to their long
+	// form. The values above cannot answer that — "" and 0 are real values a caller
+	// may pass — and "was this flag given" is exactly the question that has to be
+	// asked to tell an ignored flag from an absent one.
+	seen map[string]bool
+}
+
+// flagAliases canonicalizes the short spellings so a command that accepts
+// "--file" also accepts "-f" without having to list both.
+var flagAliases = map[string]string{
+	"-h": "--help", "-f": "--file", "-d": "--dbpath", "-p": "--pipeline",
+}
+
+func (f *flagSet) markSeen(a string) {
+	if canon, ok := flagAliases[a]; ok {
+		a = canon
+	}
+	if f.seen == nil {
+		f.seen = map[string]bool{}
+	}
+	f.seen[a] = true
 }
 
 func parseFlags(args []string) flagSet {
@@ -348,6 +369,12 @@ func parseFlags(args []string) flagSet {
 	i := 0
 	for i < len(args) {
 		a := args[i]
+		// Only ever a flag POSITION: each case consumes its own value with i++, so
+		// a value that happens to start with "-" (--brief "-n runs") is never seen
+		// here.
+		if len(a) > 1 && a[0] == '-' && a != "--" {
+			f.markSeen(a)
+		}
 		switch a {
 		case "--as":
 			i++
@@ -568,7 +595,18 @@ func validEnvName(s string) bool {
 	return true
 }
 
-func (f flagSet) rejectUnknownFlags(usage string) (bool, error) {
+// accepted, when non-empty, is the exact set of flags this command reads.
+// Anything else the caller supplied is refused rather than ignored.
+//
+// This closes a class the unknown-flag check could not see. breeze has ONE shared
+// parser, so every flag is syntactically valid on every command — `--set` on `run
+// pipeline` parsed perfectly and was simply never read, and the stage then refused
+// as though nothing had been supplied. The reporter spent two retries on the
+// value, because a flag that is accepted-and-dropped is indistinguishable from a
+// flag that is accepted-and-wrong. Measured at the time: every flag in the parser
+// is read at 2-5 call sites out of ~25 commands, so --set was the instance with
+// consequences rather than the only instance.
+func (f flagSet) rejectUnknownFlags(usage string, accepted ...string) (bool, error) {
 	if f.help {
 		fmt.Println("usage: " + usage)
 		return true, nil
@@ -576,7 +614,90 @@ func (f flagSet) rejectUnknownFlags(usage string) (bool, error) {
 	if f.unknownFlag != "" {
 		return true, fmt.Errorf("unrecognized flag %q\nusage: %s", f.unknownFlag, usage)
 	}
-	return false, nil
+	if len(accepted) == 0 {
+		return false, nil
+	}
+	ok := make(map[string]bool, len(accepted)+4)
+	ok["--help"] = true // always allowed; it is handled above
+	// The credential triple is accepted everywhere, including by commands that do
+	// not read it. People pass `--as X --token-file Y` uniformly across a script,
+	// and a Tier-1 read refusing a credential it simply did not need would break
+	// working invocations to prevent nothing: an unread credential changes no
+	// behaviour. The flags this check exists for are the ones that DO — --set,
+	// --force, --serial, --env — where accepted-and-ignored is indistinguishable
+	// from accepted-and-applied.
+	ok["--as"], ok["--token"], ok["--token-file"] = true, true, true
+	for _, a := range accepted {
+		ok[a] = true
+	}
+	var ignored []string
+	for a := range f.seen {
+		if !ok[a] {
+			ignored = append(ignored, a)
+		}
+	}
+	if len(ignored) == 0 {
+		return false, nil
+	}
+	slices.Sort(ignored) // map iteration; a refusal that reorders reads as a different refusal
+	sorted := slices.Clone(accepted)
+	slices.Sort(sorted)
+	return true, fmt.Errorf("%s does not read %s, so it would have been silently ignored — it accepts %s\nusage: %s",
+		commandOf(usage), strings.Join(ignored, ", "), strings.Join(sorted, ", "), usage)
+}
+
+// only is rejectUnknownFlags with the accepted set taken FROM THE USAGE STRING
+// the command already prints.
+//
+// Derived rather than hand-listed on purpose: a second list beside the usage line
+// is a thing that drifts, and the drift is invisible — the usage would say one
+// set and the parser accept another, which is the same "reads as one thing, does
+// another" shape this whole check exists to remove. Here they cannot disagree,
+// and a flag a command genuinely reads must appear in its usage or it stops
+// working, which is the right pressure.
+func (f flagSet) only(usage string) (bool, error) {
+	return f.rejectUnknownFlags(usage, flagsInUsage(usage)...)
+}
+
+// flagsInUsage pulls every --flag (and short alias) mentioned in a usage string.
+func flagsInUsage(usage string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for w := range strings.FieldsSeq(usage) {
+		w = strings.Trim(w, "[]|()\"',")
+		if !strings.HasPrefix(w, "-") || w == "-" || w == "--" {
+			continue
+		}
+		// "--env=NAME" and "--tail=N" spellings, plus trailing punctuation.
+		if i := strings.IndexByte(w, '='); i > 0 {
+			w = w[:i]
+		}
+		if canon, ok := flagAliases[w]; ok {
+			w = canon
+		}
+		if !seen[w] {
+			seen[w], out = true, append(out, w)
+		}
+	}
+	return out
+}
+
+// commandOf pulls the command name out of a usage string for the refusal, so the
+// message names what the caller actually typed rather than "this command".
+func commandOf(usage string) string {
+	usage = strings.TrimPrefix(usage, "usage: ")
+	fields := strings.Fields(usage)
+	var out []string
+	for _, w := range fields {
+		if strings.HasPrefix(w, "[") || strings.HasPrefix(w, "<") || strings.HasPrefix(w, "-") || w == "|" {
+			break
+		}
+		out = append(out, w)
+	}
+	if len(out) == 0 {
+		return "this command"
+	}
+	return "`" + strings.Join(out, " ") + "`"
 }
 
 // resourceLimits builds a *hook.ResourceLimits from --cpu-quota/--memory-max/
@@ -827,7 +948,7 @@ func versionString(version, buildTime string) string {
 // wire Op needed): liveness, identity/lock counts (via ps), and registered pipelines.
 func cmdStatus(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze status [--json]"); handled {
+	if handled, err := f.only("breeze status [--json]"); handled {
 		return err
 	}
 
@@ -930,7 +1051,7 @@ func cmdOperator(p paths, args []string) error {
 		return cmdOperatorUpdateAll(parseFlags(args[1:]).force)
 	}
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze operator [--pipeline NAME] [--env NAME] [--json] | notify | update-all"); handled {
+	if handled, err := f.only("breeze operator [--pipeline NAME] [--env NAME] [--json] | notify | update-all"); handled {
 		return err
 	}
 	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
@@ -1162,7 +1283,7 @@ func cmdOperatorUpdateAll(force bool) error {
 // interrupted; reconnects (after --interval, default 3s) if the daemon restarts.
 func cmdOperatorNotify(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze operator notify [--interval D]"); handled {
+	if handled, err := f.only("breeze operator notify [--interval D]"); handled {
 		return err
 	}
 	reconnectDelay := 3 * time.Second
@@ -1323,7 +1444,7 @@ var desktopNotify = func(title, body string) {
 
 func cmdWhoAmI(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze whoami [--as NAME] [--json]"); handled {
+	if handled, err := f.only("breeze whoami [--as NAME] [--json]"); handled {
 		return err
 	}
 	as := resolveIdentity(p, f)
@@ -1362,10 +1483,10 @@ func cmdWhoAmI(p paths, args []string) error {
 // answers whether that identity currently holds a given role.
 func cmdAuth(p paths, args []string) error {
 	if len(args) == 0 || args[0] != "check" {
-		return fmt.Errorf("usage: breeze check auth [--as NAME] [--token T] [--role R] [--json]")
+		return fmt.Errorf("usage: breeze check auth [--as NAME] [--token T | --token-file PATH] [--role R] [--json]")
 	}
 	f := parseFlags(args[1:])
-	if handled, err := f.rejectUnknownFlags("breeze check auth [--as NAME] [--token T] [--role R] [--json]"); handled {
+	if handled, err := f.only("breeze check auth [--as NAME] [--token T | --token-file PATH] [--role R] [--json]"); handled {
 		return err
 	}
 	as := resolveIdentity(p, f)
@@ -1413,7 +1534,7 @@ func authFailureErr(authorized bool) error {
 
 func cmdPs(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze ps [--json]"); handled {
+	if handled, err := f.only("breeze ps [--json]"); handled {
 		return err
 	}
 	resp, err := call(p, wire.Request{Op: wire.OpPs})
@@ -1514,13 +1635,20 @@ func cmdIdentity(p paths, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze register identity | revoke identity | notify identity ..."); handled {
-		return err
-	}
+	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
+	// `breeze <verb> identity --help` prints that verb's usage instead of this group
+	// line, which lists no flags and so cannot answer what --help asked. The group
+	// form is right only when the subcommand is unrecognized — see default.
 	switch sub {
 	case "list":
+		if handled, err := f.only("breeze list identities [--json]"); handled {
+			return err
+		}
 		return listIdentities(p, f)
 	case "register":
+		if handled, err := f.only("breeze register identity <name> [--mess-agent NAME] [--force] [--as NAME] [--token T | --token-file PATH]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze register identity <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
 		}
@@ -1543,6 +1671,9 @@ func cmdIdentity(p paths, args []string) error {
 		fmt.Println(out.Token)
 		return nil
 	case "revoke":
+		if handled, err := f.only("breeze revoke identity <name> --as ADMIN [--token T | --token-file PATH]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze revoke identity <name> --as ADMIN --token T")
 		}
@@ -1555,6 +1686,9 @@ func cmdIdentity(p paths, args []string) error {
 		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: as, Token: token, Payload: payload})
 		return err
 	case "notify":
+		if handled, err := f.only("breeze notify identity on|off [--as NAME]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
 			return fmt.Errorf("usage: breeze notify identity on|off [--as NAME]")
 		}
@@ -1566,6 +1700,9 @@ func cmdIdentity(p paths, args []string) error {
 		_, err := call(p, wire.Request{Op: wire.OpIdentityNotify, As: as, Payload: payload})
 		return err
 	default:
+		if handled, err := f.rejectUnknownFlags("breeze register identity | revoke identity | notify identity ..."); handled {
+			return err
+		}
 		return fmt.Errorf("unknown identity subcommand %q", sub)
 	}
 }
@@ -1576,11 +1713,15 @@ func cmdRole(p paths, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze assign role | revoke role | list roles ..."); handled {
-		return err
-	}
+	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
+	// `breeze <verb> role --help` prints that verb's usage instead of this group
+	// line, which lists no flags and so cannot answer what --help asked. The group
+	// form is right only when the subcommand is unrecognized — see default.
 	switch sub {
 	case "assign", "revoke":
+		if handled, err := f.only("breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"); handled {
+			return err
+		}
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze %s role <role> <identity> --as ADMIN --token T", sub)
 		}
@@ -1611,6 +1752,9 @@ func cmdRole(p paths, args []string) error {
 		fmt.Printf(verb, f.rest[0], f.rest[1])
 		return nil
 	case "list":
+		if handled, err := f.only("breeze list roles [--json]"); handled {
+			return err
+		}
 		req, err := readRequest(p, f, wire.OpRoleList, nil)
 		if err != nil {
 			return err
@@ -1632,6 +1776,9 @@ func cmdRole(p paths, args []string) error {
 		}
 		return nil
 	default:
+		if handled, err := f.rejectUnknownFlags("breeze assign role | revoke role | list roles ..."); handled {
+			return err
+		}
 		return fmt.Errorf("unknown role subcommand %q", sub)
 	}
 }
@@ -1642,12 +1789,16 @@ func cmdLock(p paths, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ..."); handled {
-		return err
-	}
+	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
+	// `breeze acquire lock --help` prints acquire's usage instead of this group
+	// line, which lists no flags and so cannot answer what --help asked. The group
+	// form is right only when the subcommand is unrecognized — see default.
 	as := resolveIdentity(p, f)
 	switch sub {
 	case "acquire":
+		if handled, err := f.only("breeze acquire lock <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--try | --wait] [--timeout D] [--json]"); handled {
+			return err
+		}
 		if len(f.resources) > 0 && len(f.rest) > 0 {
 			return fmt.Errorf("cannot mix file paths and --resource in one lock acquire")
 		}
@@ -1684,6 +1835,9 @@ func cmdLock(p paths, args []string) error {
 		fmt.Println(out.Lock.ID)
 		return nil
 	case "release":
+		if handled, err := f.only("breeze release lock <lock-id> --as NAME [--force] [--json]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze release lock <lock-id> --as NAME [--force]")
 		}
@@ -1691,6 +1845,9 @@ func cmdLock(p paths, args []string) error {
 		_, err := call(p, wire.Request{Op: wire.OpLockRelease, As: as, Payload: payload})
 		return err
 	case "release-all":
+		if handled, err := f.only("breeze release locks --as NAME [--json]"); handled {
+			return err
+		}
 		resp, err := call(p, wire.Request{Op: wire.OpLockReleaseAll, As: as})
 		if err != nil {
 			return err
@@ -1712,6 +1869,9 @@ func cmdLock(p paths, args []string) error {
 		}
 		return nil
 	case "renew":
+		if handled, err := f.only("breeze renew lock <lock-id> [--ttl D] --as NAME [--json]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze renew lock <lock-id> [--ttl D] --as NAME")
 		}
@@ -1719,6 +1879,9 @@ func cmdLock(p paths, args []string) error {
 		_, err := call(p, wire.Request{Op: wire.OpLockRenew, As: as, Payload: payload})
 		return err
 	case "list":
+		if handled, err := f.only("breeze list locks [--all] [--json]"); handled {
+			return err
+		}
 		payload, _ := json.Marshal(wire.LockListRequest{All: f.all})
 		req, err := readRequest(p, f, wire.OpLockList, payload)
 		if err != nil {
@@ -1747,10 +1910,19 @@ func cmdLock(p paths, args []string) error {
 		}
 		return nil
 	case "check":
+		if handled, err := f.only("breeze check lock <path...> [--as NAME] [--json]"); handled {
+			return err
+		}
 		return cmdLockCheck(p, as, f)
 	case "exec":
+		if handled, err := f.only("breeze exec lock <path...> [--shared] [--try | --wait] [--timeout D] [--ttl D] [--cpu-quota P] [--cpu-weight N] [--memory-max SIZE] [--memory-high SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>"); handled {
+			return err
+		}
 		return cmdLockExec(p, as, f)
 	default:
+		if handled, err := f.rejectUnknownFlags("breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ..."); handled {
+			return err
+		}
 		return fmt.Errorf("unknown lock subcommand %q", sub)
 	}
 }
@@ -1762,7 +1934,7 @@ func cmdLock(p paths, args []string) error {
 // convenience, per the design.
 func cmdApply(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]"); handled {
+	if handled, err := f.only("breeze apply -f <file.hcl> [--as ADMIN] [--token T | --token-file PATH] [--dry-run] [--prune]"); handled {
 		return err
 	}
 	if f.file == "" {
@@ -1975,13 +2147,18 @@ func cmdPipeline(p paths, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ..."); handled {
-		return err
-	}
+	// --help and the flag check are the SUBCOMMAND's to answer: each one below
+	// declares its own accepted set, so `breeze show pipeline --help` prints show's
+	// usage rather than this group line, which lists no flags at all and so cannot
+	// answer the question --help was asked. The group form is right only when we do
+	// not know which subcommand was meant — see default.
 	switch sub {
 	case "run":
 		return cmdPipelineRun(p, f)
 	case "register":
+		if handled, err := f.only("breeze register pipeline <file.json|-> --as ADMIN [--token T | --token-file PATH]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze register pipeline <file.json|-> --as ADMIN --token T")
 		}
@@ -2008,6 +2185,9 @@ func cmdPipeline(p paths, args []string) error {
 		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload})
 		return err
 	case "show":
+		if handled, err := f.only("breeze show pipeline <name> [--json]"); handled {
+			return err
+		}
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze show pipeline <name> [--json]")
 		}
@@ -2032,6 +2212,9 @@ func cmdPipeline(p paths, args []string) error {
 		printPipelineHuman(out.Pipeline, machineLimits(p))
 		return nil
 	case "list":
+		if handled, err := f.only("breeze list pipelines [--json]"); handled {
+			return err
+		}
 		req, err := readRequest(p, f, wire.OpPipelineList, nil)
 		if err != nil {
 			return err
@@ -2053,6 +2236,9 @@ func cmdPipeline(p paths, args []string) error {
 		}
 		return nil
 	case "status":
+		if handled, err := f.only("breeze status pipeline <name> <commit> [--json]"); handled {
+			return err
+		}
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze status pipeline <name> <commit> [--json]")
 		}
@@ -2082,6 +2268,9 @@ func cmdPipeline(p paths, args []string) error {
 		}
 		return nil
 	default:
+		if handled, err := f.rejectUnknownFlags("breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ..."); handled {
+			return err
+		}
 		return fmt.Errorf("unknown pipeline subcommand %q", sub)
 	}
 }
@@ -2106,6 +2295,9 @@ func cmdPipeline(p paths, args []string) error {
 // it. Approval is never granted automatically: it is a human decision this command
 // was never asked to make on anyone's behalf.
 func cmdPipelineRun(p paths, f flagSet) error {
+	if handled, err := f.only("breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--serial] --as WHO [--token T | --token-file PATH]"); handled {
+		return err
+	}
 	if len(f.rest) < 2 {
 		return fmt.Errorf("usage: breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--serial] --as WHO [--token T]")
 	}
@@ -2750,17 +2942,43 @@ func stageFailureErr(status string) error {
 	return nil
 }
 
+// stageUsage is the usage line for one stage subcommand, and with it the set of
+// flags that subcommand accepts (f.only derives the set from the string, so they
+// cannot disagree). Separate lines per subcommand because the flags genuinely
+// differ: --set and --force are real on start and meaningless on approve, and one
+// shared parser cannot tell them apart on its own.
+func stageUsage(sub string) string {
+	switch sub {
+	case "start":
+		return "breeze start stage <pipeline> <stage> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--force] [--tail N] [--json] --as WHO [--token T | --token-file PATH]"
+	case "approve":
+		return "breeze approve stage <pipeline> <stage> <commit> [--env NAME] [--brief \"...\"] [--tail N] [--json] --as WHO [--token T | --token-file PATH]"
+	case "status":
+		return "breeze status stage <pipeline> <stage> <commit> [--env NAME] [--tail N] [--json] [--as NAME]"
+	case "wait":
+		return "breeze wait stage <pipeline> <stage> <commit> [--env NAME] [--timeout D] [--tail N] [--json] [--as NAME]"
+	case "cancel":
+		return "breeze cancel stage <pipeline> <stage> <commit> [--env NAME] [--reason \"...\"] [--json] --as WHO [--token T | --token-file PATH]"
+	case "claim":
+		return "breeze claim stage <pipeline> <stage> <commit> [--env NAME] [--ttl D] [--json] --as WHO [--token T | --token-file PATH]"
+	}
+	return "breeze start|approve|status|wait|cancel|claim stage <pipeline> <stage> <commit> [--env NAME] ..."
+}
+
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: breeze start stage | approve stage | status stage | wait stage | cancel stage | claim stage ...")
 	}
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
-	if handled, err := f.rejectUnknownFlags("breeze start|approve|status|wait|cancel|claim stage <pipeline> <stage> <commit> [--env NAME] ..."); handled {
+	// Before the positional check, so `--help` answers with THIS subcommand's
+	// usage rather than being told it is missing three arguments.
+	usage := stageUsage(sub)
+	if handled, err := f.only(usage); handled {
 		return err
 	}
 	if len(f.rest) < 3 {
-		return fmt.Errorf("usage: breeze %s stage <pipeline> <stage> <commit> [--env NAME] ...", sub)
+		return fmt.Errorf("usage: %s", usage)
 	}
 	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommitVerbose(f.rest[2])
 	as := resolveIdentity(p, f)
@@ -2961,7 +3179,7 @@ func cmdDeploy(p paths, args []string) error {
 
 func cmdDeployHistory(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]"); handled {
+	if handled, err := f.only("breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]"); handled {
 		return err
 	}
 	if len(f.rest) < 2 {
@@ -3000,7 +3218,7 @@ func cmdDeployHistory(p paths, args []string) error {
 // deploy: rollback is authorization-equivalent to deploying, not lesser-privileged.
 func cmdDeployRollback(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]"); handled {
+	if handled, err := f.only("breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T | --token-file PATH]"); handled {
 		return err
 	}
 	if len(f.rest) < 3 {
@@ -3039,7 +3257,7 @@ func cmdDeployRollback(p paths, args []string) error {
 // Same RBAC as a normal deploy: claiming is authorization-equivalent to deploying.
 func cmdDeployClaim(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]"); handled {
+	if handled, err := f.only("breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T | --token-file PATH]"); handled {
 		return err
 	}
 	if len(f.rest) < 2 {
@@ -3081,7 +3299,7 @@ func cmdDeployClaim(p paths, args []string) error {
 // role.assign. See engine.GrantEnvironmentAccess.
 func cmdDeployGrant(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]"); handled {
+	if handled, err := f.only("breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T | --token-file PATH]"); handled {
 		return err
 	}
 	if len(f.rest) < 1 {
@@ -3127,7 +3345,7 @@ func cmdDeployGrant(p paths, args []string) error {
 // by pipeline/--env. Tier-1 read, same as `role list`/`lock list`/`inventory`.
 func cmdDeployGrantList(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze list grants [<pipeline>] [--env NAME] [--json]"); handled {
+	if handled, err := f.only("breeze list grants [<pipeline>] [--env NAME] [--json]"); handled {
 		return err
 	}
 	pipeline := ""
@@ -3172,7 +3390,7 @@ func cmdDeployGrantList(p paths, args []string) error {
 // broader `operator` dashboard.
 func cmdInventory(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze inventory [--json]"); handled {
+	if handled, err := f.only("breeze inventory [--json]"); handled {
 		return err
 	}
 	req, err := readRequest(p, f, wire.OpInventory, nil)

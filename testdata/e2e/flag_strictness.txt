@@ -1,0 +1,61 @@
+# A flag a command does not read is REFUSED, not ignored.
+#
+# breeze has one shared flag parser, so every flag is syntactically valid on every
+# command — which meant each command silently dropped the ones it did not read.
+# `--set` on `run pipeline` parsed cleanly, was never read, and the stage then
+# refused as though nothing had been supplied; the reporter spent two retries on
+# the VALUE, because accepted-and-dropped is indistinguishable from
+# accepted-and-wrong. Every flag in that parser was read at 2-5 of ~25 commands,
+# so --set was the instance with consequences rather than the only instance.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity admin
+cp stdout admin.token
+exec breeze apply -f pipeline.hcl --as admin --token-file admin.token
+
+# The reported shape, on a command that genuinely has nothing to do with --set.
+! exec breeze show pipeline demo --set FOO=bar
+stderr 'does not read --set'
+stderr 'silently ignored'
+# The refusal names the command and what it DOES accept, so the fix is in the
+# message rather than in a second command.
+stderr 'breeze show pipeline'
+stderr 'accepts --json'
+
+# Subcommand granularity is the point: --set is real on `start stage` and
+# meaningless on `approve stage`, and one shared parser cannot tell them apart.
+! exec breeze approve stage demo review abc123 --set FOO=bar --as admin --token-file admin.token
+stderr 'does not read --set'
+
+# Flags a command DOES read still work.
+exec breeze show pipeline demo --json
+stdout '"name":\s*"demo"'
+
+# Credentials are accepted everywhere, including where they are not read: people
+# pass --as/--token-file uniformly across a script, and an unread credential
+# changes no behaviour. Refusing them would break working invocations to prevent
+# nothing.
+exec breeze ps --as admin --token-file admin.token
+stdout 'identities'
+
+# --help still short-circuits to usage, and an unknown flag is still a hard error.
+exec breeze show pipeline --help
+stdout 'usage: breeze show pipeline'
+! exec breeze show pipeline demo --nope
+stderr 'unrecognized flag'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "demo" {
+  stage "build" {
+    type    = "command"
+    timeout = "10s"
+    command = ["/bin/true"]
+  }
+  stage "review" {
+    type               = "approval"
+    required_approvals = 1
+    approver_role      = "reviewer"
+  }
+}

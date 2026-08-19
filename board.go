@@ -16,7 +16,7 @@ import (
 // read-only view of somebody's own time tracker depend on a running daemon.
 func cmdBoard(p paths, args []string) error {
 	f := parseFlags(args)
-	if handled, err := f.rejectUnknownFlags("breeze board [--json]"); handled {
+	if handled, err := f.only("breeze board [--json]"); handled {
 		return err
 	}
 	db := hoursDBFor(p)
