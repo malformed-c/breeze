@@ -96,6 +96,29 @@ comment.
 It's **`--set` on the trigger, not an `export`**. A stage command inherits the
 *daemon's* environment, so nothing you export in your shell reaches it.
 
+## Tasks — work items with people on them
+
+```sh
+breeze create task "title" --assign NAME --review NAME --as WHO
+breeze list tasks [--status S] [--assign NAME]
+breeze update task w1 --status doing --as WHO
+breeze update task w1 --status blocked --blocked "what it waits for" --as WHO
+breeze update task w1 --assign "" --as WHO          # "" unassigns; omitting leaves alone
+```
+
+Status is one of `open doing review done blocked` — a closed set, or it becomes
+six spellings of "in progress".
+
+**A change notifies the people attached — creator, assignee, reviewer — minus
+you**, honouring each identity's notify opt-out. A change that changes nothing
+notifies nobody. The reply says who was told, including `(nobody)`.
+
+Naming someone who isn't a registered identity is refused: an item that *looks*
+owned and notifies no one is worse than an unassigned one.
+
+Distinct from a **stage** (something breeze runs) and from an **hours task**
+(where time went).
+
 ## Deploys
 
 ```sh
@@ -178,4 +201,5 @@ cores, not your quota.
 | "which of the three daemons?" | the one in the repo you're standing in |
 | a flag seemed to do nothing | it's refused now; if it isn't, it's read |
 | who changed this gate / granted this role | `breeze audit --kind pipeline` / `--kind role` |
+| a task changed and nobody heard | were they attached to it? the reply prints who was told |
 | a probe returned zero | zero means *no such literal*, not *no such behaviour* |

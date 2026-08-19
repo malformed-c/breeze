@@ -157,7 +157,7 @@ func TestRoutesAreWellFormed(t *testing.T) {
 		"daemon": true, "stop": true, "ping": true, "status": true, "whoami": true,
 		"ps": true, "identity": true, "role": true, "lock": true, "inventory": true,
 		"apply": true, "pipeline": true, "stage": true, "deploy": true, "operator": true,
-		"auth": true,
+		"auth": true, "task": true,
 	}
 	seen := map[string]bool{}
 	for _, r := range routes {

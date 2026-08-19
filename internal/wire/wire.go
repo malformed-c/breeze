@@ -56,6 +56,10 @@ const (
 	OpOperatorWatch   Op = "operator.watch"   // streaming: pushes the surface again on every change
 
 	OpAuthCheck Op = "auth.check" // read-only: would As+Token pass a given role gate right now?
+
+	OpTaskCreate Op = "task.create"
+	OpTaskList   Op = "task.list"
+	OpTaskUpdate Op = "task.update"
 )
 
 // Request is the single envelope for every op. Payload is op-specific and decoded
@@ -111,6 +115,48 @@ const (
 // Features is what a daemon built from this source advertises.
 func Features() []string {
 	return []string{FeatureForceDeploy, FeatureLockTryWait, FeatureStageLock, FeatureRestartGuard, FeatureForceCommandStage, FeatureStageEnv}
+}
+
+// WorkItem is a unit of work with people attached: who asked for it, who is
+// doing it, who checks it, and where it has got to. See engine.WorkItem.
+type WorkItem struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	Creator   string    `json:"creator,omitempty"`
+	Assignee  string    `json:"assignee,omitempty"`
+	Reviewer  string    `json:"reviewer,omitempty"`
+	Status    string    `json:"status"`
+	Blocked   string    `json:"blocked,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type TaskCreateRequest struct {
+	Title    string `json:"title"`
+	Assignee string `json:"assignee,omitempty"`
+	Reviewer string `json:"reviewer,omitempty"`
+}
+
+// TaskUpdateRequest uses POINTERS so "leave this alone" is distinguishable from
+// "set this to empty" — unassigning is a real operation and must not read as an
+// omitted field.
+type TaskUpdateRequest struct {
+	ID       string  `json:"id"`
+	Status   *string `json:"status,omitempty"`
+	Assignee *string `json:"assignee,omitempty"`
+	Reviewer *string `json:"reviewer,omitempty"`
+	Blocked  *string `json:"blocked,omitempty"`
+}
+
+type TaskResponse struct {
+	Item WorkItem `json:"item"`
+	// Notified names who breeze told, so the caller can see the change reached
+	// someone rather than assuming it did.
+	Notified []string `json:"notified,omitempty"`
+}
+
+type TaskListResponse struct {
+	Items []WorkItem `json:"items"`
 }
 
 // CodeLockConflict marks a failure caused purely by someone else holding a

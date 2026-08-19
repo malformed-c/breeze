@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -201,6 +202,37 @@ func runDaemon(p paths, args []string) error {
 // daemon's perspective; never read back to reconstruct state (the snapshot already
 // is current state). Best-effort: a write failure here is logged but never blocks or
 // fails the mutation that triggered it.
+func workItemToWire(w engine.WorkItem) wire.WorkItem {
+	return wire.WorkItem{
+		ID: w.ID, Title: w.Title, Creator: w.Creator,
+		Assignee: w.Assignee, Reviewer: w.Reviewer,
+		Status: string(w.Status), Blocked: w.Blocked,
+		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
+	}
+}
+
+// notifyTask tells the people attached to an item, minus the actor. Returns who
+// was told so the caller can SEE the change reached someone — "notified: (nobody)"
+// is a useful answer, and the alternative is assuming it landed.
+func (d *daemonServer) notifyTask(item *engine.WorkItem, actor, what string) []string {
+	var who []string
+	for _, name := range []string{item.Creator, item.Assignee, item.Reviewer} {
+		if name == "" || name == actor || slices.Contains(who, name) {
+			continue
+		}
+		who = append(who, name)
+	}
+	if len(who) == 0 {
+		return nil
+	}
+	return d.notifyList(who, fmt.Sprintf("%s — by %s", what, actor))
+}
+
+func (d *daemonServer) notifyList(who []string, message string) []string {
+	notifyViaMess(who, "[breeze task] "+message, "")
+	return who
+}
+
 func appendAuditLine(path string, ev engine.AuditEvent) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -360,6 +392,53 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			return okResponse(wire.WhoAmIResponse{Name: req.As})
 		}
 		return okResponse(wire.WhoAmIResponse{Name: id.Name, Roles: rolesToStrings(id.Roles), Registered: true})
+
+	case wire.OpTaskCreate:
+		var p wire.TaskCreateRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		if req.As == "" {
+			return errResponse(fmt.Errorf("creating a task needs an identity: pass --as NAME — an item whose creator is nobody cannot be answered"))
+		}
+		item, err := d.eng.CreateWorkItem(p.Title, req.As, p.Assignee, p.Reviewer)
+		if err != nil {
+			return errResponse(err)
+		}
+		// Assigning someone at creation is itself news to them.
+		notified := d.notifyTask(item, req.As, fmt.Sprintf("created %s: %s", item.ID, item.Title))
+		return okResponse(wire.TaskResponse{Item: workItemToWire(*item), Notified: notified})
+
+	case wire.OpTaskList:
+		items := d.eng.WorkItems()
+		out := make([]wire.WorkItem, 0, len(items))
+		for _, it := range items {
+			out = append(out, workItemToWire(it))
+		}
+		return okResponse(wire.TaskListResponse{Items: out})
+
+	case wire.OpTaskUpdate:
+		var p wire.TaskUpdateRequest
+		if err := json.Unmarshal(req.Payload, &p); err != nil {
+			return errResponse(err)
+		}
+		if req.As == "" {
+			return errResponse(fmt.Errorf("changing a task needs an identity: pass --as NAME — the point of the record is who moved it"))
+		}
+		up := engine.WorkUpdate{Assignee: p.Assignee, Reviewer: p.Reviewer, Blocked: p.Blocked}
+		if p.Status != nil {
+			st := engine.WorkStatus(*p.Status)
+			up.Status = &st
+		}
+		item, stakeholders, err := d.eng.UpdateWorkItem(p.ID, req.As, up)
+		if err != nil {
+			return errResponse(err)
+		}
+		var notified []string
+		if len(stakeholders) > 0 {
+			notified = d.notifyList(stakeholders, fmt.Sprintf("%s [%s] %s — changed by %s", item.ID, item.Status, item.Title, req.As))
+		}
+		return okResponse(wire.TaskResponse{Item: workItemToWire(*item), Notified: notified})
 
 	case wire.OpAuthCheck:
 		// Deliberately data, not an RPC error: "not authorized" is an expected,

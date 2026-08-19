@@ -27,6 +27,8 @@ type Snapshot struct {
 	StageInstances    []StageInstance           `json:"stageInstances,omitempty"`
 	DeployHistory     map[string][]DeployRecord `json:"deployHistory,omitempty"`
 	EnvironmentGrants []EnvironmentGrant        `json:"environmentGrants,omitempty"`
+	WorkItems         []WorkItem                `json:"workItems,omitempty"`
+	WorkSeq           int                       `json:"workSeq,omitempty"`
 }
 
 func LoadSnapshotFile(path string) (Snapshot, error) {

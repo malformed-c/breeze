@@ -43,6 +43,12 @@ var routes = []route{
 	{verb: "assign", nouns: []string{"role"}, legacy: []string{"role", "assign"}},
 	{verb: "revoke", nouns: []string{"role"}, legacy: []string{"role", "revoke"}},
 	{verb: "list", nouns: []string{"roles", "role"}, legacy: []string{"role", "list"}},
+
+	// work items — a unit of work with people attached, as distinct from a stage
+	// (something breeze RUNS) and an hours task (where time WENT).
+	{verb: "create", nouns: []string{"task"}, legacy: []string{"task", "create"}},
+	{verb: "list", nouns: []string{"tasks"}, legacy: []string{"task", "list"}},
+	{verb: "update", nouns: []string{"task"}, legacy: []string{"task", "update"}},
 	{verb: "list", nouns: []string{"identities", "identity"}, legacy: []string{"identity", "list"}},
 	{verb: "check", nouns: []string{"auth"}, legacy: []string{"auth", "check"}},
 

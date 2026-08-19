@@ -1,0 +1,65 @@
+# Work items: a unit of work with PEOPLE attached — who asked for it, who is
+# doing it, who checks it, and where it has got to.
+#
+# Distinct from a stage (something breeze RUNS) and from an hours task (where
+# time WENT). Kept in breeze's own state rather than in the hours database,
+# because hours' schema is a third-party contract breeze refuses to write outside
+# of, and workflow state belongs where the identities, roles, notifications and
+# audit log already live.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity alice
+cp stdout alice.token
+exec breeze register identity bob
+
+exec breeze create task 'wire the audit read path' --assign bob --review alice --as alice
+stdout 'w1 created'
+# Assigning someone is itself news to them; alice is creator AND reviewer AND the
+# actor, so she is not told what she just did.
+stdout 'notified: bob'
+
+exec breeze list tasks
+stdout 'w1'
+stdout 'open'
+stdout 'bob'
+
+# A change reaches the people attached MINUS the one who made it.
+exec breeze update task w1 --status doing --as bob
+stdout 'w1 \[doing\]'
+stdout 'notified: alice'
+
+# A name that is not a registered identity is refused: an item that LOOKS owned
+# and notifies nobody is worse than an unassigned one.
+! exec breeze create task 'x' --assign nobdy --as alice
+stderr 'not a registered identity'
+
+# The status vocabulary is closed, or it becomes six spellings of "in progress"
+# across four agents and no query works.
+! exec breeze update task w1 --status wip --as alice
+stderr 'open, doing, review, done, blocked'
+
+# A change that changes nothing notifies nobody — a "changed" message for a
+# non-change teaches people to ignore the channel.
+exec breeze update task w1 --status doing --as alice
+stdout 'notified: \(nobody'
+
+# A blocked item says what it is waiting for, in the list rather than behind
+# --json: a status nobody can act on is not a status.
+exec breeze update task w1 --status blocked --blocked 'waiting on the nvme' --as bob
+exec breeze list tasks
+stdout 'blocked: waiting on the nvme'
+
+# Filters, so a board of any size stays answerable.
+exec breeze list tasks --status blocked
+stdout 'w1'
+exec breeze list tasks --status done
+stdout 'no tasks'
+
+# Unassigning is a real operation and must be distinguishable from not mentioning
+# the field — which is why the update fields are pointers on the wire.
+exec breeze update task w1 --assign '' --as alice --json
+# omitempty: a cleared assignee is ABSENT from the JSON, which is the proof it was
+# cleared rather than silently retained.
+! stdout '"assignee"'
+
+exec breeze stop

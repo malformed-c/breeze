@@ -61,6 +61,8 @@ type Engine struct {
 	deployHistory map[string][]DeployRecord // pipeline+"/"+stage+"/"+env -> records
 
 	envGrants map[string]*EnvironmentGrant // pipeline+"/"+environment+"/"+grantee -> grant
+	work      map[string]*WorkItem         // id -> work item (see workitem.go)
+	workSeq   int                          // monotonic, so ids are stable across a restart
 
 	waiters map[string][]chan struct{} // key -> parked waiters, for locks and stage instances
 
@@ -120,6 +122,7 @@ func New() *Engine {
 		runningCancel:   make(map[string]context.CancelFunc),
 		deployHistory:   make(map[string][]DeployRecord),
 		envGrants:       make(map[string]*EnvironmentGrant),
+		work:            make(map[string]*WorkItem),
 		waiters:         make(map[string][]chan struct{}),
 		operatorSubs:    make(map[int]chan struct{}),
 		now:             time.Now,
@@ -220,6 +223,10 @@ func (e *Engine) snapshotLocked() Snapshot {
 	for _, g := range e.envGrants {
 		snap.EnvironmentGrants = append(snap.EnvironmentGrants, *g)
 	}
+	for _, w := range e.work {
+		snap.WorkItems = append(snap.WorkItems, *w)
+	}
+	snap.WorkSeq = e.workSeq
 	return snap
 }
 
@@ -268,6 +275,15 @@ func (e *Engine) Load(snap Snapshot) {
 		g := snap.EnvironmentGrants[i]
 		e.envGrants[envGrantKey(g.Pipeline, g.Environment, g.Grantee)] = &g
 	}
+	e.work = make(map[string]*WorkItem, len(snap.WorkItems))
+	for i := range snap.WorkItems {
+		w := snap.WorkItems[i]
+		e.work[w.ID] = &w
+	}
+	// Restored rather than recomputed from len(work): items get deleted, and a
+	// counter derived from the count would reissue an id that already existed in
+	// somebody's notes and audit log.
+	e.workSeq = snap.WorkSeq
 	e.lockSeq = snap.Seq
 
 	// Recompute commitSeqCounter as max(existing values) so newly-touched commits

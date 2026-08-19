@@ -96,6 +96,8 @@ func main() {
 		err = cmdBoard(p, args)
 	case "audit":
 		err = cmdAudit(p, args)
+	case "task":
+		err = cmdTask(p, args)
 	case "auth":
 		err = cmdAuth(p, args)
 	default:
@@ -316,6 +318,22 @@ const usageText = `usage: breeze <verb> <noun> [args]
                                          the instant an approval/failure/success needs
                                          attention; Tier-1, runs until interrupted;
                                          D = reconnect delay
+-- tasks (work items: who asked, who is doing it, who checks it) --
+  create task "<title>" [--assign NAME] [--review NAME] --as WHO
+                                         open a work item. Naming an assignee or a
+                                         reviewer tells them; a name that is not a
+                                         registered identity is refused, since an
+                                         item that LOOKS owned and notifies nobody
+                                         is worse than an unassigned one
+  list tasks [--status S] [--assign NAME] [--json]
+                                         status is one of: open, doing, review,
+                                         done, blocked
+  update task <id> [--status S] [--assign NAME] [--review NAME] [--blocked "why"] --as WHO
+                                         a change notifies the people attached to
+                                         the item — creator, assignee, reviewer —
+                                         minus you, honouring each identity's own
+                                         notify opt-out. A change that changes
+                                         nothing notifies nobody
   audit [--kind K] [--as NAME] [--limit N] [--since D] [--json]
                                          who did what, from this daemon's own log.
                                          --kind matches a prefix ("role" finds
@@ -350,6 +368,7 @@ type flagSet struct {
 	resources                                                                                                    []string // repeated --resource NAME (lock acquire's mutex-over-a-named-concept mode)
 	sets                                                                                                         []string // repeated --set NAME=VALUE (the answers a stage's requires_env asks for)
 	auditKind, since                                                                                             string   // --kind K / --since D (breeze audit)
+	assign, review, status, blocked                                                                              string   // --assign / --review / --status / --blocked (breeze tasks)
 	rest                                                                                                         []string // positional args before `--` (or all args, if no `--` present)
 	cmdArgs                                                                                                      []string // args after `--`, e.g. the command for `lock exec ... -- <cmd>`
 	unknownFlag                                                                                                  string   // first unrecognized `-`/`--`-shaped token, e.g. a typo'd flag or bare `--help`
@@ -534,6 +553,26 @@ func parseFlags(args []string) flagSet {
 			f.dryRun = true
 		case "--all":
 			f.all = true
+		case "--assign":
+			i++
+			if i < len(args) {
+				f.assign = args[i]
+			}
+		case "--review":
+			i++
+			if i < len(args) {
+				f.review = args[i]
+			}
+		case "--status":
+			i++
+			if i < len(args) {
+				f.status = args[i]
+			}
+		case "--blocked":
+			i++
+			if i < len(args) {
+				f.blocked = args[i]
+			}
 		case "--kind":
 			i++
 			if i < len(args) {
