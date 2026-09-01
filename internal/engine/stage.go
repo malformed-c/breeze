@@ -614,29 +614,10 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
-	inst.ExitCode = result.ExitCode
 	inst.Stdout = result.Stdout
 	inst.Stderr = result.Stderr
-	switch {
-	case result.Err != nil:
-		inst.Status, inst.FailureKind = StageFailed, FailStart
-		inst.Error = result.Err.Error()
-	case result.TimedOut:
-		// A timeout says the run took too long. It says nothing about whether the
-		// code is good — 74 of 78 checks may have passed — so it must not read as
-		// "a check went red", which is what one flat "failed" made it look like.
-		inst.Status, inst.FailureKind = StageFailed, FailTimedOut
-		inst.Error = "timed out"
-	case wasCancelled:
-		inst.Status, inst.FailureKind = StageFailed, FailCancelled
-		if inst.Error == "" {
-			inst.Error = "cancelled"
-		}
-	case result.ExitCode != 0:
-		inst.Status, inst.FailureKind = StageFailed, FailCommand
-	default:
-		inst.Status = StageSucceeded
-	}
+	decideOutcome(inst, result, wasCancelled, FailStart)
+	e.checkOutcome(inst)
 	e.audit("stage."+string(inst.Status), actor, fmt.Sprintf("pipeline=%s stage=%s key=%s exitCode=%d", pipelineName, stageName, key, inst.ExitCode))
 	transformIn := transformInputFor(inst, "", result.TimedOut)
 	e.mu.Unlock()

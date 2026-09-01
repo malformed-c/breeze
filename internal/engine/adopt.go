@@ -185,21 +185,10 @@ func (e *Engine) resolveAdopted(inst *StageInstance, res hook.Result) {
 		inst.Stdout = hook.ReadCapped(inst.OutputDir + "/" + hook.StdoutFile)
 		inst.Stderr = hook.ReadCapped(inst.OutputDir + "/" + hook.StderrFile)
 	}
-	inst.ExitCode = res.ExitCode
 	inst.FinishedAt = e.now()
 	inst.RunnerPID, inst.RunnerStart = 0, ""
-	switch {
-	case res.Err != nil:
-		inst.Status, inst.FailureKind = StageFailed, FailOrphaned
-		inst.Error = res.Err.Error()
-	case res.TimedOut:
-		inst.Status, inst.FailureKind = StageFailed, FailTimedOut
-		inst.Error = "timed out"
-	case res.ExitCode != 0:
-		inst.Status, inst.FailureKind = StageFailed, FailCommand
-	default:
-		inst.Status = StageSucceeded
-	}
+	decideOutcome(inst, res, false, FailOrphaned)
+	e.checkOutcome(inst)
 	e.releaseRunLockLocked(inst)
 	e.cleanupRunDirLocked(inst)
 	e.audit("stage."+string(inst.Status), inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s exitCode=%d (adopted across a daemon restart)",

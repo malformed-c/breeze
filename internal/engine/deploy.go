@@ -347,30 +347,14 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 
 	e.mu.Lock()
 	inst.FinishedAt = e.now()
-	inst.ExitCode = result.ExitCode
 	inst.Stdout = result.Stdout
 	inst.Stderr = result.Stderr
+	decideOutcome(inst, result, wasCancelled, FailStart)
+	e.checkOutcome(inst)
 
-	outcome := DeploySucceeded
-	if result.Err != nil {
-		inst.Status, inst.FailureKind = StageFailed, FailStart
-		inst.Error = result.Err.Error()
-		outcome = DeployFailed
-	} else if result.TimedOut {
-		inst.Status, inst.FailureKind = StageFailed, FailTimedOut
-		inst.Error = "timed out"
-		outcome = DeployFailed
-	} else if wasCancelled {
-		inst.Status, inst.FailureKind = StageFailed, FailCancelled
-		if inst.Error == "" {
-			inst.Error = "cancelled"
-		}
-		outcome = DeployFailed
-	} else if result.ExitCode != 0 {
-		inst.Status, inst.FailureKind = StageFailed, FailCommand
-		outcome = DeployFailed
-	} else {
-		inst.Status = StageSucceeded
+	outcome := DeployFailed
+	if inst.Status == StageSucceeded {
+		outcome = DeploySucceeded
 		switch {
 		case override == DeployRollback:
 			// Set unconditionally, not just-if-greater: the rollback target is now
