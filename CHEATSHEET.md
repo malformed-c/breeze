@@ -134,7 +134,8 @@ breeze start stage ... --force --brief "why"      # break glass, audited as forc
 ```sh
 breeze start daemon [-d]      # -d detaches
 breeze restart daemon         # in place, same pid, picks up a new binary on disk
-breeze restart daemon --force # REFUSES while stages run unless forced
+breeze restart daemon         # busy? DEFERRED — restarts itself once idle
+breeze restart daemon --force # right now, interrupting whoever is watching
 breeze restart daemons        # every daemon the registry knows
 breeze stop
 ```

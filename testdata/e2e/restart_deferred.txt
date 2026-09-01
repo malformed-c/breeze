@@ -1,0 +1,38 @@
+# A restart that arrives while a stage is running is DEFERRED, not refused: the
+# daemon restarts itself the moment nothing is in flight. The guard still never
+# interrupts anyone's run — waiting for idle satisfies that by construction — but
+# "come back later" no longer means a human has to. One daemon sat a whole evening
+# on an old binary because the lane never happened to be quiet when anyone looked.
+env BREEZE_DIR=$WORK/state
+
+exec breeze register identity a
+cp stdout a.token
+exec breeze apply -f pipeline.hcl --as a --token-file a.token
+
+# Start a stage that outlives the restart request, then ask for the restart.
+exec sh -c 'breeze start stage slow s abc --as a --token-file a.token >/dev/null 2>&1 &'
+exec sleep 2
+exec breeze restart daemon
+stdout 'DEFERRED until idle'
+stdout 'slow/s \(a\)'
+
+# The stage was NOT interrupted: it finishes on its own and records success.
+exec breeze wait stage slow s abc --timeout 30s
+stdout 'succeeded'
+
+# Idle now: within a sweep tick the daemon restarts itself, and the client sees
+# the re-exec'd daemon rather than a dead socket.
+exec sleep 7
+exec breeze ping
+stdout 'pong'
+
+exec breeze stop
+
+-- pipeline.hcl --
+pipeline "slow" {
+  stage "s" {
+    type    = "command"
+    timeout = "1m"
+    command = ["/bin/sh", "-c", "sleep 6"]
+  }
+}

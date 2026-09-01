@@ -173,6 +173,14 @@ type RestartRequest struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// RestartResponse says what the daemon did with the request. Deferred means it
+// is busy and will restart itself the moment it is idle — see daemon.go's
+// restartWhenIdle — so the caller knows the update is queued rather than done.
+type RestartResponse struct {
+	Deferred bool     `json:"deferred,omitempty"`
+	Running  []string `json:"running,omitempty"` // what it is waiting on, e.g. "periapsis/verify-guards (radiant-main)"
+}
+
 // QueueStatus reports the machine-wide stage budget and its current occupancy.
 type QueueStatus struct {
 	Max         int      `json:"max"`

@@ -29,9 +29,11 @@ stdout 'machine-wide stage budget: 1 concurrent, 1 in use'
 stdout 'svc/slow'
 
 # A queued stage counts against the restart guard: it has no process, but it does
-# have a goroutine holding its place, and a re-exec destroys that.
-! exec breeze restart daemon
-stderr 'queued for a machine slot'
+# have a goroutine holding its place, and a re-exec destroys that. So the restart
+# is deferred, and the deferral says the stage is queued rather than running.
+exec breeze restart daemon
+stdout 'DEFERRED until idle'
+stdout 'queued for a machine slot'
 
 # Freeing the slot deterministically rather than waiting out a sleep: under load the
 # holder would otherwise finish before the assertions above ran, and the test would

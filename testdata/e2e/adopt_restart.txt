@@ -17,12 +17,12 @@ exec sh -c 'breeze start stage svc long abc123 --as ci --token-file ci.token >/d
 exec breeze status stage svc long abc123
 stdout 'long: running'
 
-# A restart is REFUSED while that run is in flight, naming it — adoption would carry
-# it, so the guard is about not interrupting whoever is watching, not about safety.
-! exec breeze restart daemon
-stderr 'refusing to restart'
-stderr 'svc/long'
-stderr 'actor=ci'
+# A restart is DEFERRED while that run is in flight, naming it — adoption would
+# carry it, so the guard is about not interrupting whoever is watching, not about
+# safety. Deferred rather than refused: the daemon restarts itself once idle.
+exec breeze restart daemon
+stdout 'DEFERRED until idle'
+stdout 'svc/long \(ci\)'
 
 # Forcing is the deliberate version, and it is what this test is actually about.
 exec breeze restart daemon --force

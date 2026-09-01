@@ -538,28 +538,38 @@ func restartRequest(t *testing.T, d *daemonServer, force bool) wire.Response {
 // The check ANSWERED and the next command ran regardless, on someone else's
 // production deploy. A check whose answer nothing consumes is not a check, it is a
 // print statement — so the daemon consumes it, since it owns both halves.
-func TestRestartRefusesWhileStagesAreRunning(t *testing.T) {
+//
+// Deferred rather than refused since the opportunistic update: waiting for idle
+// never interrupts anyone, and it removes the human from "come back later".
+func TestRestartIsDeferredWhileStagesAreRunning(t *testing.T) {
 	d := newTestDaemon()
 	registerRunningStage(t, d, "periapsis", "deploy", "a54c4822b9a8", "peri-sonnet-5")
 
 	resp := restartRequest(t, d, false)
-	if resp.OK {
-		t.Fatal("a restart must be refused while a stage is running")
+	if !resp.OK {
+		t.Fatalf("a busy restart is DEFERRED, not refused: %+v", resp)
 	}
-	// It must name what it would interrupt: a count sends you off to run the very
+	out, err := decodePayload[wire.RestartResponse](resp)
+	if err != nil || !out.Deferred {
+		t.Fatalf("the response must say it was deferred, got %+v (%v)", out, err)
+	}
+	// It must name what it is waiting on: a count sends you off to run the very
 	// command whose answer was already ignored once.
-	for _, want := range []string{"deploy", "a54c4822", "peri-sonnet-5", "--force"} {
-		if !strings.Contains(resp.Error, want) {
-			t.Errorf("refusal must mention %q, got:\n%s", want, resp.Error)
-		}
+	if len(out.Running) != 1 || !strings.Contains(out.Running[0], "deploy") || !strings.Contains(out.Running[0], "peri-sonnet-5") {
+		t.Errorf("deferral must name the run and its actor, got %v", out.Running)
 	}
+	// Deferred means NOT NOW: the daemon is still serving and the stop channel is
+	// untouched. What changed is the intent flag the sweep loop acts on.
 	if d.restarting.Load() {
-		t.Fatal("a refused restart must not flag the daemon as restarting")
+		t.Fatal("a deferred restart must not flag the daemon as restarting yet")
 	}
 	select {
 	case <-d.stop:
-		t.Fatal("a refused restart must not close the stop channel")
+		t.Fatal("a deferred restart must not close the stop channel")
 	default:
+	}
+	if !d.restartWhenIdle.Load() {
+		t.Fatal("a deferred restart must record the intent, or it never happens")
 	}
 }
 

@@ -145,8 +145,20 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 		}
 	}
 	payload, _ := json.Marshal(wire.RestartRequest{Force: force})
-	if _, err := callOnConn(conn, wire.Request{Op: wire.OpRestart, Payload: payload}); err != nil {
+	resp, err := callOnConn(conn, wire.Request{Op: wire.OpRestart, Payload: payload})
+	if err != nil {
 		return fmt.Errorf("asking the existing daemon to restart: %w", err)
+	}
+	// Deferred is success of a different shape, and must not be reported as the
+	// same one: "restarted" while the old binary is still serving is exactly the
+	// config-says-X-daemon-does-Y hazard this tool spends its life removing.
+	if out, derr := decodePayload[wire.RestartResponse](resp); derr == nil && out.Deferred {
+		fmt.Printf("breeze daemon is busy — restart DEFERRED until idle (dir %s); it will pick up the binary on disk the moment nothing is in flight. Waiting on:\n", p.dir)
+		for _, r := range out.Running {
+			fmt.Printf("  %s\n", r)
+		}
+		fmt.Println("(`breeze ping` will warn about build skew until then; --force restarts now)")
+		return nil
 	}
 	// The client's patience has to exceed the daemon's own shutdown budget, or a
 	// restart that worked perfectly reports as a failure. That budget is up to 5s

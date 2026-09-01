@@ -50,6 +50,12 @@ type daemonServer struct {
 	// remembering it is the only one.
 	stopOnce sync.Once
 
+	// restartWhenIdle is an OpRestart that arrived while stages were running and
+	// was DEFERRED rather than refused: the daemon restarts itself the moment
+	// nothing is in flight. Opportunistic update — the guard still never interrupts
+	// anyone's run, but "come back later" no longer means a human has to.
+	restartWhenIdle atomic.Bool
+
 	// restarting is set by an OpRestart request just before it closes stop — the
 	// accept loop's clean-shutdown branch checks it to decide whether to exit
 	// normally or re-exec in place (see execSelfAsDaemon).
@@ -305,6 +311,15 @@ func (d *daemonServer) sweepLoop() {
 			d.eng.SweepExpiredLocks()
 			d.eng.PruneStageOutput()
 			d.eng.SweepExpiredGrants()
+			// The deferred restart fires here, on the same cadence as everything
+			// else that waits for a moment nobody is using. RunningStages includes
+			// queued ones: a restart destroys the goroutine holding a queue place.
+			if d.restartWhenIdle.Load() && len(d.eng.RunningStages()) == 0 {
+				log.Printf("idle now — performing the deferred restart")
+				d.restarting.Store(true)
+				d.beginShutdown()
+				return
+			}
 		}
 	}
 }
@@ -353,7 +368,26 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		}
 		if !rr.Force {
 			if running := d.eng.RunningStages(); len(running) > 0 {
-				enc.Encode(errResponse(fmt.Errorf("%s", restartRefusal(running))))
+				// Not refused: DEFERRED. The guard's job is to never interrupt a run
+				// that is not yours, and waiting for idle satisfies that by
+				// construction. What refusing added on top was a human having to
+				// remember to come back — and tonight one daemon sat a whole evening
+				// on an old binary because the lane never happened to be quiet when
+				// anyone was looking. The daemon can look every five seconds.
+				d.restartWhenIdle.Store(true)
+				log.Printf("restart deferred: %d stage(s) in flight; will restart in place when idle", len(running))
+				names := make([]string, 0, len(running))
+				for _, inst := range running {
+					// A queued stage has no process, but a re-exec destroys the goroutine
+					// holding its place in the queue — so it counts, and is named as
+					// what it is rather than as "running".
+					state := ""
+					if inst.Status == engine.StageQueued {
+						state = ", queued for a machine slot"
+					}
+					names = append(names, fmt.Sprintf("%s/%s (%s%s)", inst.Pipeline, inst.Stage, inst.Actor, state))
+				}
+				enc.Encode(okResponse(wire.RestartResponse{Deferred: true, Running: names}))
 				return
 			}
 		}
@@ -363,7 +397,7 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		// path OpStop uses; runDaemon's accept loop re-execs once it's fully wound
 		// down, never from this connection-handling goroutine directly (avoids a
 		// race between this goroutine's own exec and the main loop's shutdown).
-		enc.Encode(okResponse(struct{}{}))
+		enc.Encode(okResponse(wire.RestartResponse{}))
 		d.restarting.Store(true)
 		d.beginShutdown()
 		return

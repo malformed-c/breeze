@@ -148,10 +148,11 @@ const usageText = `usage: breeze <verb> <noun> [args]
   restart daemon [--force]              ask the running daemon to restart itself in
                                          place (same pid); falls back to a fresh
                                          detached start if nothing's running yet.
-                                         REFUSES while stages are running — adoption
-                                         would carry them, so this is about not
-                                         interrupting whoever is watching them;
-                                         --force if they're yours or you've asked
+                                         DEFERRED while stages are running: the
+                                         daemon restarts itself the moment nothing
+                                         is in flight, so an update lands without
+                                         interrupting anyone or anyone remembering
+                                         to come back. --force restarts right now
   restart daemons [--force]             restart every breeze daemon this machine's
                                          discovery registry knows about — picks up
                                          whatever binary is already on disk, never
