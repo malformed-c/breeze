@@ -2690,7 +2690,7 @@ func (r *pipelineRun) summarize() error {
 		}
 	}
 	if len(blocked) == 0 && len(unreached) == 0 {
-		fmt.Printf("pipeline %q complete for %s\n", r.name, shortCommitForDisplay(r.commit))
+		fmt.Printf("pipeline %q complete for %s%s\n", r.name, shortCommitForDisplay(r.commit), envSuffix(r.env))
 		return nil
 	}
 	fmt.Println("stopped:")
@@ -2700,7 +2700,7 @@ func (r *pipelineRun) summarize() error {
 	if len(unreached) > 0 {
 		fmt.Printf("  not reached (prerequisite unmet): %s\n", strings.Join(unreached, ", "))
 	}
-	return fmt.Errorf("pipeline %q incomplete for %s: %d stage(s) blocked, %d not reached", r.name, shortCommitForDisplay(r.commit), len(blocked), len(unreached))
+	return fmt.Errorf("pipeline %q incomplete for %s%s: %d stage(s) blocked, %d not reached", r.name, shortCommitForDisplay(r.commit), envSuffix(r.env), len(blocked), len(unreached))
 }
 
 // printPipelineHuman renders a pipeline's stage-prerequisite chain explicitly —

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +44,12 @@ type daemonServer struct {
 	lockFD   int
 	saver    *snapshotWriter
 
+	// stopOnce guards the close of stop. Three things now trigger shutdown —
+	// OpStop, OpRestart and a signal — and close() of an already-closed channel
+	// panics, so the trigger has to be idempotent rather than each caller
+	// remembering it is the only one.
+	stopOnce sync.Once
+
 	// restarting is set by an OpRestart request just before it closes stop — the
 	// accept loop's clean-shutdown branch checks it to decide whether to exit
 	// normally or re-exec in place (see execSelfAsDaemon).
@@ -59,6 +66,42 @@ type daemonServer struct {
 	// itself resolved the stage correctly via CancelRunningStages below — the
 	// caller just never got to hear about it.
 	conns sync.WaitGroup
+}
+
+// handleSignals routes SIGINT/SIGTERM into the SAME clean-stop path OpStop uses.
+//
+// Without this the careful shutdown existed and was reachable only by asking
+// nicely over the socket. Measured before the fix: `register identity alice`
+// returned a token to its caller, a SIGTERM arrived, and the identity was GONE —
+// no state.json at all. breeze acknowledged a mutation and then lost it, and the
+// caller was holding a token for an identity that no longer existed.
+//
+// That is not an exotic path. It is Ctrl-C on a foreground `breeze start daemon`,
+// `systemctl stop`, a session teardown killing its process group, and anything
+// else that reaches for the ordinary way to stop a program.
+//
+// A SECOND signal exits immediately. The graceful path can take up to ten seconds
+// (draining requests, then flushing the snapshot), and a program that appears to
+// ignore Ctrl-C teaches people to reach for SIGKILL — which is the one signal
+// that genuinely cannot be caught, and would put them back where they started.
+func (d *daemonServer) handleSignals() {
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-ch
+		log.Printf("received %s — shutting down cleanly (cancelling running stages, flushing the snapshot); signal again to exit immediately", sig)
+		d.beginShutdown()
+
+		sig = <-ch
+		log.Printf("received %s a second time — exiting now, WITHOUT flushing; recent changes may be lost", sig)
+		os.Exit(1)
+	}()
+}
+
+// beginShutdown starts the clean-stop path exactly once, whoever asks — OpStop,
+// OpRestart, or a signal.
+func (d *daemonServer) beginShutdown() {
+	d.stopOnce.Do(func() { close(d.stop) })
 }
 
 // waitConnsIdle waits up to timeout for every in-flight handleConn goroutine
@@ -117,6 +160,7 @@ func runDaemon(p paths, args []string) error {
 	}
 
 	go d.sweepLoop()
+	d.handleSignals()
 	log.Printf("breeze daemon listening on %s (pid %d)", p.sock, os.Getpid())
 
 	messCtx, messCancel := context.WithCancel(context.Background())
@@ -321,7 +365,7 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		// race between this goroutine's own exec and the main loop's shutdown).
 		enc.Encode(okResponse(struct{}{}))
 		d.restarting.Store(true)
-		close(d.stop)
+		d.beginShutdown()
 		return
 	}
 
@@ -380,7 +424,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		return okResponse(wire.PingResponse{Pid: os.Getpid(), Version: version, BuildTime: buildTime, Features: wire.Features(), DefaultResourceLimits: resourceLimitsToWire(d.eng.DefaultResourceLimits()), LimitSources: d.eng.LimitSources(), NotifyProblem: notifierStatus(), IOLimitProblem: ioLimitStatus(d.eng), NiceProblem: niceStatus(d.eng), Queue: queueStatus(d.eng), RunDir: d.eng.RunDir()})
 
 	case wire.OpStop:
-		close(d.stop)
+		d.beginShutdown()
 		return okResponse(struct{}{})
 
 	case wire.OpWhoAmI:

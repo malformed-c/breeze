@@ -236,6 +236,21 @@ func isFullSHA(s string) bool {
 // identical shortCommit convention for brief filenames, so the same commit reads
 // the same length everywhere breeze shows it. JSON output always shows the full,
 // untruncated value callers might need to pass back verbatim.
+// envSuffix renders the environment for a result line, or nothing when the
+// pipeline has none.
+//
+// A commit is not a deployment. "pipeline complete for 0db09eebce3e" reads the
+// same whether it went to staging or to production, and that line is the one
+// people paste into a channel — so the summary that travels furthest was the only
+// one missing the fact that decides whether anyone should care. Every other line
+// in a run already carries the environment.
+func envSuffix(env string) string {
+	if env == "" {
+		return ""
+	}
+	return " → " + env
+}
+
 func shortCommitForDisplay(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]
