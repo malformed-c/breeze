@@ -4,6 +4,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -636,5 +637,58 @@ func TestAProjectionNeverCarriesARunsVerdict(t *testing.T) {
 			t.Errorf("%s/%s: a projection reported %q — only a completed run may emit that, and a reader takes the status word over the bracket beside it",
 				c.stage, c.env, got.Status)
 		}
+	}
+}
+
+// THE SHUTDOWN LEAK: CancelRunningStages rewrote every in-flight record to
+// cancelled and killed NOTHING. Written for the restart-orphan case, where the
+// process is already gone, then reused for a stop, where it is not — a SIGTERM or
+// `breeze stop` left every stage's process running under a log line that said
+// "now orphaned, untracked". Measured: a `sleep 300` outlived both shutdown paths
+// while a plain `cancel stage` killed it fine.
+//
+// A real child process, so the kill is proven against the OS rather than against
+// a mock: the child is Setpgid'd exactly as hook.Run does, so the group signal
+// killRunner sends reaches it, and its liveness is checked with kill -0.
+func TestCancelRunningStagesKillsTheProcessesTooNotJustTheRecords(t *testing.T) {
+	e := New()
+	registerReleasePipeline(t, e)
+
+	cmd := exec.Command("sleep", "300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() })
+	pid := cmd.Process.Pid
+
+	key := StageKey{Commit: "abc123"}
+	e.instances[instanceKey("release", "build", key)] = &StageInstance{
+		Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci",
+		StartedAt: time.Now(), RunnerPID: pid, RunnerStart: procStartToken(pid),
+	}
+	// The context-cancel half must be invoked too: it is what hook.Run's own
+	// goroutine keys its group kill and its result on.
+	cancelled := false
+	e.mu.Lock()
+	e.runningCancel[instanceKey("release", "build", key)] = func() { cancelled = true }
+	e.mu.Unlock()
+
+	if n := e.CancelRunningStages("daemon shut down"); n != 1 {
+		t.Fatalf("want 1 cancelled, got %d", n)
+	}
+	if !cancelled {
+		t.Error("the registered cancel func must be invoked, or hook.Run never learns the run is over")
+	}
+	// Bounded: with the kill missing, an unconditional cmd.Wait() blocks for the
+	// child's full 300s before the assertion runs. A regression should fail in
+	// seconds, not by timing out the suite. cmd.Wait reaps the corpse afterwards
+	// so a zombie is not what kill -0 is answering for.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("pid %d is still alive 5s after CancelRunningStages — the record says cancelled and the process disagrees", pid)
 	}
 }

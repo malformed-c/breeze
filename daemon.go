@@ -206,8 +206,8 @@ func runDaemon(p paths, args []string) error {
 					if n := d.eng.RunningStageCount(); n > 0 {
 						log.Printf("restarting with %d stage instance(s) still running — they keep executing and will be adopted after the re-exec", n)
 					}
-				} else if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process is now orphaned with no result; re-run `stage start` to retry"); n > 0 {
-					log.Printf("cancelled %d stage instance(s) still running at shutdown (their underlying processes are now orphaned, untracked)", n)
+				} else if n := d.eng.CancelRunningStages("daemon shut down while this stage was running — its process was killed with no result; re-run `stage start` to retry"); n > 0 {
+					log.Printf("cancelled %d stage instance(s) still running at shutdown and killed their processes", n)
 				}
 				// Give every in-flight request a real chance to write its response
 				// before anything tears the process down — CancelRunningStages just

@@ -853,6 +853,26 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		if !isInFlight(inst.Status) {
 			continue
 		}
+		// KILL FIRST, then record — the same order CancelStage uses, and the half
+		// this function was missing. It was written for the restart-orphan case,
+		// where the process is already gone, and was then reused for a stop, where
+		// it is not: a SIGTERM or `breeze stop` rewrote every in-flight record to
+		// cancelled and left every process running, under a log line that said
+		// "now orphaned, untracked" as if that were a property of the world rather
+		// than of this function. Measured: a stage's `sleep 300` outlived both
+		// shutdown paths. A plain `cancel stage` killed it fine.
+		//
+		// Two mechanisms, deliberately. Cancelling the context asks hook.Run's
+		// goroutine to SIGKILL the process group — correct, but asynchronous, and
+		// this daemon is about to exit. killRunner is synchronous and prefers the
+		// cgroup, which also reaches children a script scattered across process
+		// groups. Idempotent together: a second SIGKILL to a dead group is ESRCH.
+		e.cancelIfRunningLocked(instanceKey(inst.Pipeline, inst.Stage, inst.Key))
+		if inst.RunnerPID > 0 {
+			if anomaly := killRunner(inst.RunnerPID, inst.RunnerStart); anomaly != "" {
+				e.audit("stage.orphan.kill_anomaly", "system", fmt.Sprintf("pipeline=%s stage=%s key=%s: %s", inst.Pipeline, inst.Stage, inst.Key, anomaly))
+			}
+		}
 		inst.Status, inst.FailureKind = StageFailed, FailCancelled
 		inst.Error = reason
 		inst.FinishedAt = e.now()
