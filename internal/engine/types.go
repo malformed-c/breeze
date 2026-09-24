@@ -11,6 +11,14 @@ import (
 
 type Role string
 
+// RoleAdmin is the one role with a meaning of its own: it is the role every
+// admin-only op checks (see daemon.go's requireAdmin), and it is auto-granted to
+// the first identity on an empty store. Every other role is free-form — a name a
+// pipeline's stage/command policy happens to require. This one is named here
+// because code that grants, tests, or bootstraps it is making a decision about
+// the whole store, not about one policy.
+const RoleAdmin Role = "admin"
+
 type Identity struct {
 	Name         string
 	TokenHash    string // hex sha256; empty = no live token

@@ -71,6 +71,40 @@ func TestHelpAndUnknownStillBehave(t *testing.T) {
 	}
 }
 
+// The same class, in positional clothing. The reporter's command was
+// `breeze assign role deployer claude-svcproxy --as admin .git`: the parser
+// accepted the trailing path, the arity check was satisfied by the two arguments
+// that mattered, and the path was dropped without a word — so the next three
+// invocations (each tab-completing a different path into the same slot) failed
+// against an error about a flag they never passed. Too FEW arguments is still
+// the plain usage line; too MANY is a refusal that names what it dropped.
+func TestExtraPositionalIsRefusedNotDropped(t *testing.T) {
+	const usage = "breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"
+
+	f := parseFlags([]string{"deployer", "claude-svcproxy", "--as", "admin", ".git"})
+	err := f.exactArgs(usage, 2)
+	if err == nil {
+		t.Fatal("an argument the command does not read must be refused, not dropped")
+	}
+	// It names the offender (a path is a path) and the command, so the message is
+	// actionable where it is printed.
+	for _, want := range []string{".git", "breeze assign|revoke role", "silently ignored"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q should mention %q", err, want)
+		}
+	}
+
+	if err := parseFlags([]string{"deployer", "claude-svcproxy"}).exactArgs(usage, 2); err != nil {
+		t.Errorf("the correct arity must pass, got %v", err)
+	}
+	// Too few is under-specified, not a silent drop — the usage line is the whole
+	// answer there, and refusing it as though an argument were being discarded
+	// would describe a mistake nobody made.
+	if err := parseFlags([]string{"deployer"}).exactArgs(usage, 2); err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Errorf("too few arguments should print usage, got %v", err)
+	}
+}
+
 // seen records what was SUPPLIED, which the values cannot: "" and 0 are real
 // values a caller may pass, so "was this flag given" needs its own record.
 func TestSeenDistinguishesSuppliedFromAbsent(t *testing.T) {

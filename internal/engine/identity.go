@@ -61,7 +61,7 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 			messAgent = existing.MessAgent
 		}
 	} else if bootstrap {
-		roles = []Role{"admin"}
+		roles = []Role{RoleAdmin}
 	}
 	e.identities[name] = &Identity{
 		Name:         name,

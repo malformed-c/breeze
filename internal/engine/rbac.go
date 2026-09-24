@@ -63,3 +63,21 @@ func (e *Engine) HasRole(identity string, role Role) bool {
 	}
 	return id.HasRole(role)
 }
+
+// AnyAdmin reports whether ANY registered identity currently holds the admin
+// role. Distinct from "is this identity an admin", and the difference is the
+// whole point: a store can be populated by many identities and still have no
+// admin among them (every admin's token lost, or the one admin revoked), and
+// every admin-gated op then refuses for want of someone to run it. Callers use
+// this to tell "an admin exists and must be asked" from "no admin exists", which
+// decide different things — see daemon.go's registration of the "admin" name.
+func (e *Engine) AnyAdmin() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, id := range e.identities {
+		if id.HasRole(RoleAdmin) {
+			return true
+		}
+	}
+	return false
+}

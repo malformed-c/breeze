@@ -106,14 +106,26 @@ func TestTailFlagIsHonouredRegardlessOfOutcome(t *testing.T) {
 // on the text a human actually sees.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
+	return captureStream(t, &os.Stdout, fn)
+}
+
+// captureStderr is captureStdout for the other stream, which is where output that
+// must NOT contaminate a redirectable result (a token file) belongs.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureStream(t, &os.Stderr, fn)
+}
+
+func captureStream(t *testing.T, target **os.File, fn func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved := os.Stdout
-	os.Stdout = w
+	saved := *target
+	*target = w
 	fn()
-	os.Stdout = saved
+	*target = saved
 	w.Close()
 	b, err := io.ReadAll(r)
 	if err != nil {

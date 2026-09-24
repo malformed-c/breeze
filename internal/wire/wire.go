@@ -283,8 +283,9 @@ type IdentityRegisterRequest struct {
 	MessAgent string `json:"messAgent,omitempty"` // sets/updates the mess-agent mapping; "" leaves an existing one untouched
 }
 type IdentityRegisterResponse struct {
-	Name  string `json:"name"`
-	Token string `json:"token"` // plaintext, printed once by the CLI, never persisted server-side
+	Name  string   `json:"name"`
+	Token string   `json:"token"` // plaintext, printed once by the CLI, never persisted server-side
+	Roles []string `json:"roles"` // what the identity can actually DO — empty is the common case and must not read as authority
 }
 
 type IdentityNotifyRequest struct {

@@ -566,12 +566,45 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 			} else if _, err := d.eng.VerifyToken(req.As, req.Token); err != nil {
 				return errResponse(err)
 			}
+		} else if p.Name == string(engine.RoleAdmin) && d.eng.AnyAdmin() {
+			// "admin" is the one name a fresh, unauthenticated registration must not
+			// be allowed to take on a store that already has an admin. Everything else
+			// about registering a new name is deliberately open, but this name is
+			// load-bearing in breeze's OWN guidance: the refusal a non-admin gets from
+			// requireAdmin tells them to run `breeze assign role admin <name>`, so an
+			// anonymous `register identity admin` is a name waiting to be promoted by
+			// whoever follows that advice without asking who owns it. Measured live:
+			// the reporter registered "admin" this way believing --force had made them
+			// one, then spent the rest of the session unable to do anything.
+			//
+			// Gated on AnyAdmin, not on "the store is non-empty": a store with no admin
+			// at all has nobody to ask, and refusing there would make it permanently
+			// unclaimable — the one state where a human most needs a way back in. The
+			// bootstrap case (empty store) is unaffected for the same reason: the first
+			// identity is auto-granted the role, whatever it is named.
+			//
+			// The reason is wrapped around requireAdmin's verdict rather than replaced
+			// by it: requireAdmin alone would answer an anonymous claimant with the
+			// generic "you need --as and --token", which says nothing about why THIS
+			// name is different from the one they could have picked.
+			if err := d.requireAdmin(req); err != nil {
+				return errResponse(fmt.Errorf("identity name %q is reserved on a store that already has an admin: any other fresh name can be registered without a token, and this one is what breeze's own recovery advice points at, so only an existing admin may create it. %w", p.Name, err))
+			}
 		}
 		token, err := d.eng.RegisterIdentity(p.Name, p.MessAgent, engine.By(req.As))
 		if err != nil {
 			return errResponse(err)
 		}
-		return okResponse(wire.IdentityRegisterResponse{Name: p.Name, Token: token})
+		// The roles the identity actually ended up with, so the CLI can say them
+		// instead of leaving the reader to assume registration conferred authority.
+		// Read back (Tier-1, no token check) rather than returned by the engine: this
+		// is a report, not a gate, and re-reading keeps RegisterIdentity's signature
+		// — which every engine test calls — about the one thing it must not lose.
+		var roles []string
+		if id, ok := d.eng.Identity(p.Name); ok {
+			roles = rolesToStrings(id.Roles)
+		}
+		return okResponse(wire.IdentityRegisterResponse{Name: p.Name, Token: token, Roles: roles})
 
 	case wire.OpIdentityNotify:
 		// Tier-1: a self-service preference toggle with no security stakes (it only

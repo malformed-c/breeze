@@ -46,6 +46,21 @@ breeze check auth --as NAME --token-file PATH --role R   # read-only probe, muta
 privileged thing breeze does on its own; `breeze audit --kind identity` shows it
 as `BOOTSTRAP`.
 
+**Registering tells you what the identity can do, on stderr** — stdout is the
+token and nothing else, so `> x.token` and `cp stdout x.token` stay valid. A
+fresh name gets no roles, and the line says so rather than letting you find out
+from a refusal later.
+
+**The name `admin` is reserved once an admin exists.** Every other fresh name is
+claimable without a token; that one is what breeze's own recovery advice points
+at (`breeze assign role admin <name>`), so on a store that already has an admin
+only an admin may create it. With no admin anywhere it is claimable — a store
+nobody can administer is one you most need a way back into.
+
+**Creating an identity named `admin` does not make it an admin.** The name and
+the role are separate: `breeze assign role admin admin` is still a grant, by an
+admin, on the record.
+
 ## Locks
 
 ```sh

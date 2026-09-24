@@ -710,6 +710,41 @@ func (f flagSet) rejectUnknownFlags(usage string, accepted ...string) (bool, err
 		commandOf(usage), strings.Join(ignored, ", "), strings.Join(sorted, ", "), usage)
 }
 
+// exactArgs is rejectUnknownFlags for POSITIONAL arguments: too few is the usage
+// line every command already prints, and too many is refused rather than dropped.
+//
+// The flag version above exists because a shared parser makes every flag
+// syntactically valid everywhere; positionals are the same defect wearing a
+// different hat. `breeze assign role deployer claude-svcproxy --as admin .git`
+// parsed, satisfied the "got two arguments" check, and dropped `.git` on the
+// floor — the reporter then spent three more invocations (each one tab-completing
+// a path into the same slot) against an error about a missing token, which is
+// about a flag they never passed. Accepted-and-dropped has to be
+// indistinguishable from accepted-and-applied in BOTH directions, so the refusal
+// names the arguments being dropped: the offender is usually a path pasted where
+// an identity name belongs, and naming it is what turns the next attempt into a
+// fix rather than a fourth guess.
+func (f flagSet) exactArgs(usage string, want int) error {
+	if len(f.rest) == want {
+		return nil
+	}
+	if len(f.rest) < want {
+		return fmt.Errorf("usage: %s", usage)
+	}
+	return fmt.Errorf("%s takes %d argument(s) and got %d — %s would have been silently ignored\nusage: %s",
+		commandOf(usage), want, len(f.rest), quoteAll(f.rest[want:]), usage)
+}
+
+// quoteAll quotes each argument, so a dropped path is recognisable as the path it
+// is rather than blending into the sentence around it.
+func quoteAll(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = strconv.Quote(a)
+	}
+	return strings.Join(out, ", ")
+}
+
 // only is rejectUnknownFlags with the accepted set taken FROM THE USAGE STRING
 // the command already prints.
 //
@@ -1726,6 +1761,33 @@ func listIdentities(p paths, f flagSet) error {
 	return nil
 }
 
+// printIdentityRegistered says what registering actually got you.
+//
+// The token is the ONLY thing on stdout, unchanged, because stdout is the token:
+// `breeze register identity x > .git/breeze/x.token` and the e2e suite's
+// `cp stdout x.token` both read it as a machine-written one-line file, and a
+// second line there silently corrupts every token file the convention produces.
+// (Learned the hard way — the first version of this printed both lines and broke
+// every one of them.) So the explanation goes to stderr, which a human at a
+// terminal sees and a redirect does not.
+//
+// It is worth printing at all because printing the token alone made a powerless
+// identity and an all-powerful one read identically: the reporter registered an
+// identity named "admin" (--force is only read when the name already exists, so
+// it was silently dropped), took the token as confirmation, and spent the rest
+// of the session being refused by ops the name implies they could run.
+func printIdentityRegistered(out wire.IdentityRegisterResponse) {
+	fmt.Println(out.Token)
+	if len(out.Roles) == 0 {
+		// The common case is the one that has to be loud, and loud means naming
+		// the command that changes it.
+		fmt.Fprintf(os.Stderr, "identity %q holds no roles — it can do nothing an unregistered agent cannot, until an admin grants one: breeze assign role <role> %s --as <admin> --token-file <path>\n", out.Name, out.Name)
+		return
+	}
+	// Same spelling as `list identities`, so the two views of one identity agree.
+	fmt.Fprintf(os.Stderr, "identity %q roles=%s\n", out.Name, strings.Join(out.Roles, ","))
+}
+
 func cmdIdentity(p paths, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: breeze list identities | register identity | revoke identity | notify identity ...")
@@ -1765,7 +1827,7 @@ func cmdIdentity(p paths, args []string) error {
 			return err
 		}
 		bindSessionToken(p, out.Name, out.Token)
-		fmt.Println(out.Token)
+		printIdentityRegistered(out)
 		return nil
 	case "revoke":
 		if handled, err := f.only("breeze revoke identity <name> --as ADMIN [--token T | --token-file PATH]"); handled {
@@ -1808,6 +1870,11 @@ func cmdRole(p paths, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: breeze assign role | revoke role | list roles ...")
 	}
+	// One string, read by both the accepted-flag check and the positional-arity
+	// check, because a command that refuses an argument the usage admits (or
+	// accepts one the usage forbids) is the exact drift the derivation above
+	// exists to prevent.
+	const roleUsage = "breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
@@ -1816,11 +1883,11 @@ func cmdRole(p paths, args []string) error {
 	// form is right only when the subcommand is unrecognized — see default.
 	switch sub {
 	case "assign", "revoke":
-		if handled, err := f.only("breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"); handled {
+		if handled, err := f.only(roleUsage); handled {
 			return err
 		}
-		if len(f.rest) < 2 {
-			return fmt.Errorf("usage: breeze %s role <role> <identity> --as ADMIN --token T", sub)
+		if err := f.exactArgs(roleUsage, 2); err != nil {
+			return err
 		}
 		as := resolveIdentity(p, f)
 		token, err := resolveTokenAuto(p, f, as)
