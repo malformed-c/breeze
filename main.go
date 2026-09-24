@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3069,14 +3070,12 @@ const defaultTailLines = 20
 // waitForProcessExit polls until pid is gone, or timeout. Signal 0 is a pure
 // existence probe — it never touches the process.
 func waitForProcessExit(pid int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
+	_, err := pollUntil(context.Background(), timeout, 50*time.Millisecond, func(context.Context) (struct{}, bool, error) {
+		// Any error from signal 0 means the process is gone; the probe never
+		// touches the process either way.
+		return struct{}{}, syscall.Kill(pid, 0) != nil, nil
+	})
+	return err == nil
 }
 
 // printSummary shows a stage's transform output, when it has one — the short

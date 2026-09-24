@@ -1,8 +1,9 @@
 module breeze
 
-go 1.26.4
+go 1.27
 
 require (
+	github.com/apsis-io/velocity v0.5.0-rc.1
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/rogpeppe/go-internal v1.15.0
 	github.com/zclconf/go-cty v1.16.3

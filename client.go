@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,13 +31,12 @@ func dialOrStart(p paths) (net.Conn, error) {
 	// run. Waiting only 3s meant an ordinary command reported "daemon did not start"
 	// while a daemon was, in fact, on its way — the same client-impatience bug
 	// already fixed for `restart daemon` and `stop`.
-	deadline := time.Now().Add(startWaitBudget)
-	for time.Now().Before(deadline) {
-		conn, err := net.Dial("unix", p.sock)
-		if err == nil {
-			return conn, nil
-		}
-		time.Sleep(20 * time.Millisecond)
+	conn, err = pollUntil(context.Background(), startWaitBudget, 20*time.Millisecond, func(context.Context) (net.Conn, bool, error) {
+		c, err := net.Dial("unix", p.sock)
+		return c, err == nil, nil
+	})
+	if err == nil {
+		return conn, nil
 	}
 	// The daemon writes WHY it refused to start — a malformed defaults.hcl, a
 	// per-daemon queue block, a bad limit — and that reason is already on disk. A

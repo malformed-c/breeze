@@ -5,6 +5,7 @@ package main
 // "what the daemon does once it's actually running and serving requests."
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -85,17 +86,18 @@ const lockWaitBudget = 15 * time.Second
 // flockWithRetry takes the lock, polling until timeout rather than giving up on the
 // first EWOULDBLOCK.
 func flockWithRetry(fd int, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
+	_, err := pollUntil(context.Background(), timeout, 100*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return nil
+		switch {
+		case err == nil:
+			return struct{}{}, true, nil
+		case errors.Is(err, syscall.EWOULDBLOCK):
+			return struct{}{}, false, nil // held by someone else: keep waiting
+		default:
+			return struct{}{}, false, err // this fd is broken: not worth waiting out
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	})
+	return err
 }
 
 // restartWaitBudget is how long a client waits for a restarted daemon to come back:
@@ -167,7 +169,7 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 	// cancelling running stages, because a `stage start` caller is parked on one
 	// for the whole run.
 	if !waitForDialState(p.sock, true, restartWaitBudget) {
-		return fmt.Errorf("asked the daemon to restart but it did not come back up within 5s (check %s)", p.daemonLog)
+		return fmt.Errorf("asked the daemon to restart but it did not come back up within %s (check %s)", restartWaitBudget, p.daemonLog)
 	}
 	fmt.Printf("breeze daemon restarted in place (dir %s)\n", p.dir)
 	return nil
@@ -452,19 +454,15 @@ func requestStop(conn net.Conn) {
 // whether it actually reached that state in time. One helper for both directions:
 // they're the same poll-and-compare loop, just watching for opposite outcomes.
 func waitForDialState(sock string, wantUp bool, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	_, err := pollUntil(context.Background(), timeout, 50*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond)
 		up := err == nil
 		if conn != nil {
 			conn.Close()
 		}
-		if up == wantUp {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
+		return struct{}{}, up == wantUp, nil
+	})
+	return err == nil
 }
 
 // loadDefaultLimits reads this daemon's optional <state-dir>/defaults.hcl and
