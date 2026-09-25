@@ -33,6 +33,37 @@ func newDB(t *testing.T) string {
 	return path
 }
 
+// mustOpen re-opens a database newDB built, failing the test if it cannot.
+//
+// It replaces `db, _ := sql.Open(...)`, which reads as though the handle mattered
+// and then hands back nil on failure — at which point every later statement on that
+// handle is a silent no-op and the test goes on to assert against nothing.
+func mustOpen(t *testing.T, path string) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+
+	return db
+}
+
+// mustExec runs a fixture statement, failing the test if it does not apply.
+//
+// This is the one that was quietly producing false passes. A row that silently did
+// not insert leaves the board empty, so every assertion about emptiness — "no tasks
+// today", "nothing in flight" — passed for a reason that had nothing to do with what
+// the test claimed to check. A fixture that cannot be built is a failed test, not an
+// empty result.
+func mustExec(t *testing.T, db *sql.DB, stmt string, args ...any) {
+	t.Helper()
+
+	if _, err := db.Exec(stmt, args...); err != nil {
+		t.Fatalf("fixture statement failed: %v", err)
+	}
+}
+
 func entry(task string, secs int) Entry {
 	begin := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	return Entry{Task: task, Comment: "deploy 5e1d2ab to local", Begin: begin, End: begin.Add(time.Duration(secs) * time.Second)}
@@ -44,7 +75,7 @@ func TestRecordCreatesTaskAndEntry(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	db, _ := sql.Open("sqlite", path)
+	db := mustOpen(t, path)
 	defer db.Close()
 
 	var (
@@ -87,13 +118,25 @@ func TestRecordAccumulatesOntoOneTask(t *testing.T) {
 		}
 	}
 
-	db, _ := sql.Open("sqlite", path)
+	db := mustOpen(t, path)
 	defer db.Close()
 
 	var tasks, logs, total int
-	db.QueryRow(`SELECT COUNT(*) FROM task`).Scan(&tasks)
-	db.QueryRow(`SELECT COUNT(*) FROM task_log`).Scan(&logs)
-	db.QueryRow(`SELECT secs_spent FROM task`).Scan(&total)
+	for _, q := range []struct {
+		stmt string
+		dest any
+	}{
+		{`SELECT COUNT(*) FROM task`, &tasks},
+		{`SELECT COUNT(*) FROM task_log`, &logs},
+		{`SELECT secs_spent FROM task`, &total},
+	} {
+		// Not a false pass — a failed Scan leaves the count 0 and the assertion
+		// below fails — but it fails as "got 0" rather than naming the query that
+		// broke, which is the difference between a readable failure and a puzzle.
+		if err := db.QueryRow(q.stmt).Scan(q.dest); err != nil {
+			t.Fatalf("%s: %v", q.stmt, err)
+		}
+	}
 
 	if tasks != 1 || logs != 2 {
 		t.Errorf("want 1 task and 2 logs, got %d and %d", tasks, logs)
@@ -111,12 +154,10 @@ func TestRecordAccumulatesOntoOneTask(t *testing.T) {
 func TestRecordReportsAnActiveTimerRatherThanFailingQuietly(t *testing.T) {
 	path := newDB(t)
 
-	db, _ := sql.Open("sqlite", path)
-	if _, err := db.Exec(
+	db := mustOpen(t, path)
+	mustExec(t, db,
 		`INSERT INTO task_log (task_id, begin_ts, secs_spent, comment, active) VALUES (1, ?, 0, 'user is tracking something', 1)`,
-		time.Now().UTC()); err != nil {
-		t.Fatalf("seeding an active timer: %v", err)
-	}
+		time.Now().UTC())
 
 	db.Close()
 
@@ -141,8 +182,8 @@ func TestNegativeDurationsFloorAtZero(t *testing.T) {
 // the rows are accepted and wrong.
 func TestRefusesAnUnknownSchemaVersion(t *testing.T) {
 	path := newDB(t)
-	db, _ := sql.Open("sqlite", path)
-	db.Exec(`INSERT INTO db_versions (version, created_at) VALUES (2, CURRENT_TIMESTAMP)`)
+	db := mustOpen(t, path)
+	mustExec(t, db, `INSERT INTO db_versions (version, created_at) VALUES (2, CURRENT_TIMESTAMP)`)
 	db.Close()
 
 	err := Record(path, entry("breeze/breeze/deploy", 300))

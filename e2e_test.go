@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -63,15 +64,20 @@ func TestE2E(t *testing.T) {
 // but it must also not stay quiet about a daemon it could not stop, or it becomes
 // the same silent accumulation it exists to prevent.
 func stopDaemonsUnder(dir string) {
-	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	// Reported rather than discarded, per this function's own contract above. The
+	// callback never returns an error, so a failure here is the WALK failing — a
+	// subtree it never reached, and therefore a daemon still running under it. That
+	// is exactly the silent accumulation the helper exists to prevent, so saying
+	// nothing about it would break the promise two lines up.
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || d.Name() != "breeze.sock" {
 			return nil
 		}
 
 		if conn, derr := net.DialTimeout("unix", path, 500*time.Millisecond); derr == nil {
-			json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			io.ReadAll(conn)
+			_ = json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _ = io.ReadAll(conn)
 			conn.Close()
 
 			return nil
@@ -91,5 +97,7 @@ func stopDaemonsUnder(dir string) {
 		}
 
 		return nil
-	})
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not walk %s to stop its daemons: %v\n", dir, err)
+	}
 }

@@ -72,8 +72,8 @@ func TestRoleGrantsRecordWhoDidIt(t *testing.T) {
 
 func TestRoleRevocationIsRecorded(t *testing.T) {
 	e, got := auditing(t)
-	e.RegisterIdentity("alice", "")
-	e.AssignRole("alice", "deployer", By("admin"))
+	mustRegister(t, e, "alice")
+	mustAssign(t, e, "alice", "deployer", By("admin"))
 
 	if err := e.RevokeRole("alice", "deployer", By("admin")); err != nil {
 		t.Fatal(err)
@@ -88,9 +88,9 @@ func TestRoleRevocationIsRecorded(t *testing.T) {
 // "reached for admin" is the interesting fact later, not whether it moved.
 func TestAnIdempotentGrantIsStillRecorded(t *testing.T) {
 	e, got := auditing(t)
-	e.RegisterIdentity("alice", "")
-	e.AssignRole("alice", "admin", By("first"))
-	e.AssignRole("alice", "admin", By("second"))
+	mustRegister(t, e, "alice")
+	mustAssign(t, e, "alice", "admin", By("first"))
+	mustAssign(t, e, "alice", "admin", By("second"))
 
 	var n int
 
@@ -125,9 +125,12 @@ func TestBootstrapAdminGrantIsVisibleInTheLog(t *testing.T) {
 // minted a new token for an existing identity" is not "a new identity appeared".
 func TestTokenRotationIsDistinguishableFromRegistration(t *testing.T) {
 	e, got := auditing(t)
-	e.RegisterIdentity("alice", "")            // bootstrap
-	e.RegisterIdentity("bob", "")              // ordinary
-	e.RegisterIdentity("bob", "", By("admin")) // rotation
+	mustRegister(t, e, "alice") // bootstrap
+	mustRegister(t, e, "bob")   // ordinary
+
+	if _, err := e.RegisterIdentity("bob", "", By("admin")); err != nil { // rotation
+		t.Fatalf("rotate bob: %v", err)
+	}
 
 	var details []string
 
@@ -150,9 +153,9 @@ func TestTokenRotationIsDistinguishableFromRegistration(t *testing.T) {
 // afterward — the event is the only place that can answer "what could it do".
 func TestRevokingAnIdentityRecordsWhatItHeld(t *testing.T) {
 	e, got := auditing(t)
-	e.RegisterIdentity("alice", "")
-	e.AssignRole("alice", "deployer", By("admin"))
-	e.AssignRole("alice", "reviewer", By("admin"))
+	mustRegister(t, e, "alice")
+	mustAssign(t, e, "alice", "deployer", By("admin"))
+	mustAssign(t, e, "alice", "reviewer", By("admin"))
 
 	if err := e.RevokeIdentity("alice", By("admin")); err != nil {
 		t.Fatal(err)
@@ -171,8 +174,8 @@ func TestRevokingAnIdentityRecordsWhatItHeld(t *testing.T) {
 // assert breeze did it, which is a claim rather than an absence.
 func TestAnUnnamedCallerIsRecordedAsUnattributed(t *testing.T) {
 	e, got := auditing(t)
-	e.RegisterIdentity("alice", "")
-	e.AssignRole("alice", "admin")
+	mustRegister(t, e, "alice")
+	mustAssign(t, e, "alice", "admin")
 
 	if ev := find(t, *got, "role.assigned"); ev.Actor != "unattributed" {
 		t.Errorf("Actor = %q, want \"unattributed\"", ev.Actor)

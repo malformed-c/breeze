@@ -82,7 +82,7 @@ func TestForceDeployStillEnforcesRBAC(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	e.RegisterIdentity("nobody", "")
+	mustRegister(t, e, "nobody")
 
 	_, err := e.ForceDeployStage("release", "deploy", "abc123", "staging", "nobody", "trying it on")
 	if err == nil {

@@ -147,9 +147,10 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 					d.eng.CancelRunningStages("daemon shut down while this stage was running")
 					d.waitConnsIdle(5 * time.Second)
 					d.saver.waitIdle(5 * time.Second)
-					syscall.Flock(d.lockFD, syscall.LOCK_UN)
+					_ = syscall.Flock(d.lockFD, syscall.LOCK_UN) // unlock; the close below drops the flock either way
 					syscall.Close(d.lockFD)
-					os.Remove(sock)
+
+					_ = os.Remove(sock) // a stale socket is removed again before the next bind
 				default:
 				}
 
@@ -203,7 +204,11 @@ func TestShutdownCancelsRunningStages(t *testing.T) {
 		t.Fatalf("register pipeline: %v", err)
 	}
 
-	go d.eng.StartCommandStage("release", "build", "abc123", "", "ci", "")
+	go func() {
+		if _, err := d.eng.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
+			t.Errorf("start: %v", err)
+		}
+	}()
 
 	// Wait for the stage to actually reach Running before shutting down.
 	deadline := time.Now().Add(2 * time.Second)
@@ -369,7 +374,7 @@ running:
 
 	var resp wire.Response
 
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second)) // a guard against hanging; failing to arm it costs a timeout, not a wrong result
 
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		t.Fatalf("expected the in-flight caller to get a real response, not a connection error: %v", err)
@@ -527,7 +532,7 @@ func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 	}
 
 	defer func() {
-		syscall.Flock(d.lockFD, syscall.LOCK_UN)
+		_ = syscall.Flock(d.lockFD, syscall.LOCK_UN) // cleanup; the close drops the flock either way
 		syscall.Close(d.lockFD)
 		d.listener.Close()
 	}()
@@ -557,7 +562,11 @@ func registerRunningStage(t *testing.T, d *daemonServer, pipeline, stage, commit
 	}
 	// A real start through the real path, left in flight — no test-only hook into
 	// the engine, so what's asserted is what a live daemon would actually see.
-	go d.eng.StartCommandStage(pipeline, stage, commit, "", actor, "")
+	go func() {
+		if _, err := d.eng.StartCommandStage(pipeline, stage, commit, "", actor, ""); err != nil {
+			t.Errorf("start %s/%s: %v", pipeline, stage, err)
+		}
+	}()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for d.eng.RunningStageCount() == 0 {

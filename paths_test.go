@@ -344,7 +344,7 @@ func chdir(t *testing.T, dir string) func() {
 		t.Fatalf("chdir: %v", err)
 	}
 
-	return func() { os.Chdir(old) }
+	return func() { _ = os.Chdir(old) }
 }
 
 func runIn(t *testing.T, dir string, name string, args ...string) {

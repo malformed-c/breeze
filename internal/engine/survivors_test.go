@@ -112,7 +112,7 @@ func TestDeclaredLeavesProcessesIsRecordedButNotReaped(t *testing.T) {
 		_ = pid
 	}
 
-	exec.Command("pkill", "-f", marker).Run()
+	_ = exec.Command("pkill", "-f", marker).Run() // sweeping up strays; nothing to report if there were none
 
 	_ = strings.TrimSpace("")
 }

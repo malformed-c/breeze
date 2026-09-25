@@ -181,8 +181,8 @@ func TestBlockPredecessorActorCoversEveryBranch(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	e.RegisterIdentity("ci", "")
-	e.RegisterIdentity("dana", "")
+	mustRegister(t, e, "ci")
+	mustRegister(t, e, "dana")
 
 	mustStart(t, e, "diverge", "build")
 	mustStart(t, e, "diverge", "unit")

@@ -78,8 +78,12 @@ func TestDaemonRefusalIsNotTreatedAsATransportFailure(t *testing.T) {
 		defer conn.Close()
 
 		var req wire.Request
-		json.NewDecoder(conn).Decode(&req)
-		json.NewEncoder(conn).Encode(wire.Response{OK: false, Error: "already held by \"alice\"", Code: wire.CodeLockConflict})
+		// Both discarded deliberately: this is a stand-in daemon whose only job is
+		// to answer. A failed decode means no answer, which the client sees as a
+		// timeout — so the test still fails, just slowly. There is no branch here
+		// that could pass without the exchange happening.
+		_ = json.NewDecoder(conn).Decode(&req)
+		_ = json.NewEncoder(conn).Encode(wire.Response{OK: false, Error: "already held by \"alice\"", Code: wire.CodeLockConflict})
 	}()
 
 	_, err = call(paths{sock: sock, daemonLog: filepath.Join(dir, "daemon.log")}, wire.Request{Op: wire.OpPing})

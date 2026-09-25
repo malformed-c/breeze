@@ -59,7 +59,7 @@ func BenchmarkTryAcquireLockConcurrentContention(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			holder := fmt.Sprintf("holder-%d-%d", time.Now().UnixNano(), i)
-			e.TryAcquireLock(holder, []string{"/repo/contended-file"}, LockExclusive, time.Hour, false)
+			_, _, _ = e.TryAcquireLock(holder, []string{"/repo/contended-file"}, LockExclusive, time.Hour, false)
 
 			i++
 		}

@@ -82,7 +82,10 @@ func TestOperatorSurfaceShowsRunningStage(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		e.StartCommandStage("ci", "build", "abc", "", "ci-agent", "")
+		if _, err := e.StartCommandStage("ci", "build", "abc", "", "ci-agent", ""); err != nil {
+			t.Errorf("start: %v", err)
+		}
+
 		close(done)
 	}()
 

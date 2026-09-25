@@ -1,7 +1,6 @@
 package hourslog
 
 import (
-	"database/sql"
 	"testing"
 	"time"
 )
@@ -75,11 +74,11 @@ func TestColumnsBucketByRecency(t *testing.T) {
 // so this test deliberately makes them disagree.
 func TestBoardSumsEntriesRatherThanTrustingTheStoredTotal(t *testing.T) {
 	path := newDB(t)
-	db, _ := sql.Open("sqlite", path)
-	db.Exec(`INSERT INTO task (id, summary, secs_spent, created_at) VALUES (1, 'work', 99999, ?)`, time.Now().UTC())
-	db.Exec(`INSERT INTO task_log (task_id, begin_ts, end_ts, secs_spent, comment, active) VALUES (1, ?, ?, 300, 'a', 0)`,
+	db := mustOpen(t, path)
+	mustExec(t, db, `INSERT INTO task (id, summary, secs_spent, created_at) VALUES (1, 'work', 99999, ?)`, time.Now().UTC())
+	mustExec(t, db, `INSERT INTO task_log (task_id, begin_ts, end_ts, secs_spent, comment, active) VALUES (1, ?, ?, 300, 'a', 0)`,
 		time.Now().Add(-time.Hour).UTC(), time.Now().UTC())
-	db.Exec(`INSERT INTO task_log (task_id, begin_ts, end_ts, secs_spent, comment, active) VALUES (1, ?, ?, 120, 'b', 0)`,
+	mustExec(t, db, `INSERT INTO task_log (task_id, begin_ts, end_ts, secs_spent, comment, active) VALUES (1, ?, ?, 120, 'b', 0)`,
 		time.Now().Add(-2*time.Hour).UTC(), time.Now().Add(-time.Hour).UTC())
 	db.Close()
 
@@ -105,8 +104,8 @@ func TestBoardSumsEntriesRatherThanTrustingTheStoredTotal(t *testing.T) {
 // time went — and would otherwise sit permanently in OLDER with a zero.
 func TestBoardOmitsTasksWithNoRecordedTime(t *testing.T) {
 	path := newDB(t)
-	db, _ := sql.Open("sqlite", path)
-	db.Exec(`INSERT INTO task (summary, created_at) VALUES ('never tracked', ?)`, time.Now().UTC())
+	db := mustOpen(t, path)
+	mustExec(t, db, `INSERT INTO task (summary, created_at) VALUES ('never tracked', ?)`, time.Now().UTC())
 	db.Close()
 
 	tasks, err := Board(path)
@@ -121,9 +120,9 @@ func TestBoardOmitsTasksWithNoRecordedTime(t *testing.T) {
 
 func TestBoardReportsARunningEntry(t *testing.T) {
 	path := newDB(t)
-	db, _ := sql.Open("sqlite", path)
-	db.Exec(`INSERT INTO task (id, summary, created_at) VALUES (1, 'rolling', ?)`, time.Now().UTC())
-	db.Exec(`INSERT INTO task_log (task_id, begin_ts, secs_spent, comment, active) VALUES (1, ?, 0, 'now', 1)`,
+	db := mustOpen(t, path)
+	mustExec(t, db, `INSERT INTO task (id, summary, created_at) VALUES (1, 'rolling', ?)`, time.Now().UTC())
+	mustExec(t, db, `INSERT INTO task_log (task_id, begin_ts, secs_spent, comment, active) VALUES (1, ?, 0, 'now', 1)`,
 		time.Now().Add(-10*time.Minute).UTC())
 	db.Close()
 

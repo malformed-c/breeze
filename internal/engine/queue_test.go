@@ -104,11 +104,23 @@ func TestQueuedStageCountsAsInFlight(t *testing.T) {
 	var wg sync.WaitGroup
 
 	wg.Add(2)
-	go func() { defer wg.Done(); e.StartCommandStage("ci", "a", "abc", "", "first", "") }()
+	go func() {
+		defer wg.Done()
+
+		if _, err := e.StartCommandStage("ci", "a", "abc", "", "first", ""); err != nil {
+			t.Errorf("start first: %v", err)
+		}
+	}()
 
 	time.Sleep(150 * time.Millisecond)
 
-	go func() { defer wg.Done(); e.StartCommandStage("ci", "b", "abc", "", "second", "") }()
+	go func() {
+		defer wg.Done()
+
+		if _, err := e.StartCommandStage("ci", "b", "abc", "", "second", ""); err != nil {
+			t.Errorf("start second: %v", err)
+		}
+	}()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -137,7 +149,13 @@ func TestQueueTimeoutFailsWithWhoHasIt(t *testing.T) {
 	queuePipeline(t, e, "5")
 	e.SetQueue(QueueConfig{Dir: t.TempDir(), StateDir: "/tmp/repo", Max: 1, WaitTimeout: 300 * time.Millisecond})
 
-	go e.StartCommandStage("ci", "a", "abc", "", "hog", "")
+	// Checked, not discarded: this test waits for a running count to climb, so a
+	// start that failed would surface as a timeout rather than as its cause.
+	go func() {
+		if _, err := e.StartCommandStage("ci", "a", "abc", "", "hog", ""); err != nil {
+			t.Errorf("start hog: %v", err)
+		}
+	}()
 
 	deadline := time.Now().Add(3 * time.Second)
 
@@ -224,7 +242,11 @@ func TestDeployStagesAreQueueExempt(t *testing.T) {
 	e.SetQueue(QueueConfig{Dir: dir, StateDir: "/tmp/repo", Max: 1, WaitTimeout: 2 * time.Second})
 
 	// Occupy the only slot with a non-deploy stage and wait until it really holds it.
-	go e.StartCommandStage("release", "build", "abc", "", "ci", "")
+	go func() {
+		if _, err := e.StartCommandStage("release", "build", "abc", "", "ci", ""); err != nil {
+			t.Errorf("start: %v", err)
+		}
+	}()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for len(slotHolders(dir, 1)) == 0 {

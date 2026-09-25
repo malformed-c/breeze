@@ -269,8 +269,16 @@ func TestHandleLockAcquireWaitRechecksAfterPartialRelease(t *testing.T) {
 	}
 
 	var aliceLock, bobLock wire.LockAcquireResponse
-	json.Unmarshal(respA.Payload, &aliceLock)
-	json.Unmarshal(respB.Payload, &bobLock)
+	// Checked, not discarded: a failed decode leaves a ZERO-valued lock, and every
+	// assertion below is against that lock. An unchecked decode here is a test that
+	// passes without the thing it set up existing.
+	if err := json.Unmarshal(respA.Payload, &aliceLock); err != nil {
+		t.Fatalf("decode alice's lock: %v", err)
+	}
+
+	if err := json.Unmarshal(respB.Payload, &bobLock); err != nil {
+		t.Fatalf("decode bob's lock: %v", err)
+	}
 
 	done := make(chan wire.Response, 1)
 	go func() {

@@ -43,3 +43,22 @@ linters:
       exclude-functions:
         - (*os.File).Close
         - syscall.Close
+
+  exclusions:
+    rules:
+      # Test teardown only, and only the teardown METHODS. A Close, Kill or Wait
+      # whose error is dropped at the end of a test is noise — the test is over and
+      # the handle is about to be garbage — and there are ~30 of them across the
+      # suite, each of which would otherwise be a `_ =` that says nothing.
+      #
+      # Scoped to _test.go and to those three method names on purpose. Everything
+      # else in a test still gets flagged, and it should: an unchecked
+      # json.Unmarshal in a fixture, or a TryAcquireLock that quietly failed,
+      # leaves a test asserting against something that was never set up, and that
+      # is a false PASS rather than noise. Those were converted to must* helpers
+      # that fail the test instead — the ones excluded here are those where there
+      # is genuinely nothing to report.
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: 'Error return value of `.*\.(Close|Kill|Wait)` is not checked'
