@@ -53,6 +53,7 @@ func (e *Engine) CreateWorkItem(title, creator, assignee, reviewer string) (*Wor
 	if strings.TrimSpace(title) == "" {
 		return nil, fmt.Errorf("a work item needs a title — it is what everyone else will see")
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -62,6 +63,7 @@ func (e *Engine) CreateWorkItem(title, creator, assignee, reviewer string) (*Wor
 		if who == "" {
 			continue
 		}
+
 		if _, ok := e.identities[who]; !ok {
 			return nil, fmt.Errorf("%s %q is not a registered identity — an item that looks assigned to nobody is worse than an unassigned one", label, who)
 		}
@@ -79,6 +81,7 @@ func (e *Engine) CreateWorkItem(title, creator, assignee, reviewer string) (*Wor
 	e.changed()
 
 	cp := *item
+
 	return &cp, nil
 }
 
@@ -103,32 +106,39 @@ func (e *Engine) UpdateWorkItem(id, actor string, up WorkUpdate) (*WorkItem, []s
 	if !ok {
 		return nil, nil, fmt.Errorf("no work item %q", id)
 	}
+
 	if up.Status != nil && !ValidStatus(*up.Status) {
 		return nil, nil, fmt.Errorf("status %q is not one of %s", *up.Status, statusList())
 	}
+
 	for label, who := range map[string]*string{"assignee": up.Assignee, "reviewer": up.Reviewer} {
 		if who == nil || *who == "" {
 			continue
 		}
+
 		if _, ok := e.identities[*who]; !ok {
 			return nil, nil, fmt.Errorf("%s %q is not a registered identity", label, *who)
 		}
 	}
 
 	var changes []string
+
 	before := item.Status
 	if up.Status != nil && *up.Status != item.Status {
 		item.Status = *up.Status
 		changes = append(changes, fmt.Sprintf("%s → %s", before, item.Status))
 	}
+
 	if up.Assignee != nil && *up.Assignee != item.Assignee {
 		changes = append(changes, fmt.Sprintf("assignee %s → %s", orNone(item.Assignee), orNone(*up.Assignee)))
 		item.Assignee = *up.Assignee
 	}
+
 	if up.Reviewer != nil && *up.Reviewer != item.Reviewer {
 		changes = append(changes, fmt.Sprintf("reviewer %s → %s", orNone(item.Reviewer), orNone(*up.Reviewer)))
 		item.Reviewer = *up.Reviewer
 	}
+
 	if up.Blocked != nil {
 		item.Blocked = *up.Blocked
 	}
@@ -139,11 +149,13 @@ func (e *Engine) UpdateWorkItem(id, actor string, up WorkUpdate) (*WorkItem, []s
 		cp := *item
 		return &cp, nil, nil
 	}
+
 	item.UpdatedAt = e.now()
 	e.audit("task.updated", actor, fmt.Sprintf("id=%s %s", id, strings.Join(changes, ", ")))
 	e.changed()
 
 	cp := *item
+
 	return &cp, e.stakeholdersLocked(item, actor), nil
 }
 
@@ -164,10 +176,12 @@ func (e *Engine) stakeholdersLocked(item *WorkItem, actor string) []string {
 		if who == "" || who == actor || slices.Contains(out, who) {
 			continue
 		}
+
 		if id, ok := e.identities[who]; ok && !id.NotifyOptOut {
 			out = append(out, who)
 		}
 	}
+
 	return out
 }
 
@@ -176,13 +190,16 @@ func (e *Engine) stakeholdersLocked(item *WorkItem, actor string) []string {
 func (e *Engine) WorkItems() []WorkItem {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	out := make([]WorkItem, 0, len(e.work))
 	for _, w := range e.work {
 		out = append(out, *w)
 	}
+
 	slices.SortFunc(out, func(a, b WorkItem) int {
 		return strings.Compare(workOrder(b.ID), workOrder(a.ID))
 	})
+
 	return out
 }
 
@@ -192,6 +209,7 @@ func workOrder(id string) string {
 	if err != nil {
 		return id
 	}
+
 	return fmt.Sprintf("%012d", n)
 }
 
@@ -200,6 +218,7 @@ func statusList() string {
 	for _, s := range WorkStatuses {
 		out = append(out, string(s))
 	}
+
 	return strings.Join(out, ", ")
 }
 
@@ -207,5 +226,6 @@ func orNone(s string) string {
 	if s == "" {
 		return "(none)"
 	}
+
 	return s
 }

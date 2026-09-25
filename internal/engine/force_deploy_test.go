@@ -11,6 +11,7 @@ import (
 func forceablePipeline() Pipeline {
 	p := examplePipeline()
 	p.Stages = p.Stages[:3] // build, review, deploy
+
 	return p
 }
 
@@ -29,6 +30,7 @@ func TestForceDeploySkipsTheReviewGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("force: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("forced deploy status = %s (%s)", inst.Status, inst.Error)
 	}
@@ -39,6 +41,7 @@ func TestForceDeploySkipsTheReviewGate(t *testing.T) {
 	if len(hist) != 1 {
 		t.Fatalf("expected one history record, got %d", len(hist))
 	}
+
 	if hist[0].Outcome != DeployForced {
 		t.Fatalf("outcome = %q, want %q", hist[0].Outcome, DeployForced)
 	}
@@ -51,11 +54,13 @@ func TestForceDeployRequiresAReason(t *testing.T) {
 	if err := e.RegisterPipeline(forceablePipeline(), "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, brief := range []string{"", "   ", "\t\n"} {
 		_, err := e.ForceDeployStage("release", "deploy", "abc123", "staging", "ci", brief)
 		if err == nil {
 			t.Fatalf("a forced deploy with brief %q must be refused", brief)
 		}
+
 		if !strings.Contains(err.Error(), "reason") {
 			t.Fatalf("the refusal should ask for a reason, got %q", err)
 		}
@@ -71,16 +76,19 @@ func TestForceDeployRequiresAReason(t *testing.T) {
 func TestForceDeployStillEnforcesRBAC(t *testing.T) {
 	e := New()
 	p := forceablePipeline()
+
 	p.Stages[2].DeployPolicy = &DeployPolicy{Target: "release", RequiredRole: "deployer"}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	e.RegisterIdentity("nobody", "")
 
 	_, err := e.ForceDeployStage("release", "deploy", "abc123", "staging", "nobody", "trying it on")
 	if err == nil {
 		t.Fatalf("--force must not bypass the deploy role")
 	}
+
 	if !strings.Contains(err.Error(), "lacks required role") {
 		t.Fatalf("expected an RBAC refusal, got %q", err)
 	}
@@ -117,7 +125,9 @@ func TestForceDeployBecomesTheNewBaseline(t *testing.T) {
 // removing ordering for every future run, in place of a one-off with an audit line.
 func TestForceCommandStageSkipsOrderingOnly(t *testing.T) {
 	e := New()
+
 	var events []AuditEvent
+
 	e.SetAuditFn(func(ev AuditEvent) { events = append(events, ev) })
 	registerReleasePipeline(t, e)
 
@@ -135,17 +145,20 @@ func TestForceCommandStageSkipsOrderingOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a forced command stage must skip Gate 1: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("status = %s (%s)", inst.Status, inst.Error)
 	}
 	// The forcing must be legible afterwards, not inferable only from the absence
 	// of a predecessor.
 	found := false
+
 	for _, ev := range events {
 		if ev.Kind == "stage.command.forced" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Error("a forced run must leave a stage.command.forced audit event")
 	}
@@ -157,10 +170,12 @@ func TestForceCommandStageDoesNotBypassAuthorizationOrLocks(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[3].CommandPolicy = &CommandPolicy{RequiredRole: "tester"}
+
 	p.Stages[3].RequiresLock = "test-slot"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register identity: %v", err)
 	}
@@ -174,12 +189,15 @@ func TestForceCommandStageDoesNotBypassAuthorizationOrLocks(t *testing.T) {
 	if _, err := e.RegisterIdentity("tester1", ""); err != nil {
 		t.Fatalf("register identity: %v", err)
 	}
+
 	if err := e.AssignRole("tester1", "tester"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, ok, err := e.TryAcquireResourceLock("someone-else", []string{"test-slot"}, LockExclusive, time.Minute, true); err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
+
 	_, err = e.ForceCommandStage("release", "test", "abc", "staging", "tester1", "forcing past the gates")
 	if err == nil || !strings.Contains(err.Error(), "test-slot") {
 		t.Fatalf("--force must not run a stage next to the holder of its required lock, got %v", err)

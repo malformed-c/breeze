@@ -37,14 +37,17 @@ func cmdAudit(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+
 	events, err = filterAudit(events, f)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(events)
 		return nil
 	}
+
 	if len(events) == 0 {
 		fmt.Printf("no audit events match (log: %s)\n", p.audit)
 		return nil
@@ -55,6 +58,7 @@ func cmdAudit(p paths, args []string) error {
 		fmt.Printf("%s  %-22s  %-16s  %s\n",
 			ev.Time.Format("2006-01-02 15:04:05"), ev.Kind, ev.Actor, ev.Detail)
 	}
+
 	return nil
 }
 
@@ -70,20 +74,25 @@ func readAudit(path string) ([]engine.AuditEvent, error) {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("no audit log at %s — this daemon has not recorded anything yet", path)
 		}
+
 		return nil, err
 	}
 	defer fh.Close()
 
 	var out []engine.AuditEvent
+
 	sc := bufio.NewScanner(fh)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // a stage detail can be long
+
 	for sc.Scan() {
 		var ev engine.AuditEvent
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
 			continue
 		}
+
 		out = append(out, ev)
 	}
+
 	return out, sc.Err()
 }
 
@@ -94,14 +103,17 @@ func filterAudit(events []engine.AuditEvent, f flagSet) ([]engine.AuditEvent, er
 		if err != nil {
 			return nil, fmt.Errorf("--since %q: %w (try 2h, 30m, 72h)", f.since, err)
 		}
+
 		since = time.Now().Add(-d)
 	}
+
 	limit := 0
 	if f.limit != "" {
 		n, err := strconv.Atoi(f.limit)
 		if err != nil {
 			return nil, fmt.Errorf("--limit %q: %w", f.limit, err)
 		}
+
 		limit = n
 	}
 
@@ -113,17 +125,21 @@ func filterAudit(events []engine.AuditEvent, f flagSet) ([]engine.AuditEvent, er
 		if f.auditKind != "" && !strings.HasPrefix(ev.Kind, f.auditKind) {
 			continue
 		}
+
 		if f.as != "" && ev.Actor != f.as {
 			continue
 		}
+
 		if !since.IsZero() && ev.Time.Before(since) {
 			continue
 		}
+
 		out = append(out, ev)
 	}
 	// The TAIL, because a log is queried for what happened recently.
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
+
 	return out, nil
 }

@@ -57,13 +57,16 @@ func newSnapshotWriter(path string) *snapshotWriter {
 // start a drain loop if one isn't already running. Never blocks on disk I/O itself.
 func (w *snapshotWriter) submit(snap engine.Snapshot) {
 	w.mu.Lock()
+
 	w.pending = &snap
 	if w.writing {
 		w.mu.Unlock()
 		return // a drain loop is already in flight; it will pick up this snapshot next
 	}
+
 	w.writing = true
 	w.mu.Unlock()
+
 	go func() {
 		time.Sleep(coalesceWindow) // let a burst finish arriving before writing it
 		w.drain()
@@ -77,10 +80,12 @@ func (w *snapshotWriter) drain() {
 	for {
 		w.mu.Lock()
 		snap := w.pending
+
 		w.pending = nil
 		if snap == nil {
 			w.writing = false
 			w.mu.Unlock()
+
 			return
 		}
 		w.mu.Unlock()
@@ -88,10 +93,12 @@ func (w *snapshotWriter) drain() {
 		start := time.Now()
 		err := engine.SaveSnapshot(w.path, *snap)
 		took := time.Since(start)
+
 		w.mu.Lock()
 		w.writes++
 		w.lastWrite = took
 		w.mu.Unlock()
+
 		if err != nil {
 			log.Printf("warning: failed to save snapshot: %v", err)
 		}
@@ -111,21 +118,26 @@ func (w *snapshotWriter) waitIdle(timeout time.Duration) bool {
 	w.mu.Lock()
 	before := w.writes
 	w.mu.Unlock()
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		w.mu.Lock()
 		idle := !w.writing
 		w.mu.Unlock()
+
 		if idle {
 			return true
 		}
+
 		time.Sleep(time.Millisecond)
 	}
+
 	w.mu.Lock()
 	during, last := w.writes-before, w.lastWrite
 	w.mu.Unlock()
 	log.Printf("snapshot writer did not go idle within %s: %d write(s) during the wait, last took %s — %s",
 		timeout, during, last,
 		map[bool]string{true: "a single slow write, i.e. the disk", false: "a backlog of mutations, i.e. not the disk"}[during <= 1])
+
 	return false
 }

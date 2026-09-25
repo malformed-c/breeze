@@ -24,10 +24,12 @@ func startRealRunner(t *testing.T, e *Engine, script string, deadline time.Time)
 	e.SetRunDir(dir)
 
 	key := StageKey{Commit: "abc123"}
+
 	outDir := e.runOutputDir("release", "build", key)
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+
 	out, err := os.Create(filepath.Join(outDir, hook.StdoutFile))
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -36,38 +38,48 @@ func startRealRunner(t *testing.T, e *Engine, script string, deadline time.Time)
 
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Stdout = out
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	e.instances[instanceKey("release", "build", key)] = &StageInstance{
 		Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci",
 		StartedAt: time.Now(), Deadline: deadline, OutputDir: outDir,
 		RunnerPID: cmd.Process.Pid, RunnerStart: procStartToken(cmd.Process.Pid),
 	}
+
 	return cmd, key
 }
 
 func waitForStatus(t *testing.T, e *Engine, key StageKey, want StageStatus, within time.Duration) *StageInstance {
 	t.Helper()
+
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		e.mu.Lock()
 		inst := e.getInstance("release", "build", key)
+
 		var got StageStatus
 		if inst != nil {
 			got = inst.Status
 		}
 		e.mu.Unlock()
+
 		if got == want {
 			return inst
 		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	inst := e.getInstance("release", "build", key)
 	t.Fatalf("stage never reached %s (last: %+v)", want, inst)
+
 	return nil
 }
 
@@ -76,6 +88,7 @@ func waitForStatus(t *testing.T, e *Engine, key StageKey, want StageStatus, with
 // the process wrote after the restart. Before this, every restart cancelled it.
 func TestAdoptedRunCompletesAndKeepsItsOutput(t *testing.T) {
 	e := New()
+
 	cmd, key := startRealRunner(t, e, "echo before; sleep 1; echo after; exit 0", time.Now().Add(time.Minute))
 	defer cmd.Process.Kill()
 
@@ -88,10 +101,12 @@ func TestAdoptedRunCompletesAndKeepsItsOutput(t *testing.T) {
 	if inst.ExitCode != 0 {
 		t.Fatalf("exit = %d", inst.ExitCode)
 	}
+
 	out := string(inst.Stdout)
 	if !strings.Contains(out, "before") || !strings.Contains(out, "after") {
 		t.Fatalf("output written across the adoption was lost: %q", out)
 	}
+
 	if inst.RunnerPID != 0 {
 		t.Fatalf("a resolved instance should not still name a runner")
 	}
@@ -101,10 +116,12 @@ func TestAdoptedRunCompletesAndKeepsItsOutput(t *testing.T) {
 // distinction is the whole reason adoption beats cancelling.
 func TestAdoptedRunReportsARealFailure(t *testing.T) {
 	e := New()
+
 	cmd, key := startRealRunner(t, e, "echo nope >&2; exit 7", time.Now().Add(time.Minute))
 	defer cmd.Process.Kill()
 
 	e.AdoptOrReconcile(os.Getpid())
+
 	inst := waitForStatus(t, e, key, StageFailed, 15*time.Second)
 	if inst.ExitCode != 7 || inst.FailureKind != FailCommand {
 		t.Fatalf("exit=%d kind=%q, want 7/%s", inst.ExitCode, inst.FailureKind, FailCommand)
@@ -116,14 +133,17 @@ func TestAdoptedRunReportsARealFailure(t *testing.T) {
 // would have been had nobody restarted anything.
 func TestAdoptedRunStillHonoursItsDeadline(t *testing.T) {
 	e := New()
+
 	cmd, key := startRealRunner(t, e, "sleep 30", time.Now().Add(300*time.Millisecond))
 	defer cmd.Process.Kill()
 
 	e.AdoptOrReconcile(os.Getpid())
+
 	inst := waitForStatus(t, e, key, StageFailed, 15*time.Second)
 	if inst.FailureKind != FailTimedOut {
 		t.Fatalf("kind = %q, want %q", inst.FailureKind, FailTimedOut)
 	}
+
 	if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
 		t.Fatalf("an overrunning adopted run must be killed, not just recorded")
 	}
@@ -133,6 +153,7 @@ func TestAdoptedRunStillHonoursItsDeadline(t *testing.T) {
 // no exit status can ever be collected, and adoption must not be attempted.
 func TestDifferentDaemonPIDOrphansRatherThanAdopts(t *testing.T) {
 	e := New()
+
 	cmd, key := startRealRunner(t, e, "sleep 30", time.Now().Add(time.Minute))
 	defer func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() }()
 
@@ -140,6 +161,7 @@ func TestDifferentDaemonPIDOrphansRatherThanAdopts(t *testing.T) {
 	if adopted != 0 || orphaned != 1 {
 		t.Fatalf("adopted=%d orphaned=%d, want 0/1", adopted, orphaned)
 	}
+
 	inst := e.getInstance("release", "build", key)
 	if inst.Status != StageFailed || inst.FailureKind != FailOrphaned {
 		t.Fatalf("status=%s kind=%q", inst.Status, inst.FailureKind)
@@ -157,6 +179,7 @@ func TestRunnerThatDiedDuringTheRestartIsNotInvented(t *testing.T) {
 	if adopted != 0 || orphaned != 1 {
 		t.Fatalf("adopted=%d orphaned=%d, want 0/1", adopted, orphaned)
 	}
+
 	inst := e.getInstance("release", "build", key)
 	if !strings.Contains(inst.Error, "could not be collected") {
 		t.Fatalf("error should say the status was uncollectable, got %q", inst.Error)
@@ -170,6 +193,7 @@ func TestReapStrayChildrenCollectsZombies(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	pid := cmd.Process.Pid
 	// Wait for it to become a zombie without reaping it (no cmd.Wait).
 	deadline := time.Now().Add(3 * time.Second)
@@ -177,11 +201,14 @@ func TestReapStrayChildrenCollectsZombies(t *testing.T) {
 		if st, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil && strings.Contains(string(st), " Z ") {
 			break
 		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
+
 	if n := New().ReapStrayChildren(); n < 1 {
 		t.Fatalf("expected at least one child reaped, got %d", n)
 	}
+
 	if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err == nil {
 		t.Fatalf("pid %d still present after reaping", pid)
 	}
@@ -194,7 +221,9 @@ func TestRunDirIsCleanedUpWhenTheRunResolves(t *testing.T) {
 	e := New()
 	dir := t.TempDir()
 	e.SetRunDir(dir)
+
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/sh", Args: []string{"-c", "echo out; echo err >&2"}}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
@@ -213,6 +242,7 @@ func TestRunDirIsCleanedUpWhenTheRunResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readdir: %v", err)
 	}
+
 	if len(entries) != 0 {
 		t.Fatalf("run directories left behind: %v", entries)
 	}
@@ -231,12 +261,14 @@ func TestSweepRunDirsSparesLiveRunsAndRemovesTheRest(t *testing.T) {
 	liveKey := StageKey{Commit: "live"}
 	liveDir := e.runOutputDir("release", "build", liveKey)
 	deadDir := e.runOutputDir("release", "build", StageKey{Commit: "dead"})
+
 	strayDir := filepath.Join(dir, "left_by_a_crash_nobody_recorded")
 	for _, d := range []string{liveDir, deadDir, strayDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
 	}
+
 	e.instances[instanceKey("release", "build", liveKey)] = &StageInstance{
 		Pipeline: "release", Stage: "build", Key: liveKey, Status: StageRunning, OutputDir: liveDir,
 	}
@@ -244,9 +276,11 @@ func TestSweepRunDirsSparesLiveRunsAndRemovesTheRest(t *testing.T) {
 	if n := e.SweepRunDirs(); n != 2 {
 		t.Fatalf("swept %d, want 2", n)
 	}
+
 	if _, err := os.Stat(liveDir); err != nil {
 		t.Fatalf("a still-running stage's directory must survive the sweep: %v", err)
 	}
+
 	for _, gone := range []string{deadDir, strayDir} {
 		if _, err := os.Stat(gone); !os.IsNotExist(err) {
 			t.Fatalf("%s should have been swept", gone)
@@ -262,7 +296,9 @@ func TestStageCommandGetsAScratchDirThatIsCleanedUp(t *testing.T) {
 	e := New()
 	dir := t.TempDir()
 	e.SetRunDir(dir)
+
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{
 		Path: "/bin/sh",
 		Args: []string{"-c", `mkdir -p "$BREEZE_RUN_DIR" && touch "$BREEZE_RUN_DIR/worktree" && echo "$BREEZE_RUN_DIR"`},
@@ -275,10 +311,12 @@ func TestStageCommandGetsAScratchDirThatIsCleanedUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	scratch := strings.TrimSpace(string(inst.Stdout))
 	if scratch == "" || !strings.HasPrefix(scratch, dir) {
 		t.Fatalf("BREEZE_RUN_DIR = %q, want a path under %s", scratch, dir)
 	}
+
 	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
 		t.Fatalf("the scratch directory must be cleaned up with the run (err=%v)", err)
 	}
@@ -294,6 +332,7 @@ func TestScratchDirExistsAndIsWritableDuringTheRun(t *testing.T) {
 	e := New()
 	dir := t.TempDir()
 	e.SetRunDir(dir)
+
 	p := examplePipeline()
 	// Write into the advertised scratch dir; a stage that cannot is the bug.
 	p.Stages[0].Command = CommandTemplate{
@@ -308,10 +347,12 @@ func TestScratchDirExistsAndIsWritableDuringTheRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("a stage must be able to write to the scratch dir breeze advertises: %s — %s",
 			inst.Status, strings.TrimSpace(string(inst.Stderr)))
 	}
+
 	if got := strings.TrimSpace(string(inst.Stdout)); !strings.HasPrefix(got, dir) {
 		t.Errorf("BREEZE_RUN_DIR must live under the configured run dir, got %q", got)
 	}
@@ -346,15 +387,18 @@ func TestUnavailableScratchUnsetsTheVariableRatherThanFailingTheStage(t *testing
 
 	runDir := t.TempDir()
 	e.SetRunDir(runDir)
+
 	out := filepath.Join(runDir, "release_build_abc")
 	if err := os.MkdirAll(out, 0o700); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(filepath.Join(out, "scratch"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{
 		Path: "/bin/sh",
 		Args: []string{"-c", `echo "run_dir=[${BREEZE_RUN_DIR-UNSET}]"`},
@@ -367,10 +411,12 @@ func TestUnavailableScratchUnsetsTheVariableRatherThanFailingTheStage(t *testing
 	if err != nil {
 		t.Fatalf("an unusable scratch dir must not fail the start: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("a stage that never touches scratch must still run: %s — %s",
 			inst.Status, strings.TrimSpace(string(inst.Stderr)))
 	}
+
 	if got := strings.TrimSpace(string(inst.Stdout)); got != "run_dir=[UNSET]" {
 		t.Errorf("BREEZE_RUN_DIR must be UNSET rather than naming a path that is not there, got %q", got)
 	}

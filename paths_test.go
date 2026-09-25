@@ -10,10 +10,12 @@ import (
 
 func TestResolvePathsBreezeDirEnvOverridesEverything(t *testing.T) {
 	t.Setenv("BREEZE_DIR", "/tmp/explicit-override")
+
 	p, err := resolvePaths()
 	if err != nil {
 		t.Fatalf("resolvePaths: %v", err)
 	}
+
 	if p.dir != "/tmp/explicit-override" {
 		t.Fatalf("expected explicit BREEZE_DIR to win, got %s", p.dir)
 	}
@@ -30,6 +32,7 @@ func TestResolvePathsBreezeDirEnvOverridesEverything(t *testing.T) {
 func TestResolvePathsErrorsOutsideAnyRepo(t *testing.T) {
 	t.Setenv("BREEZE_DIR", "")
 	dir := t.TempDir() // guaranteed not inside a git repo
+
 	restore := chdir(t, dir)
 	defer restore()
 
@@ -37,6 +40,7 @@ func TestResolvePathsErrorsOutsideAnyRepo(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error outside any repo with no BREEZE_DIR set, got none")
 	}
+
 	if !strings.Contains(err.Error(), dir) {
 		t.Fatalf("expected the error to name the offending cwd (%s), got: %v", dir, err)
 	}
@@ -44,6 +48,7 @@ func TestResolvePathsErrorsOutsideAnyRepo(t *testing.T) {
 
 func TestResolvePathsDefaultsToGitCommonDirInsideARepo(t *testing.T) {
 	t.Setenv("BREEZE_DIR", "")
+
 	repo := t.TempDir()
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
@@ -53,6 +58,7 @@ func TestResolvePathsDefaultsToGitCommonDirInsideARepo(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+
 	restore := chdir(t, sub)
 	defer restore()
 
@@ -60,6 +66,7 @@ func TestResolvePathsDefaultsToGitCommonDirInsideARepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolvePaths: %v", err)
 	}
+
 	wantSuffix := filepath.Join(repo, ".git", "breeze")
 	if p.dir != wantSuffix {
 		t.Fatalf("expected repo-scoped state dir %s, got %s", wantSuffix, p.dir)
@@ -68,10 +75,12 @@ func TestResolvePathsDefaultsToGitCommonDirInsideARepo(t *testing.T) {
 
 func TestResolvePathsSharedAcrossWorktrees(t *testing.T) {
 	t.Setenv("BREEZE_DIR", "")
+
 	repo := t.TempDir()
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
 
 	worktree := filepath.Join(t.TempDir(), "wt1")
@@ -79,14 +88,18 @@ func TestResolvePathsSharedAcrossWorktrees(t *testing.T) {
 
 	restoreMain := chdir(t, repo)
 	pMain, err := resolvePaths()
+
 	restoreMain()
+
 	if err != nil {
 		t.Fatalf("resolvePaths (main worktree): %v", err)
 	}
 
 	restoreWt := chdir(t, worktree)
 	pWt, err := resolvePaths()
+
 	restoreWt()
+
 	if err != nil {
 		t.Fatalf("resolvePaths (linked worktree): %v", err)
 	}
@@ -98,6 +111,7 @@ func TestResolvePathsSharedAcrossWorktrees(t *testing.T) {
 
 func TestCanonicalLockPathsOutsideAnyRepo(t *testing.T) {
 	dir := t.TempDir() // guaranteed not inside a git repo
+
 	restore := chdir(t, dir)
 	defer restore()
 
@@ -105,6 +119,7 @@ func TestCanonicalLockPathsOutsideAnyRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalLockPaths: %v", err)
 	}
+
 	want := filepath.Join(dir, "target/file.txt")
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("expected a plain absolute path %q outside any repo, got %v", want, got)
@@ -122,6 +137,7 @@ func TestCanonicalLockPathsAgreeAcrossWorktrees(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
 
 	worktree := filepath.Join(t.TempDir(), "wt1")
@@ -134,17 +150,22 @@ func TestCanonicalLockPathsAgreeAcrossWorktrees(t *testing.T) {
 
 	restoreMain := chdir(t, sub)
 	gotMain, err := canonicalLockPaths([]string{"file.txt"})
+
 	restoreMain()
+
 	if err != nil {
 		t.Fatalf("canonicalLockPaths (main worktree subdir): %v", err)
 	}
+
 	if want := "a/b/file.txt"; len(gotMain) != 1 || gotMain[0] != want {
 		t.Fatalf("expected %q relative to the worktree toplevel, got %v", want, gotMain)
 	}
 
 	restoreWt := chdir(t, worktree)
 	gotWt, err := canonicalLockPaths([]string{"a/b/file.txt"})
+
 	restoreWt()
+
 	if err != nil {
 		t.Fatalf("canonicalLockPaths (linked worktree): %v", err)
 	}
@@ -163,14 +184,17 @@ func TestCanonicalLockPathsFallsBackOutsideTheWorktree(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	restore := chdir(t, repo)
 	defer restore()
 
 	outside := filepath.Join(t.TempDir(), "elsewhere.txt")
+
 	got, err := canonicalLockPaths([]string{outside})
 	if err != nil {
 		t.Fatalf("canonicalLockPaths: %v", err)
 	}
+
 	if len(got) != 1 || got[0] != outside {
 		t.Fatalf("expected the absolute out-of-worktree path %q unchanged, got %v", outside, got)
 	}
@@ -197,6 +221,7 @@ func TestLooksLikeAbbreviatedSHA(t *testing.T) {
 
 func TestExpandCommitOutsideAnyRepo(t *testing.T) {
 	dir := t.TempDir() // guaranteed not inside a git repo
+
 	restore := chdir(t, dir)
 	defer restore()
 
@@ -210,6 +235,7 @@ func TestExpandCommitResolvesAbbreviatedSHA(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
 
 	restore := chdir(t, repo)
@@ -219,6 +245,7 @@ func TestExpandCommitResolvesAbbreviatedSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git rev-parse HEAD: %v", err)
 	}
+
 	full := strings.TrimSpace(string(out))
 	short := full[:7]
 
@@ -226,6 +253,7 @@ func TestExpandCommitResolvesAbbreviatedSHA(t *testing.T) {
 	if !ok {
 		t.Fatalf("expandCommit(%q) failed, want success", short)
 	}
+
 	if got != full {
 		t.Fatalf("expandCommit(%q) = %q, want %q", short, got, full)
 	}
@@ -233,6 +261,7 @@ func TestExpandCommitResolvesAbbreviatedSHA(t *testing.T) {
 
 func TestResolveCommitPassesThroughNonSHALikeInput(t *testing.T) {
 	dir := t.TempDir()
+
 	restore := chdir(t, dir)
 	defer restore()
 
@@ -248,6 +277,7 @@ func TestResolveCommitExpandsShortSHAToMatchFull(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
 
 	restore := chdir(t, repo)
@@ -257,6 +287,7 @@ func TestResolveCommitExpandsShortSHAToMatchFull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git rev-parse HEAD: %v", err)
 	}
+
 	full := strings.TrimSpace(string(out))
 	short := full[:7]
 
@@ -265,6 +296,7 @@ func TestResolveCommitExpandsShortSHAToMatchFull(t *testing.T) {
 	if got := resolveCommit(short); got != full {
 		t.Fatalf("resolveCommit(short) = %q, want %q", got, full)
 	}
+
 	if got := resolveCommit(full); got != full {
 		t.Fatalf("resolveCommit(full) = %q, want %q (should pass through unchanged)", got, full)
 	}
@@ -275,6 +307,7 @@ func TestResolveCommitFallsBackOnUnknownRef(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	restore := chdir(t, repo)
 	defer restore()
 
@@ -301,19 +334,24 @@ func TestShortCommitForDisplay(t *testing.T) {
 
 func chdir(t *testing.T, dir string) func() {
 	t.Helper()
+
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+
 	if err := os.Chdir(dir); err != nil {
 		t.Fatalf("chdir: %v", err)
 	}
+
 	return func() { os.Chdir(old) }
 }
 
 func runIn(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
+
 	cmd := exec.Command(name, args...)
+
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
@@ -330,6 +368,7 @@ func TestResolveCommitResolvesCommitIshRefs(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "first")
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "second")
 	runIn(t, repo, "git", "tag", "v9.9.9")
@@ -363,9 +402,11 @@ func TestResolveCommitResolvesCommitIshRefs(t *testing.T) {
 
 func mustOutput(t *testing.T, name string, args ...string) string {
 	t.Helper()
+
 	out, err := exec.Command(name, args...).Output()
 	if err != nil {
 		t.Fatalf("%s %v: %v", name, args, err)
 	}
+
 	return string(out)
 }

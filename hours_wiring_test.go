@@ -14,10 +14,12 @@ import (
 // hours_db, and none of them should acquire a new way to fail.
 func TestHoursDBIsOffWhenUnconfigured(t *testing.T) {
 	dir := t.TempDir()
+
 	defaults := filepath.Join(dir, "defaults.hcl")
 	if err := os.WriteFile(defaults, []byte("run_dir = \"/var/tmp/breeze\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "" {
 		t.Errorf("a defaults file without hours_db must leave it off, got %q", got)
 	}
@@ -29,10 +31,12 @@ func TestHoursDBIsOffWhenUnconfigured(t *testing.T) {
 
 func TestHoursDBIsReadFromDefaults(t *testing.T) {
 	dir := t.TempDir()
+
 	defaults := filepath.Join(dir, "defaults.hcl")
 	if err := os.WriteFile(defaults, []byte("hours_db = \"/home/someone/hours.db\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "/home/someone/hours.db" {
 		t.Errorf("hoursDBFor = %q, want the configured path", got)
 	}
@@ -48,6 +52,7 @@ func TestABrokenHoursDBSettingDoesNotPropagate(t *testing.T) {
 	if err := os.WriteFile(defaults, []byte("hours_db = \"relative/hours.db\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	if got, _ := hoursDBFor(paths{defaults: defaults}); got != "" {
 		t.Errorf("a rejected hours_db must leave the feature off, got %q", got)
 	}
@@ -69,16 +74,20 @@ func TestAMalformedHoursDBIsRefusedNotSkipped(t *testing.T) {
 	if err := os.WriteFile(repo, []byte("resource_limits {\n  cpu_weight = 20\n  hours_db = \"/tmp/wrong.db\"\n}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(global, []byte("hours_db = \"/tmp/machine-wide.db\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	got, err := hoursDBFor(paths{defaults: repo, globalDefaults: global})
 	if err == nil {
 		t.Fatal("a malformed hours_db must be refused")
 	}
+
 	if got == "/tmp/machine-wide.db" {
 		t.Error("it fell through to the machine-wide file — reporting on a database the caller never named is the bug")
 	}
+
 	if got != "" {
 		t.Errorf("a refused config must select nothing, got %q", got)
 	}
@@ -95,6 +104,7 @@ func TestHoursCommentCarriesTheOutcome(t *testing.T) {
 		Actor:    "coordinator",
 		Brief:    "tidal reconcile + D-Bus self-heal",
 	}
+
 	got := hoursComment(inst)
 	for _, want := range []string{"succeeded", "cbb3c819e961", "engix99", "coordinator", "tidal reconcile"} {
 		if !strings.Contains(got, want) {

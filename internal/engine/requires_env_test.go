@@ -18,6 +18,7 @@ func TestRequiresEnvRefusesWhenNotDeclared(t *testing.T) {
 	if ok {
 		t.Fatal("a stage declaring requires_env must not start with nothing supplied")
 	}
+
 	if !strings.Contains(reason, "PREROLL_CONTROL") || !strings.Contains(reason, "--set") {
 		t.Errorf("the refusal must name what is missing AND how to supply it, got: %s", reason)
 	}
@@ -55,6 +56,7 @@ func TestRequiresEnvRefusesAnUndeclaredName(t *testing.T) {
 	if ok {
 		t.Fatal("a name the stage never declared must be refused, not passed through")
 	}
+
 	if !strings.Contains(reason, "LD_PRELOAD") {
 		t.Errorf("the refusal must name the offending key, got: %s", reason)
 	}
@@ -71,10 +73,12 @@ func TestRequiresEnvIsInertWhenUndeclared(t *testing.T) {
 // A gate that forces a declaration the script cannot read would be pure ceremony.
 func TestDeclaredValuesReachTheCommandSorted(t *testing.T) {
 	got := declaredEnv(map[string]string{"B_CONTROL": "second", "A_CONTROL": "first"})
+
 	want := []string{"A_CONTROL=first", "B_CONTROL=second"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("declared values must reach the command, sorted: got %v want %v", got, want)
 	}
+
 	if declaredEnv(nil) != nil {
 		t.Error("no declarations must add no variables")
 	}

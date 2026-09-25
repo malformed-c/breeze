@@ -43,6 +43,7 @@ func resourceLimitsFromWire(w *wire.ResourceLimits) *hook.ResourceLimits {
 	if w == nil {
 		return nil
 	}
+
 	return &hook.ResourceLimits{
 		CPUQuota: w.CPUQuota, CPUWeight: w.CPUWeight,
 		MemoryMax: w.MemoryMax, MemoryHigh: w.MemoryHigh,
@@ -56,6 +57,7 @@ func resourceLimitsToWire(rl *hook.ResourceLimits) *wire.ResourceLimits {
 	if rl == nil {
 		return nil
 	}
+
 	return &wire.ResourceLimits{
 		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
@@ -70,6 +72,7 @@ func hookFromWire(w wire.Hook) (engine.Hook, error) {
 	if err != nil {
 		return engine.Hook{}, err
 	}
+
 	return engine.Hook{Command: commandTemplateFromWire(w.Command), Timeout: d}, nil
 }
 
@@ -84,8 +87,10 @@ func hooksFromWire(ws []wire.Hook) ([]engine.Hook, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, h)
 	}
+
 	return out, nil
 }
 
@@ -94,6 +99,7 @@ func hooksToWire(hs []engine.Hook) []wire.Hook {
 	for _, h := range hs {
 		out = append(out, hookToWire(h))
 	}
+
 	return out
 }
 
@@ -102,14 +108,17 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 	if err != nil && w.Timeout != "" {
 		return engine.StageDef{}, err
 	}
+
 	preGate, err := hooksFromWire(w.PreGate)
 	if err != nil {
 		return engine.StageDef{}, err
 	}
+
 	postAction, err := hooksFromWire(w.PostAction)
 	if err != nil {
 		return engine.StageDef{}, err
 	}
+
 	s := engine.StageDef{
 		Name:        w.Name,
 		Type:        engine.StageType(w.Type),
@@ -127,11 +136,14 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 		if err != nil {
 			return engine.StageDef{}, err
 		}
+
 		s.Transform = &h
 	}
+
 	if w.CommandPolicy != nil {
 		s.CommandPolicy = &engine.CommandPolicy{RequiredRole: engine.Role(w.CommandPolicy.RequiredRole), MaxConcurrent: w.CommandPolicy.MaxConcurrent}
 	}
+
 	if w.ApprovalPolicy != nil {
 		s.ApprovalPolicy = &engine.ApprovalPolicy{
 			RequiredApprovals:     w.ApprovalPolicy.RequiredApprovals,
@@ -139,9 +151,11 @@ func stageDefFromWire(w wire.StageDef) (engine.StageDef, error) {
 			BlockPredecessorActor: w.ApprovalPolicy.BlockPredecessorActor,
 		}
 	}
+
 	if w.DeployPolicy != nil {
 		s.DeployPolicy = &engine.DeployPolicy{RequiredRole: engine.Role(w.DeployPolicy.RequiredRole), Target: w.DeployPolicy.Target}
 	}
+
 	return s, nil
 }
 
@@ -156,9 +170,11 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 		t := hookToWire(*s.Transform)
 		w.Transform = &t
 	}
+
 	if s.CommandPolicy != nil {
 		w.CommandPolicy = &wire.CommandPolicy{RequiredRole: string(s.CommandPolicy.RequiredRole), MaxConcurrent: s.CommandPolicy.MaxConcurrent}
 	}
+
 	if s.ApprovalPolicy != nil {
 		w.ApprovalPolicy = &wire.ApprovalPolicy{
 			RequiredApprovals:     s.ApprovalPolicy.RequiredApprovals,
@@ -166,9 +182,11 @@ func stageDefToWire(s engine.StageDef) wire.StageDef {
 			BlockPredecessorActor: s.ApprovalPolicy.BlockPredecessorActor,
 		}
 	}
+
 	if s.DeployPolicy != nil {
 		w.DeployPolicy = &wire.DeployPolicy{RequiredRole: string(s.DeployPolicy.RequiredRole), Target: s.DeployPolicy.Target}
 	}
+
 	return w
 }
 
@@ -179,8 +197,10 @@ func pipelineFromWire(w wire.Pipeline) (engine.Pipeline, error) {
 		if err != nil {
 			return engine.Pipeline{}, err
 		}
+
 		stages = append(stages, s)
 	}
+
 	return engine.Pipeline{
 		Name: w.Name, Stages: stages, FanOutAt: w.FanOutAt,
 		Environments: w.Environments, EnvironmentDeps: w.EnvironmentDeps,
@@ -194,6 +214,7 @@ func pipelineToWire(p engine.Pipeline) wire.Pipeline {
 	for _, s := range p.Stages {
 		stages = append(stages, stageDefToWire(s))
 	}
+
 	return wire.Pipeline{
 		Name: p.Name, Stages: stages, FanOutAt: p.FanOutAt,
 		Environments: p.Environments, EnvironmentDeps: p.EnvironmentDeps,
@@ -208,6 +229,7 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 	for _, a := range s.Approvals {
 		approvals = append(approvals, wire.Approval{Identity: a.Identity, Role: string(a.Role), At: a.At, Brief: a.Brief})
 	}
+
 	out := wire.StageInstance{
 		Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
 		Status: string(s.Status), Approvals: approvals, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt,
@@ -225,6 +247,7 @@ func stageInstanceToWire(s engine.StageInstance) wire.StageInstance {
 			out.MemoryPeak, out.MemoryHighEvents = peak, high
 		}
 	}
+
 	return out
 }
 
@@ -245,27 +268,35 @@ func describeLimits(rl *hook.ResourceLimits) string {
 	if rl.IsZero() {
 		return "(none)"
 	}
+
 	var parts []string
+
 	add := func(name, value string) {
 		if value != "" {
 			parts = append(parts, name+"="+value)
 		}
 	}
 	add("cpu_quota", rl.CPUQuota)
+
 	if rl.CPUWeight > 0 {
 		add("cpu_weight", strconv.Itoa(rl.CPUWeight))
 	}
+
 	add("memory_max", rl.MemoryMax)
 	add("memory_high", rl.MemoryHigh)
+
 	if rl.TasksMax > 0 {
 		add("tasks_max", strconv.Itoa(rl.TasksMax))
 	}
+
 	if rl.Nice != nil {
 		add("nice", strconv.Itoa(*rl.Nice))
 	}
+
 	if rl.IOWeight > 0 {
 		add("io_weight", strconv.Itoa(rl.IOWeight))
 	}
+
 	for _, m := range []struct{ name, value string }{
 		{"io_read_bandwidth_max", rl.IOReadBandwidthMax},
 		{"io_write_bandwidth_max", rl.IOWriteBandwidthMax},
@@ -276,5 +307,6 @@ func describeLimits(rl *hook.ResourceLimits) string {
 			add(m.name, m.value)
 		}
 	}
+
 	return strings.Join(parts, " ")
 }

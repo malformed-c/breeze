@@ -22,9 +22,11 @@ func TestDaemonMessIdentityIsStableAndDistinct(t *testing.T) {
 	a1 := daemonMessIdentity("/home/engi/git/repo-a/.git/breeze")
 	a2 := daemonMessIdentity("/home/engi/git/repo-a/.git/breeze")
 	b := daemonMessIdentity("/home/engi/git/repo-b/.git/breeze")
+
 	if a1 != a2 {
 		t.Fatalf("expected the same state dir to always derive the same identity, got %q vs %q", a1, a2)
 	}
+
 	if a1 == b {
 		t.Fatalf("expected different repos' state dirs to derive different identities, both got %q", a1)
 	}
@@ -63,12 +65,15 @@ func TestParseApproveCommand(t *testing.T) {
 			if err == nil {
 				t.Errorf("parseApproveCommand(%q): expected an error, got none", c.body)
 			}
+
 			continue
 		}
+
 		if err != nil {
 			t.Errorf("parseApproveCommand(%q): unexpected error: %v", c.body, err)
 			continue
 		}
+
 		if pipeline != c.wantPipeline || stage != c.wantStage || commit != c.wantCommit || env != c.wantEnv || brief != c.wantBrf {
 			t.Errorf("parseApproveCommand(%q) = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
 				c.body, pipeline, stage, commit, env, brief,
@@ -97,6 +102,7 @@ func TestIdentityForMessSender(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -105,6 +111,7 @@ func TestIdentityForMessSender(t *testing.T) {
 	if got, ok := identityForMessSender(e, "alice-on-mess"); !ok || got != "alice" {
 		t.Fatalf("expected alice-on-mess to map to alice, got %q ok=%v", got, ok)
 	}
+
 	if _, ok := identityForMessSender(e, "alice"); ok {
 		t.Fatalf("expected alice's raw identity name to NOT match once she has an explicit mess-agent mapping")
 	}
@@ -112,6 +119,7 @@ func TestIdentityForMessSender(t *testing.T) {
 	if got, ok := identityForMessSender(e, "bob"); !ok || got != "bob" {
 		t.Fatalf("expected bob (no mess-agent mapping) to map to himself, got %q ok=%v", got, ok)
 	}
+
 	if _, ok := identityForMessSender(e, "mallory"); ok {
 		t.Fatalf("expected an unmapped sender to find no identity")
 	}
@@ -130,6 +138,7 @@ func TestCommandTopics(t *testing.T) {
 			t.Fatalf("register %s: %v", p.Name, err)
 		}
 	}
+
 	topics := commandTopics(e)
 	if len(topics) != 1 || topics[0] != "#release-approvals" {
 		t.Fatalf("expected exactly one deduped topic, got %v", topics)
@@ -154,7 +163,9 @@ func examplePipelineForCommandTopicTest(name string) engine.Pipeline {
 // handleMessCommand's tests below need to exercise the full authorization path.
 func approvalPipelineWithCommandTopic(t *testing.T, commandTopic, reviewerMessAgent string) *engine.Engine {
 	t.Helper()
+
 	e := engine.New()
+
 	p := engine.Pipeline{
 		Name: "release",
 		Stages: []engine.StageDef{
@@ -167,12 +178,15 @@ func approvalPipelineWithCommandTopic(t *testing.T, commandTopic, reviewerMessAg
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", reviewerMessAgent); err != nil {
 		t.Fatalf("register identity: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign role: %v", err)
 	}
+
 	return e
 }
 
@@ -195,9 +209,11 @@ func TestHandleMessCommandApprovesWithMatchingTopic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if inst.Status != engine.StageSucceeded {
 		t.Fatalf("expected the approval to have succeeded, got %s", inst.Status)
 	}
+
 	if len(inst.Approvals) != 1 || inst.Approvals[0].Identity != "alice" {
 		t.Fatalf("expected alice's approval to be recorded, got %+v", inst.Approvals)
 	}
@@ -217,7 +233,9 @@ func TestHandleMessCommandExpandsShortSHA(t *testing.T) {
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
 		t.Skipf("git not available or init failed, skipping: %v: %s", err, out)
 	}
+
 	runIn(t, repo, "git", "commit", "--allow-empty", "-q", "-m", "init")
+
 	restore := chdir(t, repo)
 	defer restore()
 
@@ -225,10 +243,12 @@ func TestHandleMessCommandExpandsShortSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("git rev-parse HEAD: %v", err)
 	}
+
 	full := strings.TrimSpace(string(out))
 	short := full[:8]
 
 	e := engine.New()
+
 	p := engine.Pipeline{
 		Name: "release",
 		Stages: []engine.StageDef{
@@ -241,15 +261,19 @@ func TestHandleMessCommandExpandsShortSHA(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register bob: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign role: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
 		t.Fatalf("register alice: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign role: %v", err)
 	}
@@ -271,9 +295,11 @@ func TestHandleMessCommandExpandsShortSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status under full sha: %v", err)
 	}
+
 	if inst.Status != engine.StageSucceeded {
 		t.Fatalf("expected the short-SHA chat approval to land on the same full-SHA instance as bob's, got status=%s approvals=%+v", inst.Status, inst.Approvals)
 	}
+
 	if len(inst.Approvals) != 2 {
 		t.Fatalf("expected both approvals recorded on one instance, got %+v", inst.Approvals)
 	}

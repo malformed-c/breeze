@@ -11,14 +11,17 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "admin"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, _, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
 	path := filepath.Join(t.TempDir(), "state.json")
+
 	snap := e.Snapshot()
 	if err := SaveSnapshot(path, snap); err != nil {
 		t.Fatalf("save: %v", err)
@@ -36,6 +39,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if !ok || !id.HasRole("admin") {
 		t.Fatalf("expected alice with admin role to survive round-trip, got %+v (ok=%v)", id, ok)
 	}
+
 	if len(e2.ListLocks()) != 1 {
 		t.Fatalf("expected 1 lock to survive round-trip, got %d", len(e2.ListLocks()))
 	}
@@ -55,6 +59,7 @@ func TestLoadZeroValueSnapshotLeavesMapsWritable(t *testing.T) {
 	if err := e.RegisterPipeline(examplePipeline(), "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
 		t.Fatalf("StartCommandStage must not panic on commitSeq write after loading a zero-value snapshot: %v", err)
 	}
@@ -62,18 +67,23 @@ func TestLoadZeroValueSnapshotLeavesMapsWritable(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "alice", ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "bob", ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -85,10 +95,12 @@ func TestLoadZeroValueSnapshotLeavesMapsWritable(t *testing.T) {
 
 func TestLoadMissingSnapshotIsNotAnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "does-not-exist.json")
+
 	snap, err := LoadSnapshotFile(path)
 	if err != nil {
 		t.Fatalf("missing snapshot file should not be an error: %v", err)
 	}
+
 	if len(snap.Identities) != 0 {
 		t.Fatalf("expected zero-value snapshot")
 	}

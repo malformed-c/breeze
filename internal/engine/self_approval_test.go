@@ -10,21 +10,26 @@ import "testing"
 func TestApprovalPolicyBlockPredecessorActor(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[1].ApprovalPolicy.BlockPredecessorActor = true
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"ci", "alice", "bob"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
+
 	if err := e.AssignRole("ci", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -44,13 +49,16 @@ func TestApprovalPolicyBlockPredecessorActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("alice approve: %v", err)
 	}
+
 	if inst.Status != StageAwaiting {
 		t.Fatalf("expected still awaiting after 1/2 approvals, got %s", inst.Status)
 	}
+
 	inst, err = e.ApproveStage("release", "review", "abc123", "", "bob", "")
 	if err != nil {
 		t.Fatalf("bob approve: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected 2/2 approvals to succeed the stage, got %s", inst.Status)
 	}
@@ -63,15 +71,19 @@ func TestApprovalPolicyBlockPredecessorActor(t *testing.T) {
 func TestApprovalPolicyBlockPredecessorActorOffByDefault(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("ci", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "ci", ""); err != nil {
 		t.Fatalf("expected self-approval to be allowed when BlockPredecessorActor is unset: %v", err)
 	}

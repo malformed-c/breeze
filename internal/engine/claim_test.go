@@ -14,35 +14,43 @@ import (
 func TestClaimDeployLockThenDeployReusesIt(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	approvedCommit(t, e, "abc123")
 
 	lock, target, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", minute)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
+
 	if target != "release" { // examplePipeline's deploy stage sets DeployPolicy.Target = "release"
 		t.Fatalf("unexpected target: %s", target)
 	}
 
 	// Visible via inventory before the real deploy even runs.
 	found := false
+
 	for _, r := range e.ListResourceLocks() {
 		if r.ID == lock.ID && r.Holder == "ci" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected the claimed lock to be visible via ListResourceLocks before the real deploy runs")
 	}
@@ -52,6 +60,7 @@ func TestClaimDeployLockThenDeployReusesIt(t *testing.T) {
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "mallory", minute); err == nil {
 		t.Fatalf("expected a different actor's claim to be rejected while ci's claim is held")
 	}
+
 	if _, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "mallory", ""); err == nil {
 		t.Fatalf("expected a different actor's deploy to be rejected while ci's claim is held")
 	}
@@ -62,6 +71,7 @@ func TestClaimDeployLockThenDeployReusesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the claiming actor's own deploy to reuse its claim: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected deploy to succeed, got %s (%s)", inst.Status, inst.Error)
 	}
@@ -79,13 +89,16 @@ func TestClaimDeployLockThenDeployReusesIt(t *testing.T) {
 func TestClaimDeployLockRequiresRole(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[2].DeployPolicy.RequiredRole = "deployer"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("mallory", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "mallory", minute); err == nil {
 		t.Fatalf("expected claim to be rejected for an actor lacking the deployer role")
 	}
@@ -93,9 +106,11 @@ func TestClaimDeployLockRequiresRole(t *testing.T) {
 	if _, err := e.RegisterIdentity("deployerid", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("deployerid", "deployer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "deployerid", minute); err != nil {
 		t.Fatalf("expected claim to succeed for an actor holding the deployer role: %v", err)
 	}
@@ -107,9 +122,11 @@ func TestClaimDeployLockRequiresRole(t *testing.T) {
 func TestClaimDeployLockRejectsUndeclaredEnvironment(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "nonexistent-env", "ci", minute); err == nil {
 		t.Fatalf("expected claim against an undeclared environment to be rejected")
 	}
@@ -124,6 +141,7 @@ func TestClaimDeployLockRejectsUndeclaredEnvironment(t *testing.T) {
 func TestClaimDeployLockIsIdempotentForSameActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -132,10 +150,12 @@ func TestClaimDeployLockIsIdempotentForSameActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
+
 	second, _, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", minute)
 	if err != nil {
 		t.Fatalf("expected re-claiming your own still-active claim to succeed, not error: %v", err)
 	}
+
 	if second.ID != first.ID {
 		t.Fatalf("expected the same lock to be re-reported, got a new one: first=%s second=%s", first.ID, second.ID)
 	}
@@ -148,15 +168,19 @@ func TestClaimDeployLockIsIdempotentForSameActor(t *testing.T) {
 func TestClaimConflictErrorNamesTheHolder(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	for _, name := range []string{"alice", "bob"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
+
 		if err := e.AssignRole(name, "reviewer"); err != nil {
 			t.Fatalf("assign: %v", err)
 		}
 	}
+
 	approvedCommit(t, e, "abc123") // so Gate 1 passes and the lock conflict is what's actually hit
+
 	if _, _, err := e.ClaimDeployLock("release", "deploy", "staging", "alice", minute); err != nil {
 		t.Fatalf("alice claim: %v", err)
 	}
@@ -165,6 +189,7 @@ func TestClaimConflictErrorNamesTheHolder(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected bob's claim to be rejected while alice's claim is held")
 	}
+
 	if !strings.Contains(err.Error(), `"alice"`) {
 		t.Fatalf("expected the conflict error to name the current holder (alice), got: %v", err)
 	}
@@ -185,9 +210,11 @@ func TestClaimConflictErrorNamesTheHolder(t *testing.T) {
 func TestClaimStageThenStartReusesIt(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("mallory", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -198,11 +225,13 @@ func TestClaimStageThenStartReusesIt(t *testing.T) {
 	}
 
 	found := false
+
 	for _, r := range e.ListResourceLocks() {
 		if r.ID == lock.ID && r.Holder == "ci" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected the claimed lock to be visible via ListResourceLocks before the real run")
 	}
@@ -215,6 +244,7 @@ func TestClaimStageThenStartReusesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the claiming actor's own stage start to reuse its claim: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected build to succeed, got %s (%s)", inst.Status, inst.Error)
 	}
@@ -231,13 +261,16 @@ func TestClaimStageThenStartReusesIt(t *testing.T) {
 func TestClaimStageRequiresRole(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].CommandPolicy.RequiredRole = "builder"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("mallory", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.ClaimStage("release", "build", "abc123", "", "mallory", minute); err == nil {
 		t.Fatalf("expected claim to be rejected for an actor lacking the builder role")
 	}
@@ -245,9 +278,11 @@ func TestClaimStageRequiresRole(t *testing.T) {
 	if _, err := e.RegisterIdentity("builderid", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("builderid", "builder"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.ClaimStage("release", "build", "abc123", "", "builderid", minute); err != nil {
 		t.Fatalf("expected claim to succeed for an actor holding the builder role: %v", err)
 	}
@@ -259,6 +294,7 @@ func TestClaimStageRequiresRole(t *testing.T) {
 func TestClaimStageIsIdempotentForSameActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -267,10 +303,12 @@ func TestClaimStageIsIdempotentForSameActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
+
 	second, err := e.ClaimStage("release", "build", "abc123", "", "ci", minute)
 	if err != nil {
 		t.Fatalf("expected re-claiming your own still-active claim to succeed, not error: %v", err)
 	}
+
 	if second.ID != first.ID {
 		t.Fatalf("expected the same lock to be re-reported, got a new one: first=%s second=%s", first.ID, second.ID)
 	}
@@ -283,12 +321,15 @@ func TestClaimStageIsIdempotentForSameActor(t *testing.T) {
 func TestClaimStageRejectsNonCommandStage(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.ClaimStage("release", "review", "abc123", "", "ci", minute); err == nil {
 		t.Fatalf("expected claiming an approval stage to be rejected")
 	}
+
 	if _, err := e.ClaimStage("release", "deploy", "abc123", "staging", "ci", minute); err == nil {
 		t.Fatalf("expected claiming a deploy stage to be rejected (use ClaimDeployLock instead)")
 	}
@@ -299,11 +340,13 @@ func TestClaimStageRejectsNonCommandStage(t *testing.T) {
 func TestClaimStageConflictErrorNamesTheHolder(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	for _, name := range []string{"alice", "bob"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
+
 	if _, err := e.ClaimStage("release", "build", "abc123", "", "alice", minute); err != nil {
 		t.Fatalf("alice claim: %v", err)
 	}
@@ -312,6 +355,7 @@ func TestClaimStageConflictErrorNamesTheHolder(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected bob's claim to be rejected while alice's claim is held")
 	}
+
 	if !strings.Contains(err.Error(), `"alice"`) {
 		t.Fatalf("expected the conflict error to name the current holder (alice), got: %v", err)
 	}
@@ -333,10 +377,12 @@ func TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+
 	p.Stages[0].Timeout = 5 * time.Minute
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"ci", "mallory"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
@@ -344,29 +390,36 @@ func TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim(t *testing.T) {
 	}
 
 	done := make(chan *StageInstance, 1)
+
 	go func() {
 		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
 		if err != nil {
 			t.Errorf("StartCommandStage: %v", err)
 			return
 		}
+
 		done <- inst
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		held := false
+
 		for _, r := range e.ListResourceLocks() {
 			if r.Holder == "ci" && strings.Contains(r.Paths[0], "release/build") {
 				held = true
 			}
 		}
+
 		if held {
 			break
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("expected an auto-acquired lock to appear before deadline, without any explicit claim ever made")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
 
@@ -377,6 +430,7 @@ func TestStartCommandStageAutoAcquiresLockWithoutExplicitClaim(t *testing.T) {
 	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cleanup"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+
 	<-done
 
 	for _, r := range e.ListResourceLocks() {
@@ -401,6 +455,7 @@ func TestCancelRunningStagesReleasesStageLock(t *testing.T) {
 	e.instances[instanceKey("release", "build", key)] = stuck
 
 	lockKey := stageLockKey("release", "build", key)
+
 	lock, ok, err := e.TryAcquireResourceLock("ci", []string{lockKey}, LockExclusive, time.Hour, false)
 	if err != nil || !ok {
 		t.Fatalf("simulating the orphaned run's auto-acquired lock: ok=%v err=%v", ok, err)
@@ -432,10 +487,12 @@ func TestCancelStagePreservesManualClaim(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+
 	p.Stages[0].Timeout = 5 * time.Minute
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"ci", "mallory"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
@@ -448,16 +505,19 @@ func TestCancelStagePreservesManualClaim(t *testing.T) {
 	}
 
 	done := make(chan *StageInstance, 1)
+
 	go func() {
 		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
 		if err != nil {
 			t.Errorf("StartCommandStage: %v", err)
 			return
 		}
+
 		done <- inst
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		insts, err := e.PipelineStatus("release", "abc123")
 		if err == nil {
@@ -467,25 +527,31 @@ func TestCancelStagePreservesManualClaim(t *testing.T) {
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("stage never reached Running before deadline")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 running:
 
 	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cancel"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+
 	<-done
 
 	// The claim must still be held by ci — cancelling the run must not release it.
 	found := false
+
 	for _, r := range e.ListResourceLocks() {
 		if r.ID == claim.ID && r.Holder == "ci" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected ci's manual claim to survive cancellation of the run that reused it")
 	}
@@ -513,20 +579,24 @@ func TestCancelStagePreservesManualDeployClaim(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[2].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+
 	p.Stages[2].Timeout = 5 * time.Minute
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"alice", "bob", "mallory"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
+
 		if name != "mallory" {
 			if err := e.AssignRole(name, "reviewer"); err != nil {
 				t.Fatalf("assign: %v", err)
 			}
 		}
 	}
+
 	approvedCommit(t, e, "abc123")
 
 	claim, _, err := e.ClaimDeployLock("release", "deploy", "staging", "ci", time.Hour)
@@ -535,16 +605,19 @@ func TestCancelStagePreservesManualDeployClaim(t *testing.T) {
 	}
 
 	done := make(chan *StageInstance, 1)
+
 	go func() {
 		inst, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "ci", "")
 		if err != nil {
 			t.Errorf("StartDeployStage: %v", err)
 			return
 		}
+
 		done <- inst
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		insts, err := e.PipelineStatus("release", "abc123")
 		if err == nil {
@@ -554,24 +627,30 @@ func TestCancelStagePreservesManualDeployClaim(t *testing.T) {
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("stage never reached Running before deadline")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 running:
 
 	if _, err := e.CancelStage("release", "deploy", "abc123", "staging", "ci", "test cancel"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+
 	<-done
 
 	found := false
+
 	for _, r := range e.ListResourceLocks() {
 		if r.ID == claim.ID && r.Holder == "ci" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected ci's manual deploy claim to survive cancellation of the deploy that reused it")
 	}

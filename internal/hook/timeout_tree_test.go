@@ -35,23 +35,30 @@ func TestTimeoutKillsTheWholeTree(t *testing.T) {
 					t.Skipf("systemd-run --user --scope unusable: %v", err)
 				}
 			}
+
 			marker := t.TempDir() + "/alive"
 			// A grandchild that outlives its parent and keeps touching a file, which
 			// is how we detect survival rather than assuming it.
 			script := "#!/bin/sh\n" +
 				"( while true; do date >> " + marker + "; sleep 0.2; done ) &\n" +
 				"sleep 20\n"
+
 			tmpl := Template{Script: script, Timeout: 700 * time.Millisecond, ResourceLimits: c.limits}
 			if c.outputDir {
 				tmpl.OutputDir = t.TempDir()
 			}
+
 			res := Run(context.Background(), tmpl, nil)
 			if !res.TimedOut {
 				t.Fatalf("expected a timeout, got %+v", res)
 			}
+
 			time.Sleep(400 * time.Millisecond)
+
 			before, _ := os.ReadFile(marker)
+
 			time.Sleep(600 * time.Millisecond)
+
 			after, _ := os.ReadFile(marker)
 			if len(after) > len(before) {
 				t.Errorf("GRANDCHILD SURVIVED the stage timeout: marker grew from %d to %d bytes after the kill (%d lines still being written)",
@@ -72,12 +79,14 @@ func TestTimeoutKillsChildrenThatEscapedTheProcessGroup(t *testing.T) {
 	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
 		t.Skipf("systemd-run --user --scope unusable: %v", err)
 	}
+
 	marker := t.TempDir() + "/alive"
 	// set -m is the whole point: with it, the backgrounded subshell lands in a
 	// process group of its own, out of reach of kill(-pgid).
 	script := "#!/bin/bash\nset -m\n" +
 		"( while true; do date >> " + marker + "; sleep 0.2; done ) &\n" +
 		"sleep 20\n"
+
 	res := Run(context.Background(), Template{
 		Script:         script,
 		Interpreter:    []string{"/bin/bash"},
@@ -87,9 +96,13 @@ func TestTimeoutKillsChildrenThatEscapedTheProcessGroup(t *testing.T) {
 	if !res.TimedOut {
 		t.Fatalf("expected a timeout, got %+v", res)
 	}
+
 	time.Sleep(400 * time.Millisecond)
+
 	before, _ := os.ReadFile(marker)
+
 	time.Sleep(600 * time.Millisecond)
+
 	after, _ := os.ReadFile(marker)
 	if len(after) > len(before) {
 		t.Errorf("a child in its own process group survived the timeout: marker grew %d -> %d bytes after the kill",
@@ -103,6 +116,7 @@ func TestKillByCgroupRefusesItsOwnAndAnyAncestor(t *testing.T) {
 	if KillByCgroup(os.Getpid()) {
 		t.Fatal("KillByCgroup must never accept this process's own cgroup")
 	}
+
 	if KillByCgroup(1) {
 		t.Fatal("KillByCgroup must never accept pid 1's cgroup")
 	}

@@ -33,9 +33,11 @@ var messHealth struct {
 func notifierStatus() string {
 	messHealth.mu.Lock()
 	defer messHealth.mu.Unlock()
+
 	if !messHealth.failing {
 		return ""
 	}
+
 	return messHealth.reason
 }
 
@@ -57,8 +59,11 @@ func notifierStatus() string {
 func runMessBestEffort(messPath, undelivered string, args ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+
 	cmd := exec.CommandContext(ctx, messPath, args...)
+
 	var stderr bytes.Buffer
+
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 
@@ -68,9 +73,12 @@ func runMessBestEffort(messPath, undelivered string, args ...string) {
 		if reason == "" {
 			reason = err.Error()
 		}
+
 		reason = oneLineMess(reason)
 	}
+
 	messHealth.mu.Lock()
+
 	newlyFailing := reason != "" && !messHealth.failing
 	switch {
 	case newlyFailing:
@@ -80,6 +88,7 @@ func runMessBestEffort(messPath, undelivered string, args ...string) {
 		messHealth.reason = reason
 	case messHealth.failing:
 		messHealth.failing, messHealth.reason = false, ""
+
 		log.Printf("mess notifications are working again")
 	}
 	messHealth.mu.Unlock()
@@ -116,6 +125,7 @@ func alertHumanNotifierBroken(messPath, reason, undelivered string) {
 	if undelivered != "" {
 		msg += "; nobody was told about " + undelivered
 	}
+
 	msg += " (the stage outcome itself is unaffected; `breeze status` shows the live state)"
 	go runMessBestEffort(messPath, "", "send", "--as", messSender, "user", msg)
 }
@@ -136,12 +146,14 @@ func notifyViaMess(identities []string, message, thread string) {
 	if err != nil {
 		return
 	}
+
 	for _, identity := range identities {
 		go func(identity string) {
 			args := []string{"send", "--as", messSender, identity, message}
 			if thread != "" {
 				args = append(args, "--thread", thread)
 			}
+
 			runMessBestEffort(messPath, oneLineMess(message)+" (to "+identity+")", args...)
 		}(identity)
 	}
@@ -155,11 +167,13 @@ func notifyViaMessTopic(topic, message, thread string) {
 	if err != nil {
 		return
 	}
+
 	go func() {
 		args := []string{"pub", "--as", messSender, topic, message}
 		if thread != "" {
 			args = append(args, "--thread", thread)
 		}
+
 		runMessBestEffort(messPath, oneLineMess(message)+" (to topic "+topic+")", args...)
 	}()
 }
@@ -184,9 +198,11 @@ func niceStatus(eng *engine.Engine) string {
 	if rl == nil {
 		return "" // no machine-level limits at all, which is the common case
 	}
+
 	if ok, why := hook.NicenessApplicable(rl.Nice); !ok {
 		return why
 	}
+
 	return ""
 }
 
@@ -195,9 +211,11 @@ func ioLimitStatus(eng *engine.Engine) string {
 	if !rl.UsesIO() {
 		return ""
 	}
+
 	if ok, why := hook.IOControllerAvailable(); !ok {
 		return why + " — the limit is accepted by systemd and reported back by `systemctl show`, but nothing enforces it. " +
 			"Fix by delegating the controller to your user manager: a drop-in for user@.service with `Delegate=cpu io memory pids`, then re-login"
 	}
+
 	return ""
 }

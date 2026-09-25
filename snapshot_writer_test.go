@@ -36,6 +36,7 @@ func TestSnapshotWriterCoalescesRapidSubmitsToLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+
 	if got.Seq != n {
 		t.Fatalf("expected the final on-disk snapshot to reflect the last submitted Seq=%d, got Seq=%d — a stale write won the race", n, got.Seq)
 	}
@@ -56,6 +57,7 @@ func TestSnapshotWriterSingleSubmitRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+
 	if got.Seq != 7 {
 		t.Fatalf("expected Seq=7, got %d", got.Seq)
 	}
@@ -74,6 +76,7 @@ func TestWriterCoalescesABurstIntoFewerWrites(t *testing.T) {
 	for i := 0; i < burst; i++ {
 		w.submit(engine.Snapshot{Seq: i})
 	}
+
 	if !w.waitIdle(10 * time.Second) {
 		t.Fatal("writer never went idle")
 	}
@@ -81,9 +84,11 @@ func TestWriterCoalescesABurstIntoFewerWrites(t *testing.T) {
 	w.mu.Lock()
 	writes := w.writes
 	w.mu.Unlock()
+
 	if writes >= burst {
 		t.Errorf("a burst of %d mutations produced %d writes — no coalescing", burst, writes)
 	}
+
 	t.Logf("%d mutations -> %d write(s)", burst, writes)
 
 	// And the LAST state must win: coalescing may drop intermediate snapshots, never
@@ -93,6 +98,7 @@ func TestWriterCoalescesABurstIntoFewerWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+
 	if snap.Seq != burst-1 {
 		t.Errorf("coalescing must keep the NEWEST snapshot, got Seq=%d want %d", snap.Seq, burst-1)
 	}

@@ -39,6 +39,7 @@ func TestE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping end-to-end tests (each spawns a real daemon subprocess) in -short mode")
 	}
+
 	testscript.Run(t, testscript.Params{
 		Dir:                 "testdata/e2e",
 		RequireExplicitExec: true,
@@ -66,11 +67,13 @@ func stopDaemonsUnder(dir string) {
 		if err != nil || d.IsDir() || d.Name() != "breeze.sock" {
 			return nil
 		}
+
 		if conn, derr := net.DialTimeout("unix", path, 500*time.Millisecond); derr == nil {
 			json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
 			conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 			io.ReadAll(conn)
 			conn.Close()
+
 			return nil
 		}
 		// The socket is dead but the process may not be: read the pid the daemon
@@ -79,12 +82,14 @@ func stopDaemonsUnder(dir string) {
 		if rerr != nil {
 			return nil
 		}
+
 		var snap struct {
 			DaemonPID int `json:"daemonPid"`
 		}
 		if json.Unmarshal(data, &snap) == nil && snap.DaemonPID > 0 {
 			syscall.Kill(snap.DaemonPID, syscall.SIGTERM)
 		}
+
 		return nil
 	})
 }

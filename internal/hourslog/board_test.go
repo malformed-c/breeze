@@ -38,6 +38,7 @@ func TestParseTSHandlesBothStoredShapes(t *testing.T) {
 			t.Errorf("parseTS(%q) failed", s)
 			continue
 		}
+
 		if got.Year() != 2026 || got.Month() != time.August || got.Day() != 17 {
 			t.Errorf("parseTS(%q) = %v, want 2026-08-17", s, got)
 		}
@@ -86,12 +87,15 @@ func TestBoardSumsEntriesRatherThanTrustingTheStoredTotal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Board: %v", err)
 	}
+
 	if len(tasks) != 1 {
 		t.Fatalf("want 1 task, got %d", len(tasks))
 	}
+
 	if tasks[0].Secs != 420 {
 		t.Errorf("Secs = %d, want 420 (the sum of the entries, not the stored 99999)", tasks[0].Secs)
 	}
+
 	if tasks[0].Entries != 2 {
 		t.Errorf("Entries = %d, want 2", tasks[0].Entries)
 	}
@@ -109,6 +113,7 @@ func TestBoardOmitsTasksWithNoRecordedTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Board: %v", err)
 	}
+
 	if len(tasks) != 0 {
 		t.Errorf("want no rows, got %+v", tasks)
 	}
@@ -126,6 +131,7 @@ func TestBoardReportsARunningEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Board: %v", err)
 	}
+
 	if len(tasks) != 1 || !tasks[0].Running {
 		t.Fatalf("want one running task, got %+v", tasks)
 	}

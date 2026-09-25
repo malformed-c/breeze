@@ -37,9 +37,11 @@ func TestCanonicalizeVerbFirst(t *testing.T) {
 			t.Errorf("canonicalize(%v): %v", c.argv, err)
 			continue
 		}
+
 		if deprecated != "" {
 			t.Errorf("canonicalize(%v) must not deprecate a canonical form, got %q", c.argv, deprecated)
 		}
+
 		if !slices.Equal(got, c.want) {
 			t.Errorf("canonicalize(%v) = %v, want %v", c.argv, got, c.want)
 		}
@@ -70,9 +72,11 @@ func TestCanonicalizeLegacyStillWorks(t *testing.T) {
 			t.Errorf("canonicalize(%v): %v", c.argv, err)
 			continue
 		}
+
 		if !slices.Equal(got, c.argv) {
 			t.Errorf("a legacy invocation must pass through unchanged: canonicalize(%v) = %v", c.argv, got)
 		}
+
 		if !strings.Contains(deprecated, c.pointer) {
 			t.Errorf("canonicalize(%v) pointer = %q, want it to name %q", c.argv, deprecated, c.pointer)
 		}
@@ -91,6 +95,7 @@ func TestCanonicalizeBareCommands(t *testing.T) {
 			t.Errorf("canonicalize(%v): %v", argv, err)
 			continue
 		}
+
 		if !slices.Equal(got, argv) || deprecated != "" {
 			t.Errorf("canonicalize(%v) = %v, %q — want unchanged and undeprecated", argv, got, deprecated)
 		}
@@ -103,6 +108,7 @@ func TestCanonicalizeRejectsBadNoun(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "daemon") || !strings.Contains(err.Error(), "stage") {
 		t.Fatalf("the error should list the nouns %q accepts, got: %v", "start", err)
 	}
+
 	if _, _, err := canonicalize([]string{"acquire"}); err == nil {
 		t.Fatalf("expected a verb with no noun to be rejected")
 	}
@@ -128,22 +134,27 @@ func TestCanonicalizeRejectsBadNoun(t *testing.T) {
 // are stripped so the optional-noun spelling ("stop [daemon]") still counts.
 func TestEveryRouteIsDocumented(t *testing.T) {
 	stripped := make([]string, 0, 200)
+
 	for line := range strings.SplitSeq(usageText, "\n") {
 		line = strings.TrimSpace(line)
 		stripped = append(stripped, strings.NewReplacer("[", "", "]", "").Replace(line))
 	}
+
 	for _, r := range routes {
 		if len(r.nouns) == 0 {
 			continue
 		}
+
 		canon := r.verb + " " + r.nouns[0] // canonical spelling is verb + plural noun
 		documented := false
+
 		for _, line := range stripped {
 			if strings.HasPrefix(line, canon) {
 				documented = true
 				break
 			}
 		}
+
 		if !documented {
 			t.Errorf("route %q is undocumented — add a line to usageText starting with it", canon)
 		}
@@ -160,19 +171,23 @@ func TestRoutesAreWellFormed(t *testing.T) {
 		"auth": true, "task": true,
 	}
 	seen := map[string]bool{}
+
 	for _, r := range routes {
 		if len(r.legacy) == 0 || !known[r.legacy[0]] {
 			t.Errorf("route %s %s targets unknown command %v", r.verb, r.nouns[0], r.legacy)
 		}
+
 		if len(r.nouns) == 0 {
 			t.Errorf("route for verb %q has no noun", r.verb)
 			continue
 		}
+
 		for _, noun := range r.nouns {
 			key := r.verb + " " + noun
 			if seen[key] {
 				t.Errorf("duplicate route %q", key)
 			}
+
 			seen[key] = true
 		}
 	}

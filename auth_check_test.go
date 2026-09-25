@@ -25,6 +25,7 @@ func TestAuthCheckReportsAdminOwnership(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected auth.check itself to succeed even when unauthenticated: %s", resp.Error)
 	}
+
 	out, _ := decodePayload[wire.AuthCheckResponse](resp)
 	if out.Authorized {
 		t.Fatalf("expected Authorized=false with no identity supplied")
@@ -32,6 +33,7 @@ func TestAuthCheckReportsAdminOwnership(t *testing.T) {
 
 	// Wrong token: also reported as unauthorized data, not an RPC error.
 	resp = d.dispatch(wire.Request{Op: wire.OpAuthCheck, As: "admin", Token: "wrong", Payload: mustMarshal(t, wire.AuthCheckRequest{RequiredRole: "admin"})})
+
 	out, _ = decodePayload[wire.AuthCheckResponse](resp)
 	if out.Authorized {
 		t.Fatalf("expected Authorized=false with a wrong token")
@@ -39,10 +41,12 @@ func TestAuthCheckReportsAdminOwnership(t *testing.T) {
 
 	// Valid token, but the identity doesn't hold the required role.
 	resp = d.dispatch(wire.Request{Op: wire.OpAuthCheck, As: "alice", Token: alice.Token, Payload: mustMarshal(t, wire.AuthCheckRequest{RequiredRole: "admin"})})
+
 	out, _ = decodePayload[wire.AuthCheckResponse](resp)
 	if out.Authorized {
 		t.Fatalf("expected Authorized=false for a non-admin identity")
 	}
+
 	if out.Reason == "" {
 		t.Fatalf("expected a Reason explaining why alice isn't authorized")
 	}
@@ -52,6 +56,7 @@ func TestAuthCheckReportsAdminOwnership(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected auth.check to succeed: %s", resp.Error)
 	}
+
 	out, _ = decodePayload[wire.AuthCheckResponse](resp)
 	if !out.Authorized {
 		t.Fatalf("expected Authorized=true for admin holding the admin role, got reason: %s", out.Reason)
@@ -61,6 +66,7 @@ func TestAuthCheckReportsAdminOwnership(t *testing.T) {
 	if !d.eng.HasRole("admin", "admin") {
 		t.Fatalf("auth.check must not have altered admin's roles")
 	}
+
 	if d.eng.HasRole("alice", "admin") {
 		t.Fatalf("auth.check must not have granted alice the admin role")
 	}

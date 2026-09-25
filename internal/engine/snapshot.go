@@ -37,15 +37,19 @@ func LoadSnapshotFile(path string) (Snapshot, error) {
 		if os.IsNotExist(err) {
 			return Snapshot{}, nil
 		}
+
 		return Snapshot{}, err
 	}
+
 	if len(data) == 0 {
 		return Snapshot{}, nil
 	}
+
 	var snap Snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return Snapshot{}, err
 	}
+
 	return snap, nil
 }
 
@@ -56,9 +60,11 @@ func SaveSnapshot(path string, snap Snapshot) error {
 	if err != nil {
 		return err
 	}
+
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+
 	return os.Rename(tmp, path)
 }

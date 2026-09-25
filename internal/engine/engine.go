@@ -162,6 +162,7 @@ func (e *Engine) changed() {
 	if e.onChange == nil {
 		return
 	}
+
 	e.onChange(e.snapshotLocked())
 }
 
@@ -172,6 +173,7 @@ func (e *Engine) changed() {
 func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	e.operatorSubSeq++
 	id := e.operatorSubSeq
 	ch := make(chan struct{}, 1)
@@ -179,8 +181,10 @@ func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
 	cancel := func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
+
 		delete(e.operatorSubs, id)
 	}
+
 	return ch, cancel
 }
 
@@ -191,6 +195,7 @@ func (e *Engine) SubscribeOperatorChanges() (<-chan struct{}, func()) {
 func (e *Engine) SnapshotNow() Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.snapshotLocked()
 }
 
@@ -208,25 +213,33 @@ func (e *Engine) snapshotLocked() Snapshot {
 		cp := *id
 		snap.Identities = append(snap.Identities, cp)
 	}
+
 	for _, p := range e.pipelines {
 		snap.Pipelines = append(snap.Pipelines, *p)
 	}
+
 	for _, l := range e.locks {
 		snap.Locks = append(snap.Locks, *l)
 	}
+
 	for _, inst := range e.instances {
 		snap.StageInstances = append(snap.StageInstances, *inst)
 	}
+
 	for k, v := range e.deployHistory {
 		snap.DeployHistory[k] = append([]DeployRecord(nil), v...)
 	}
+
 	for _, g := range e.envGrants {
 		snap.EnvironmentGrants = append(snap.EnvironmentGrants, *g)
 	}
+
 	for _, w := range e.work {
 		snap.WorkItems = append(snap.WorkItems, *w)
 	}
+
 	snap.WorkSeq = e.workSeq
+
 	return snap
 }
 
@@ -235,6 +248,7 @@ func (e *Engine) snapshotLocked() Snapshot {
 func (e *Engine) Snapshot() Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.snapshotLocked()
 }
 
@@ -249,32 +263,39 @@ func (e *Engine) Load(snap Snapshot) {
 		id := snap.Identities[i]
 		e.identities[id.Name] = &id
 	}
+
 	e.pipelines = make(map[string]*Pipeline, len(snap.Pipelines))
 	for i := range snap.Pipelines {
 		p := snap.Pipelines[i]
 		e.pipelines[p.Name] = &p
 	}
+
 	e.locks = make(map[string]*FileLock, len(snap.Locks))
 	for i := range snap.Locks {
 		l := snap.Locks[i]
 		e.locks[l.ID] = &l
 	}
+
 	e.commitSeq = cloneIntMap(snap.CommitSeq)
 	e.lastDeployedSeq = cloneIntMap(snap.LastDeployedSeq)
+
 	e.instances = make(map[string]*StageInstance, len(snap.StageInstances))
 	for i := range snap.StageInstances {
 		inst := snap.StageInstances[i]
 		e.putInstance(inst.Pipeline, inst.Stage, inst.Key, &inst)
 	}
+
 	e.deployHistory = make(map[string][]DeployRecord, len(snap.DeployHistory))
 	for k, v := range snap.DeployHistory {
 		e.deployHistory[k] = append([]DeployRecord(nil), v...)
 	}
+
 	e.envGrants = make(map[string]*EnvironmentGrant, len(snap.EnvironmentGrants))
 	for i := range snap.EnvironmentGrants {
 		g := snap.EnvironmentGrants[i]
 		e.envGrants[envGrantKey(g.Pipeline, g.Environment, g.Grantee)] = &g
 	}
+
 	e.work = make(map[string]*WorkItem, len(snap.WorkItems))
 	for i := range snap.WorkItems {
 		w := snap.WorkItems[i]
@@ -308,6 +329,7 @@ func instanceKey(pipeline, stage string, key StageKey) string {
 func cloneIntMap(m map[string]int) map[string]int {
 	out := make(map[string]int, len(m))
 	maps.Copy(out, m)
+
 	return out
 }
 
@@ -321,14 +343,18 @@ func (e *Engine) SetDefaultResourceLimits(rl *hook.ResourceLimits) error {
 	if err := validateResourceLimits(rl); err != nil {
 		return err
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if rl.IsZero() {
 		e.defaultLimits = nil
 		return nil
 	}
+
 	cp := *rl
 	e.defaultLimits = &cp
+
 	return nil
 }
 
@@ -336,6 +362,7 @@ func (e *Engine) SetDefaultResourceLimits(rl *hook.ResourceLimits) error {
 func (e *Engine) SetLimitSources(paths []string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	e.limitSources = paths
 }
 
@@ -343,6 +370,7 @@ func (e *Engine) SetLimitSources(paths []string) {
 func (e *Engine) LimitSources() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return append([]string(nil), e.limitSources...)
 }
 
@@ -350,10 +378,13 @@ func (e *Engine) LimitSources() []string {
 func (e *Engine) DefaultResourceLimits() *hook.ResourceLimits {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if e.defaultLimits == nil {
 		return nil
 	}
+
 	cp := *e.defaultLimits
+
 	return &cp
 }
 
@@ -372,13 +403,16 @@ func (e *Engine) EffectiveLimits(own *hook.ResourceLimits) *hook.ResourceLimits 
 	e.mu.Lock()
 	def := e.defaultLimits
 	e.mu.Unlock()
+
 	if def == nil {
 		return own
 	}
+
 	if own == nil {
 		cp := *def
 		return &cp
 	}
+
 	return MergeResourceLimits(own, def)
 }
 
@@ -401,44 +435,57 @@ func MergeResourceLimits(own, def *hook.ResourceLimits) *hook.ResourceLimits {
 	if def == nil {
 		return own
 	}
+
 	if own == nil {
 		cp := *def
 		return &cp
 	}
+
 	merged := *own
 	if merged.CPUQuota == "" {
 		merged.CPUQuota = def.CPUQuota
 	}
+
 	if merged.CPUWeight == 0 {
 		merged.CPUWeight = def.CPUWeight
 	}
+
 	if merged.MemoryMax == "" {
 		merged.MemoryMax = def.MemoryMax
 	}
+
 	if merged.MemoryHigh == "" {
 		merged.MemoryHigh = def.MemoryHigh
 	}
+
 	if merged.TasksMax == 0 {
 		merged.TasksMax = def.TasksMax
 	}
+
 	if merged.IOWeight == 0 {
 		merged.IOWeight = def.IOWeight
 	}
+
 	if merged.IOReadBandwidthMax == "" {
 		merged.IOReadBandwidthMax = def.IOReadBandwidthMax
 	}
+
 	if merged.IOWriteBandwidthMax == "" {
 		merged.IOWriteBandwidthMax = def.IOWriteBandwidthMax
 	}
+
 	if merged.IOReadIOPSMax == "" {
 		merged.IOReadIOPSMax = def.IOReadIOPSMax
 	}
+
 	if merged.IOWriteIOPSMax == "" {
 		merged.IOWriteIOPSMax = def.IOWriteIOPSMax
 	}
+
 	if merged.Nice == nil {
 		merged.Nice = def.Nice
 	}
+
 	return &merged
 }
 
@@ -447,6 +494,7 @@ func MergeResourceLimits(own, def *hook.ResourceLimits) *hook.ResourceLimits {
 func (e *Engine) SetRunDir(dir string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	e.runDir = dir
 }
 
@@ -456,6 +504,7 @@ func (e *Engine) SetRunDir(dir string) {
 func (e *Engine) RunDir() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.runDir
 }
 
@@ -466,6 +515,7 @@ func (e *Engine) runOutputDir(pipeline, stage string, key StageKey) string {
 	if e.runDir == "" {
 		return ""
 	}
+
 	return filepath.Join(e.runDir, sanitizeRunKey(instanceKey(pipeline, stage, key)))
 }
 
@@ -474,6 +524,7 @@ func (e *Engine) runOutputDir(pipeline, stage string, key StageKey) string {
 // replaces anything outside a conservative set rather than trusting them as paths.
 func sanitizeRunKey(k string) string {
 	var b strings.Builder
+
 	for _, r := range k {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
@@ -482,6 +533,7 @@ func sanitizeRunKey(k string) string {
 			b.WriteByte('_')
 		}
 	}
+
 	return b.String()
 }
 
@@ -500,5 +552,6 @@ func (e *Engine) SetQueue(q QueueConfig) {
 func (e *Engine) Queue() QueueConfig {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.queue
 }

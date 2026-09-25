@@ -26,11 +26,13 @@ func (e *Engine) RegisterPipeline(p Pipeline, createdBy string) error {
 	if err := validatePipeline(&p); err != nil {
 		return err
 	}
+
 	p.CreatedBy = createdBy
 	p.CreatedAt = e.now()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	_, replacing := e.pipelines[p.Name]
 	e.pipelines[p.Name] = &p
 	// Registering a pipeline REPLACES its gates — the roles a stage requires, the
@@ -41,8 +43,10 @@ func (e *Engine) RegisterPipeline(p Pipeline, createdBy string) error {
 	if replacing {
 		verb = "replaced"
 	}
+
 	e.audit("pipeline."+verb, createdBy, "pipeline="+p.Name+" stages="+strconv.Itoa(len(p.Stages)))
 	e.changed()
+
 	return nil
 }
 
@@ -50,6 +54,7 @@ func validatePipeline(p *Pipeline) error {
 	if p.Name == "" {
 		return fmt.Errorf("pipeline name required")
 	}
+
 	if len(p.Stages) == 0 {
 		return fmt.Errorf("pipeline %q: at least one stage required", p.Name)
 	}
@@ -59,11 +64,14 @@ func validatePipeline(p *Pipeline) error {
 		if s.Name == "" {
 			return fmt.Errorf("pipeline %q: stage with empty name", p.Name)
 		}
+
 		if _, dup := seen[s.Name]; dup {
 			return fmt.Errorf("pipeline %q: duplicate stage name %q", p.Name, s.Name)
 		}
+
 		seen[s.Name] = i
 	}
+
 	if err := validateStageNeeds(p, seen); err != nil {
 		return err
 	}
@@ -71,18 +79,22 @@ func validatePipeline(p *Pipeline) error {
 	if p.FanOutAt < 0 || p.FanOutAt > len(p.Stages) {
 		return fmt.Errorf("pipeline %q: fanOutAt %d out of range [0,%d]", p.Name, p.FanOutAt, len(p.Stages))
 	}
+
 	fansOut := p.FanOutAt < len(p.Stages)
 	if fansOut && len(p.Environments) == 0 {
 		return fmt.Errorf("pipeline %q: fanOutAt < len(stages) requires at least one environment", p.Name)
 	}
+
 	if !fansOut && len(p.Environments) > 0 {
 		return fmt.Errorf("pipeline %q: environments declared but fanOutAt has no fan-out point", p.Name)
 	}
+
 	for _, de := range p.DebugEnvironments {
 		if !slices.Contains(p.Environments, de) {
 			return fmt.Errorf("pipeline %q: debugEnvironments references undeclared environment %q", p.Name, de)
 		}
 	}
+
 	for env := range p.EnvironmentOwners {
 		if !slices.Contains(p.Environments, env) {
 			return fmt.Errorf("pipeline %q: environmentOwners references undeclared environment %q", p.Name, env)
@@ -112,6 +124,7 @@ func validatePipeline(p *Pipeline) error {
 			if len(s.RequiresEnv) > 0 {
 				return fmt.Errorf("pipeline %q stage %q: requires_env is not meaningful on an approval stage — approving runs no command, so the value would reach nothing; put it on the command or deploy stage that does the work", p.Name, s.Name)
 			}
+
 			if s.ApprovalPolicy.RequiredApprovals < 1 {
 				return fmt.Errorf("pipeline %q stage %q: requiredApprovals must be >= 1", p.Name, s.Name)
 			}
@@ -132,15 +145,18 @@ func validatePipeline(p *Pipeline) error {
 			if s.Timeout <= 0 {
 				return fmt.Errorf("pipeline %q stage %q: timeout required", p.Name, s.Name)
 			}
+
 			if err := validateTemplatePlaceholders(s.Command); err != nil {
 				return fmt.Errorf("pipeline %q stage %q: %w", p.Name, s.Name, err)
 			}
 		}
+
 		for _, h := range s.PreGate {
 			if err := validateHook(h); err != nil {
 				return fmt.Errorf("pipeline %q stage %q preGate: %w", p.Name, s.Name, err)
 			}
 		}
+
 		for _, h := range s.PostAction {
 			if err := validateHook(h); err != nil {
 				return fmt.Errorf("pipeline %q stage %q postAction: %w", p.Name, s.Name, err)
@@ -182,24 +198,30 @@ func validateStageNeeds(p *Pipeline, index map[string]int) error {
 		default:
 			return fmt.Errorf("pipeline %q stage %q: unknown convergence %q (must be %q or %q)", p.Name, s.Name, s.Convergence, ConvergeAll, ConvergeAny)
 		}
+
 		seenNeed := make(map[string]bool, len(s.Needs))
 		for _, name := range s.Needs {
 			j, ok := index[name]
 			if !ok {
 				return fmt.Errorf("pipeline %q stage %q: needs unknown stage %q", p.Name, s.Name, name)
 			}
+
 			if j == i {
 				return fmt.Errorf("pipeline %q stage %q: cannot need itself", p.Name, s.Name)
 			}
+
 			if j > i {
 				return fmt.Errorf("pipeline %q stage %q: needs %q, which is declared later — a stage may only need stages declared before it", p.Name, s.Name, name)
 			}
+
 			if seenNeed[name] {
 				return fmt.Errorf("pipeline %q stage %q: duplicate need %q", p.Name, s.Name, name)
 			}
+
 			seenNeed[name] = true
 		}
 	}
+
 	return nil
 }
 
@@ -207,6 +229,7 @@ func validateHook(h Hook) error {
 	if h.Timeout <= 0 {
 		return fmt.Errorf("hook timeout required")
 	}
+
 	return validateTemplatePlaceholders(h.Command)
 }
 
@@ -219,9 +242,11 @@ func validateTemplatePlaceholders(tmpl CommandTemplate) error {
 	case tmpl.Script != "" && len(tmpl.Args) > 0:
 		return fmt.Errorf("args cannot be combined with an inline script (a script's input is stdin, not argv); use interpreter = [...] to control how it's invoked")
 	}
+
 	if err := validateResourceLimits(tmpl.ResourceLimits); err != nil {
 		return err
 	}
+
 	return hook.ValidateArgs(hook.Template{
 		Path: tmpl.Path, Args: tmpl.Args, Env: tmpl.Env, Dir: tmpl.Dir,
 	}, knownParams)
@@ -251,12 +276,15 @@ func validateResourceLimits(rl *hook.ResourceLimits) error {
 	if rl == nil {
 		return nil
 	}
+
 	if rl.CPUQuota != "" && rl.CPUQuota != "infinity" && !cpuQuotaRe.MatchString(rl.CPUQuota) {
 		return fmt.Errorf("resource_limits: cpu_quota %q must be a percentage like \"200%%\" (200%% = 2 cores) or \"infinity\"", rl.CPUQuota)
 	}
+
 	if rl.CPUWeight != 0 && (rl.CPUWeight < 1 || rl.CPUWeight > 10000) {
 		return fmt.Errorf("resource_limits: cpu_weight must be between 1 and 10000 (systemd's default is 100)")
 	}
+
 	for _, m := range []struct{ name, value string }{
 		{"memory_max", rl.MemoryMax},
 		{"memory_high", rl.MemoryHigh},
@@ -265,6 +293,7 @@ func validateResourceLimits(rl *hook.ResourceLimits) error {
 			return fmt.Errorf("resource_limits: %s %q must be a byte count like \"512M\", \"2G\" or \"infinity\"", m.name, m.value)
 		}
 	}
+
 	if rl.IOWeight != 0 && (rl.IOWeight < 1 || rl.IOWeight > 10000) {
 		return fmt.Errorf("resource_limits: io_weight must be between 1 and 10000")
 	}
@@ -286,12 +315,15 @@ func validateResourceLimits(rl *hook.ResourceLimits) error {
 			return err
 		}
 	}
+
 	if rl.Nice != nil && (*rl.Nice < -20 || *rl.Nice > 19) {
 		return fmt.Errorf("resource_limits: nice must be between -20 (most favourable) and 19 (least), got %d", *rl.Nice)
 	}
+
 	if rl.TasksMax < 0 {
 		return fmt.Errorf("resource_limits: tasks_max must be >= 0")
 	}
+
 	return nil
 }
 
@@ -304,27 +336,34 @@ func validateIOLimit(name, value string, iops bool) error {
 	if value == "" {
 		return nil
 	}
+
 	fields := strings.Fields(value)
 	if len(fields) != 2 {
 		return fmt.Errorf("resource_limits: %s %q must be a device and a value separated by a space, e.g. %q — systemd applies an IO limit per device, so a bare value has nothing to apply to",
 			name, value, ioLimitExample(name, iops))
 	}
+
 	if !strings.HasPrefix(fields[0], "/") {
 		return fmt.Errorf("resource_limits: %s %q: %q is not a path — give a block device (\"/dev/sda\") or any file on the device you mean (\"/var/lib\"), which systemd resolves to its backing device",
 			name, value, fields[0])
 	}
+
 	if fields[1] == "max" || fields[1] == "infinity" {
 		return nil
 	}
+
 	if iops {
 		if !ioPSRe.MatchString(fields[1]) {
 			return fmt.Errorf("resource_limits: %s %q: %q must be a whole number of operations per second, or \"max\"", name, value, fields[1])
 		}
+
 		return nil
 	}
+
 	if !memorySizeRe.MatchString(fields[1]) {
 		return fmt.Errorf("resource_limits: %s %q: %q must be a bytes-per-second rate like \"50M\", or \"max\"", name, value, fields[1])
 	}
+
 	return nil
 }
 
@@ -332,35 +371,44 @@ func ioLimitExample(name string, iops bool) string {
 	if iops {
 		return "/dev/sda 1000"
 	}
+
 	return "/dev/sda 50M"
 }
 
 func (e *Engine) Pipeline(name string) (*Pipeline, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	p, ok := e.pipelines[name]
 	if !ok {
 		return nil, false
 	}
+
 	cp := *p
+
 	return &cp, true
 }
 
 func (e *Engine) Pipelines() []Pipeline {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	out := make([]Pipeline, 0, len(e.pipelines))
 	for _, p := range e.pipelines {
 		out = append(out, *p)
 	}
+
 	slices.SortFunc(out, func(a, b Pipeline) int {
 		if a.Name < b.Name {
 			return -1
 		}
+
 		if a.Name > b.Name {
 			return 1
 		}
+
 		return 0
 	})
+
 	return out
 }

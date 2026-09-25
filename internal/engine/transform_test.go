@@ -8,7 +8,9 @@ import (
 
 func transformPipeline(t *testing.T, cmd CommandTemplate, transform *Hook) *Engine {
 	t.Helper()
+
 	e := New()
+
 	p := Pipeline{
 		Name: "svc",
 		Stages: []StageDef{{
@@ -20,6 +22,7 @@ func transformPipeline(t *testing.T, cmd CommandTemplate, transform *Hook) *Engi
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	return e
 }
 
@@ -36,13 +39,16 @@ func TestTransformSummarizesAndKeepsRawOutput(t *testing.T) {
 	if _, err := exec.LookPath("/bin/bash"); err != nil {
 		t.Skip("bash not available")
 	}
+
 	inst, err := e.StartCommandStage("svc", "test", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst.Summary == "" {
 		t.Fatalf("expected a summary, got none (status=%s)", inst.Status)
 	}
+
 	if !strings.Contains(string(inst.Stdout), "not ok 1") {
 		t.Fatalf("the raw output must survive alongside the summary, got %q", inst.Stdout)
 	}
@@ -54,6 +60,7 @@ func TestTransformReceivesTheResolvedResultAsJSON(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
 	}
+
 	e := transformPipeline(t,
 		CommandTemplate{Path: "/bin/sh", Args: []string{"-c", "echo boom >&2; exit 4"}},
 		&Hook{Timeout: minute, Command: CommandTemplate{
@@ -62,10 +69,12 @@ func TestTransformReceivesTheResolvedResultAsJSON(t *testing.T) {
 				"print('%s/%s %s exit=%d stderr=%s actor=%s' % (d['pipeline'],d['stage'],d['status'],d['exitCode'],d['stderr'].strip(),d['actor']))",
 		}},
 	)
+
 	inst, err := e.StartCommandStage("svc", "test", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	want := "svc/test failed exit=4 stderr=boom actor=ci"
 	if strings.TrimSpace(inst.Summary) != want {
 		t.Fatalf("summary = %q, want %q", inst.Summary, want)
@@ -85,25 +94,32 @@ func TestBrokenTransformCannotChangeTheOutcome(t *testing.T) {
 				CommandTemplate{Path: "/bin/true"},
 				&Hook{Timeout: minute, Command: CommandTemplate{Script: c.script}},
 			)
+
 			var audited []AuditEvent
+
 			e.SetAuditFn(func(ev AuditEvent) { audited = append(audited, ev) })
 
 			inst, err := e.StartCommandStage("svc", "test", "abc123", "", "ci", "")
 			if err != nil {
 				t.Fatalf("start: %v", err)
 			}
+
 			if inst.Status != StageSucceeded {
 				t.Fatalf("a broken transform must not affect the stage: status=%s", inst.Status)
 			}
+
 			if !strings.Contains(inst.Summary, c.want) {
 				t.Fatalf("summary should report the transform failure (%q), got %q", c.want, inst.Summary)
 			}
+
 			found := false
+
 			for _, ev := range audited {
 				if ev.Kind == "stage.transform.failed" {
 					found = true
 				}
 			}
+
 			if !found {
 				t.Fatalf("a failed transform must be audited, got %+v", audited)
 			}
@@ -114,10 +130,12 @@ func TestBrokenTransformCannotChangeTheOutcome(t *testing.T) {
 // No transform is the overwhelmingly common case and must cost nothing.
 func TestNoTransformLeavesSummaryEmpty(t *testing.T) {
 	e := transformPipeline(t, CommandTemplate{Path: "/bin/true"}, nil)
+
 	inst, err := e.StartCommandStage("svc", "test", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst.Summary != "" {
 		t.Fatalf("summary = %q, want empty", inst.Summary)
 	}
@@ -125,6 +143,7 @@ func TestNoTransformLeavesSummaryEmpty(t *testing.T) {
 
 func TestCommandAndScriptAreMutuallyExclusive(t *testing.T) {
 	e := New()
+
 	for _, c := range []struct {
 		name, want string
 		cmd        CommandTemplate
@@ -138,10 +157,12 @@ func TestCommandAndScriptAreMutuallyExclusive(t *testing.T) {
 				Name: "test", Type: StageCommand, Timeout: minute,
 				Command: c.cmd, CommandPolicy: &CommandPolicy{},
 			}}}
+
 			err := e.RegisterPipeline(p, "admin")
 			if err == nil {
 				t.Fatalf("expected rejection")
 			}
+
 			if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("error %q should explain %q", err, c.want)
 			}

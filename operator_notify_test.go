@@ -17,7 +17,9 @@ import (
 // weren't in the baseline should ever reach notifyNewOperatorEvents.
 func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 	var fired []string
+
 	restore := desktopNotify
+
 	desktopNotify = func(title, body string) { fired = append(fired, title+": "+body) }
 	defer func() { desktopNotify = restore }()
 
@@ -33,6 +35,7 @@ func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 	// The baseline snapshot (what watchOperatorOnce treats as "already there when
 	// the watcher started") must never fire a notification.
 	primeSeenOperatorEvents(baseline, seen)
+
 	if len(fired) != 0 {
 		t.Fatalf("expected priming the baseline to fire zero notifications, got %v", fired)
 	}
@@ -56,13 +59,16 @@ func TestFirstSnapshotIsSilentBaseline(t *testing.T) {
 // running only command/deploy stages would never hear about anything but failures.
 func TestRecentSuccessNotifies(t *testing.T) {
 	var fired []string
+
 	restore := desktopNotify
+
 	desktopNotify = func(title, body string) { fired = append(fired, title+": "+body) }
 	defer func() { desktopNotify = restore }()
 
 	seen := newSeenOperatorEvents()
 	staleSuccess := wire.RecentSuccess{Pipeline: "release", Stage: "build", Commit: "stale", FinishedAt: time.Unix(1000, 0)}
 	primeSeenOperatorEvents(wire.OperatorSurfaceResponse{RecentSuccesses: []wire.RecentSuccess{staleSuccess}}, seen)
+
 	if len(fired) != 0 {
 		t.Fatalf("expected priming the baseline to fire zero notifications, got %v", fired)
 	}

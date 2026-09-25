@@ -7,14 +7,17 @@ import (
 
 func TestBootstrapFirstIdentityGetsAdmin(t *testing.T) {
 	e := New()
+
 	_, err := e.RegisterIdentity("alice", "")
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	id, ok := e.Identity("alice")
 	if !ok {
 		t.Fatalf("expected alice to exist")
 	}
+
 	if !id.HasRole("admin") {
 		t.Fatalf("expected first-ever identity to bootstrap as admin, got roles=%v", id.Roles)
 	}
@@ -23,6 +26,7 @@ func TestBootstrapFirstIdentityGetsAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	bob, _ := e.Identity("bob")
 	if bob.HasRole("admin") {
 		t.Fatalf("expected second identity to NOT auto-bootstrap as admin")
@@ -31,6 +35,7 @@ func TestBootstrapFirstIdentityGetsAdmin(t *testing.T) {
 
 func TestVerifyTokenRejectsWrongOrMissingToken(t *testing.T) {
 	e := New()
+
 	token, err := e.RegisterIdentity("alice", "")
 	if err != nil {
 		t.Fatalf("register: %v", err)
@@ -39,12 +44,15 @@ func TestVerifyTokenRejectsWrongOrMissingToken(t *testing.T) {
 	if _, err := e.VerifyToken("alice", token); err != nil {
 		t.Fatalf("expected correct token to verify: %v", err)
 	}
+
 	if _, err := e.VerifyToken("alice", "wrong-token"); err == nil {
 		t.Fatalf("expected wrong token to be rejected")
 	}
+
 	if _, err := e.VerifyToken("alice", ""); err == nil {
 		t.Fatalf("expected empty token to be rejected")
 	}
+
 	if _, err := e.VerifyToken("nobody", token); err == nil {
 		t.Fatalf("expected unknown identity to be rejected")
 	}
@@ -57,12 +65,15 @@ func TestRoleAssignRevoke(t *testing.T) {
 	if _, err := e.RegisterIdentity("seed", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if !e.HasRole("alice", "reviewer") {
 		t.Fatalf("expected alice to have reviewer role")
 	}
@@ -70,6 +81,7 @@ func TestRoleAssignRevoke(t *testing.T) {
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("re-assign should be a no-op, not an error: %v", err)
 	}
+
 	id, _ := e.Identity("alice")
 	if len(id.Roles) != 1 {
 		t.Fatalf("expected exactly one reviewer role after idempotent re-assign, got %v", id.Roles)
@@ -78,6 +90,7 @@ func TestRoleAssignRevoke(t *testing.T) {
 	if err := e.RevokeRole("alice", "reviewer"); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
+
 	if e.HasRole("alice", "reviewer") {
 		t.Fatalf("expected reviewer role to be revoked")
 	}
@@ -88,6 +101,7 @@ func TestMessAgentMappingDefaultsToNameAndPersistsAcrossRotation(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	id, _ := e.Identity("alice")
 	if got := id.MessTarget(); got != "alice" {
 		t.Fatalf("expected MessTarget to default to the identity's own name, got %q", got)
@@ -96,6 +110,7 @@ func TestMessAgentMappingDefaultsToNameAndPersistsAcrossRotation(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
 		t.Fatalf("re-register with mapping: %v", err)
 	}
+
 	id, _ = e.Identity("alice")
 	if got := id.MessTarget(); got != "alice-on-mess" {
 		t.Fatalf("expected explicit MessAgent mapping to take effect, got %q", got)
@@ -106,6 +121,7 @@ func TestMessAgentMappingDefaultsToNameAndPersistsAcrossRotation(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("re-register (rotate only): %v", err)
 	}
+
 	id, _ = e.Identity("alice")
 	if got := id.MessTarget(); got != "alice-on-mess" {
 		t.Fatalf("expected the mess-agent mapping to survive a token-only rotation, got %q", got)
@@ -117,20 +133,25 @@ func TestSetNotifyOptOut(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.SetNotifyOptOut("alice", true); err != nil {
 		t.Fatalf("opt out: %v", err)
 	}
+
 	id, _ := e.Identity("alice")
 	if !id.NotifyOptOut {
 		t.Fatalf("expected NotifyOptOut to be set")
 	}
+
 	if err := e.SetNotifyOptOut("alice", false); err != nil {
 		t.Fatalf("opt back in: %v", err)
 	}
+
 	id, _ = e.Identity("alice")
 	if id.NotifyOptOut {
 		t.Fatalf("expected NotifyOptOut to be cleared")
 	}
+
 	if err := e.SetNotifyOptOut("nobody", true); err == nil {
 		t.Fatalf("expected an error for an unknown identity")
 	}
@@ -147,6 +168,7 @@ func TestRegisterIdentityRejectsFlagShapedName(t *testing.T) {
 			t.Errorf("registering %q must be refused", name)
 		}
 	}
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("an ordinary name must still register: %v", err)
 	}
@@ -158,6 +180,7 @@ func TestRegisterIdentityRejectsFlagShapedName(t *testing.T) {
 // catalog, so the identity is the only thing that can be missing here; say so.
 func TestRoleOpsNameTheMissingIdentity(t *testing.T) {
 	e := New()
+
 	for _, op := range []struct {
 		name string
 		run  func() error
@@ -169,6 +192,7 @@ func TestRoleOpsNameTheMissingIdentity(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%s against an unregistered identity must fail", op.name)
 		}
+
 		if !strings.Contains(err.Error(), "nosuchguy") || !strings.Contains(err.Error(), "not registered") {
 			t.Errorf("%s error should name the unregistered identity, got %q", op.name, err)
 		}

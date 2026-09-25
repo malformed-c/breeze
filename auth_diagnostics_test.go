@@ -20,10 +20,12 @@ func newDispatchServer(t *testing.T) *daemonServer {
 
 func mustRegister(t *testing.T, d *daemonServer, name string) string {
 	t.Helper()
+
 	token, err := d.eng.RegisterIdentity(name, "")
 	if err != nil {
 		t.Fatalf("register %s: %v", name, err)
 	}
+
 	return token
 }
 
@@ -47,10 +49,12 @@ func TestBogusCredentialIsRejectedOnATier1Read(t *testing.T) {
 	}
 	// A wrong one is now an error instead of being silently ignored.
 	zeros := strings.Repeat("0", 64)
+
 	resp := d.dispatch(wire.Request{Op: wire.OpPipelineList, As: "ci", Token: zeros})
 	if resp.OK {
 		t.Fatalf("a bogus token must be rejected, not accepted and ignored")
 	}
+
 	if !strings.Contains(resp.Error, "token rejected") {
 		t.Fatalf("the rejection should name what was rejected and how to recover, got %q", resp.Error)
 	}
@@ -66,17 +70,21 @@ func TestBogusCredentialIsRejectedOnATier1Read(t *testing.T) {
 func TestCredentialCheckExemptions(t *testing.T) {
 	d := newDispatchServer(t)
 	mustRegister(t, d, "ci")
+
 	zeros := strings.Repeat("0", 64)
 
 	checkPayload, _ := json.Marshal(wire.AuthCheckRequest{})
+
 	resp := d.dispatch(wire.Request{Op: wire.OpAuthCheck, As: "ci", Token: zeros, Payload: checkPayload})
 	if !resp.OK {
 		t.Fatalf("auth.check must answer, not error, for a bad credential: %s", resp.Error)
 	}
+
 	out, err := decodePayload[wire.AuthCheckResponse](resp)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	if out.Authorized {
 		t.Fatalf("auth.check must report a bogus credential as unauthorized")
 	}
@@ -96,19 +104,23 @@ func TestWhoAmIReportsRegistration(t *testing.T) {
 	mustRegister(t, d, "zero-role-but-real")
 
 	resp := d.dispatch(wire.Request{Op: wire.OpWhoAmI, As: "zero-role-but-real"})
+
 	out, err := decodePayload[wire.WhoAmIResponse](resp)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	if !out.Registered || len(out.Roles) != 0 {
 		t.Fatalf("a real zero-role identity must report registered with no roles, got %+v", out)
 	}
 
 	resp = d.dispatch(wire.Request{Op: wire.OpWhoAmI, As: "definitely-not-registered-zzq"})
+
 	out, err = decodePayload[wire.WhoAmIResponse](resp)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	if out.Registered {
 		t.Fatalf("an unregistered name must not report as registered, got %+v", out)
 	}
@@ -131,6 +143,7 @@ func TestHelpForCommand(t *testing.T) {
 			t.Errorf("helpForCommand(%v) returned nothing", c.argv)
 			continue
 		}
+
 		for _, want := range c.want {
 			if !strings.Contains(text, want) {
 				t.Errorf("helpForCommand(%v) should mention %q, got:\n%s", c.argv, want, text)
@@ -141,6 +154,7 @@ func TestHelpForCommand(t *testing.T) {
 	if _, ok := helpForCommand([]string{"stage", "start"}); ok {
 		t.Errorf("a normal invocation must not be treated as a help request")
 	}
+
 	if _, ok := helpForCommand([]string{"frobnicate", "--help"}); ok {
 		t.Errorf("an unknown command has no help to give here")
 	}
@@ -155,10 +169,12 @@ func TestHelpForCommand(t *testing.T) {
 func TestPingAdvertisesFeatures(t *testing.T) {
 	d := newDispatchServer(t)
 	resp := d.dispatch(wire.Request{Op: wire.OpPing})
+
 	out, err := decodePayload[wire.PingResponse](resp)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	for _, want := range []string{wire.FeatureForceDeploy, wire.FeatureLockTryWait} {
 		if !slices.Contains(out.Features, want) {
 			t.Errorf("ping should advertise %q, got %v", want, out.Features)

@@ -16,10 +16,12 @@ import (
 // same function daemon.go's real accept loop eventually calls).
 func dispatchLockAcquire(t *testing.T, d *daemonServer, as string, p wire.LockAcquireRequest) wire.Response {
 	t.Helper()
+
 	payload, err := json.Marshal(p)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+
 	return d.dispatch(wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
 }
 
@@ -36,6 +38,7 @@ func TestHandleLockExecReleasesLockOnConnectionClose(t *testing.T) {
 
 	serverConn, clientConn := net.Pipe()
 	handlerDone := make(chan struct{})
+
 	go func() {
 		d.handleConn(serverConn)
 		close(handlerDone)
@@ -45,10 +48,12 @@ func TestHandleLockExecReleasesLockOnConnectionClose(t *testing.T) {
 	if err := json.NewEncoder(clientConn).Encode(wire.Request{Op: wire.OpLockExec, As: "alice", Payload: payload}); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
+
 	var resp wire.Response
 	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	if !resp.OK {
 		t.Fatalf("expected the attached acquire to succeed, got: %+v", resp)
 	}
@@ -73,13 +78,16 @@ func TestHandleLockExecReleasesLockOnConnectionClose(t *testing.T) {
 	// asynchronously relative to conn.Close() returning above (io.Copy
 	// noticing EOF, then ReleaseLock).
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		if resp := dispatchLockAcquire(t, d, "bob", wire.LockAcquireRequest{Paths: []string{"/repo/file"}}); resp.OK {
 			return // success: the crashed holder's lock was reclaimed
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("expected bob to be able to acquire the path after alice's connection closed (crash reclamation)")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -96,6 +104,7 @@ func TestHandleLockAcquireWaitBlocksUntilReleased(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("alice's acquire failed: %+v", resp)
 	}
+
 	var aliceLock wire.LockAcquireResponse
 	if err := json.Unmarshal(resp.Payload, &aliceLock); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -149,9 +158,11 @@ func TestHandleLockAcquireWaitTimesOut(t *testing.T) {
 	if resp.OK {
 		t.Fatalf("expected bob's timed-out wait to fail, got OK: %+v", resp)
 	}
+
 	if !strings.Contains(resp.Error, "timed out") {
 		t.Fatalf("expected a 'timed out' error, got: %q", resp.Error)
 	}
+
 	if elapsed > 2*time.Second {
 		t.Fatalf("expected the timeout to fire close to the requested 100ms, took %v", elapsed)
 	}
@@ -170,6 +181,7 @@ func TestHandleLockAcquireCrossWaitBrokenByTimeout(t *testing.T) {
 	if resp := dispatchLockAcquire(t, d, "A", wire.LockAcquireRequest{Paths: []string{"/x"}}); !resp.OK {
 		t.Fatalf("A's acquire of /x failed: %+v", resp)
 	}
+
 	if resp := dispatchLockAcquire(t, d, "B", wire.LockAcquireRequest{Paths: []string{"/y"}}); !resp.OK {
 		t.Fatalf("B's acquire of /y failed: %+v", resp)
 	}
@@ -177,6 +189,7 @@ func TestHandleLockAcquireCrossWaitBrokenByTimeout(t *testing.T) {
 	respA := make(chan wire.Response, 1)
 	respB := make(chan wire.Response, 1)
 	start := time.Now()
+
 	go func() {
 		respA <- dispatchLockAcquire(t, d, "A", wire.LockAcquireRequest{Paths: []string{"/y"}, Wait: true, Timeout: "200ms"})
 	}()
@@ -190,19 +203,23 @@ func TestHandleLockAcquireCrossWaitBrokenByTimeout(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("A's request never returned")
 	}
+
 	select {
 	case rB = <-respB:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("B's request never returned")
 	}
+
 	elapsed := time.Since(start)
 
 	if rA.OK || rB.OK {
 		t.Fatalf("expected BOTH cross-waiting requests to time out (neither lock was ever released), got A=%+v B=%+v", rA, rB)
 	}
+
 	if !strings.Contains(rA.Error, "timed out") || !strings.Contains(rB.Error, "timed out") {
 		t.Fatalf("expected both to fail with 'timed out', got A=%q B=%q", rA.Error, rB.Error)
 	}
+
 	if elapsed > 2*time.Second {
 		t.Fatalf("expected the deadlock to be broken close to the requested 200ms timeout, took %v", elapsed)
 	}
@@ -219,6 +236,7 @@ func TestHandleLockAcquireNonWaitConflictNamesEveryHolder(t *testing.T) {
 	if resp := dispatchLockAcquire(t, d, "alice", wire.LockAcquireRequest{Paths: []string{"/repo/file"}, Shared: true}); !resp.OK {
 		t.Fatalf("alice's shared acquire failed: %+v", resp)
 	}
+
 	if resp := dispatchLockAcquire(t, d, "bob", wire.LockAcquireRequest{Paths: []string{"/repo/file"}, Shared: true}); !resp.OK {
 		t.Fatalf("bob's shared acquire failed: %+v", resp)
 	}
@@ -227,6 +245,7 @@ func TestHandleLockAcquireNonWaitConflictNamesEveryHolder(t *testing.T) {
 	if resp.OK {
 		t.Fatalf("expected carol's exclusive request to conflict with both shared holders, got OK: %+v", resp)
 	}
+
 	if !strings.Contains(resp.Error, "alice") || !strings.Contains(resp.Error, "bob") {
 		t.Fatalf("expected the conflict error to name BOTH alice and bob, got: %q", resp.Error)
 	}
@@ -243,10 +262,12 @@ func TestHandleLockAcquireWaitRechecksAfterPartialRelease(t *testing.T) {
 	d := newTestDaemon()
 
 	respA := dispatchLockAcquire(t, d, "alice", wire.LockAcquireRequest{Paths: []string{"/repo/file"}, Shared: true})
+
 	respB := dispatchLockAcquire(t, d, "bob", wire.LockAcquireRequest{Paths: []string{"/repo/file"}, Shared: true})
 	if !respA.OK || !respB.OK {
 		t.Fatalf("shared acquires failed: alice=%+v bob=%+v", respA, respB)
 	}
+
 	var aliceLock, bobLock wire.LockAcquireResponse
 	json.Unmarshal(respA.Payload, &aliceLock)
 	json.Unmarshal(respB.Payload, &bobLock)

@@ -24,10 +24,12 @@ func errUnregistered(identity string) error {
 func (e *Engine) AssignRole(identity string, role Role, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[identity]
 	if !ok {
 		return errUnregistered(identity)
 	}
+
 	if !slices.Contains(id.Roles, role) {
 		id.Roles = append(id.Roles, role)
 	}
@@ -36,19 +38,24 @@ func (e *Engine) AssignRole(identity string, role Role, opts ...ActorOption) err
 	// interesting question later is who reached for it, not whether it moved.
 	e.audit("role.assigned", actorOf(opts), "role="+string(role)+" identity="+identity)
 	e.changed()
+
 	return nil
 }
 
 func (e *Engine) RevokeRole(identity string, role Role, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[identity]
 	if !ok {
 		return errUnregistered(identity)
 	}
+
 	id.Roles = slices.DeleteFunc(id.Roles, func(r Role) bool { return r == role })
+
 	e.audit("role.revoked", actorOf(opts), "role="+string(role)+" identity="+identity)
 	e.changed()
+
 	return nil
 }
 
@@ -57,10 +64,12 @@ func (e *Engine) RevokeRole(identity string, role Role, opts ...ActorOption) err
 func (e *Engine) HasRole(identity string, role Role) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[identity]
 	if !ok {
 		return false
 	}
+
 	return id.HasRole(role)
 }
 
@@ -74,10 +83,12 @@ func (e *Engine) HasRole(identity string, role Role) bool {
 func (e *Engine) AnyAdmin() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	for _, id := range e.identities {
 		if id.HasRole(RoleAdmin) {
 			return true
 		}
 	}
+
 	return false
 }

@@ -50,10 +50,13 @@ func TestPrintGroupedByPipeline(t *testing.T) {
 		{Pipeline: "other", Stage: "test"},
 		{Pipeline: "release", Stage: "deploy"},
 	}
+
 	var printed []string
+
 	printGroupedByPipeline(items, func(r wire.RunningStage) string { return r.Pipeline }, func(r wire.RunningStage) {
 		printed = append(printed, r.Stage)
 	})
+
 	if !reflect.DeepEqual(printed, []string{"build", "test", "deploy"}) {
 		t.Fatalf("expected printItem called once per item in order, got %v", printed)
 	}

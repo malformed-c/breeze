@@ -22,10 +22,12 @@ import (
 // deploy that SUCCEEDED printing "breeze: EOF".
 func TestTransportFailureCarriesTheDaemonsLastWordAndDoesNotGuess(t *testing.T) {
 	dir := t.TempDir()
+
 	logPath := filepath.Join(dir, "daemon.log")
 	if err := os.WriteFile(logPath, []byte("starting up\nrefusing to start: defaults.hcl: cpu_quota \"1400\" must be a percentage\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	p := paths{daemonLog: logPath}
 
 	err := transportFailure(p, io.EOF)
@@ -40,6 +42,7 @@ func TestTransportFailureCarriesTheDaemonsLastWordAndDoesNotGuess(t *testing.T) 
 	if !strings.Contains(got, "may or may not") {
 		t.Errorf("an undetermined request must be reported as undetermined, got:\n%s", got)
 	}
+
 	if strings.Contains(got, "request failed") {
 		t.Errorf("must not claim the request failed, got:\n%s", got)
 	}
@@ -47,6 +50,7 @@ func TestTransportFailureCarriesTheDaemonsLastWordAndDoesNotGuess(t *testing.T) 
 
 func TestTransportFailureSurvivesAnUnreadableLog(t *testing.T) {
 	p := paths{daemonLog: filepath.Join(t.TempDir(), "nope.log")}
+
 	got := transportFailure(p, io.EOF).Error()
 	if !strings.Contains(got, "nope.log") {
 		t.Errorf("with no log to quote it must still say where to look, got %q", got)
@@ -59,10 +63,12 @@ func TestTransportFailureSurvivesAnUnreadableLog(t *testing.T) {
 func TestDaemonRefusalIsNotTreatedAsATransportFailure(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "s.sock")
+
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer ln.Close()
 	go func() {
 		conn, err := ln.Accept()
@@ -70,6 +76,7 @@ func TestDaemonRefusalIsNotTreatedAsATransportFailure(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+
 		var req wire.Request
 		json.NewDecoder(conn).Decode(&req)
 		json.NewEncoder(conn).Encode(wire.Response{OK: false, Error: "already held by \"alice\"", Code: wire.CodeLockConflict})
@@ -79,9 +86,11 @@ func TestDaemonRefusalIsNotTreatedAsATransportFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the daemon's refusal to surface as an error")
 	}
+
 	if strings.Contains(err.Error(), "may or may not") {
 		t.Fatalf("a refusal is an answer, not a lost connection: %v", err)
 	}
+
 	var rpcErr *rpcError
 	if !errors.As(err, &rpcErr) || rpcErr.Code() != wire.CodeLockConflict {
 		t.Fatalf("the machine-readable code must survive, got %#v", err)

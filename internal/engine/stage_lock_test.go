@@ -17,7 +17,9 @@ import (
 // couple them.
 func lockedPipeline(t *testing.T, e *Engine) {
 	t.Helper()
+
 	p := examplePipeline()
+
 	p.Stages[0].RequiresLock = "guards-sweep"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
@@ -32,6 +34,7 @@ func TestStageRequiringALockRefusesACallerWhoDoesNotHoldIt(t *testing.T) {
 	if err == nil {
 		t.Fatal("a stage declaring requires_lock must not start for a caller holding nothing")
 	}
+
 	if !strings.Contains(err.Error(), "guards-sweep") {
 		t.Errorf("the refusal must name the lock, got %q", err)
 	}
@@ -41,6 +44,7 @@ func TestStageRequiringALockRefusesACallerWhoDoesNotHoldIt(t *testing.T) {
 	if !strings.Contains(err.Error(), "acquire lock --resource guards-sweep") {
 		t.Errorf("the refusal must name the exact command that fixes it, got %q", err)
 	}
+
 	if !strings.Contains(err.Error(), "nobody else does") {
 		t.Errorf("an unheld lock must say so rather than implying a conflict, got %q", err)
 	}
@@ -53,10 +57,12 @@ func TestStageRequiringALockStartsForTheHolder(t *testing.T) {
 	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"guards-sweep"}, LockExclusive, time.Minute, true); err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
+
 	inst, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
 	if err != nil {
 		t.Fatalf("the lock holder must be allowed to start: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("status = %s, want succeeded", inst.Status)
 	}
@@ -70,10 +76,12 @@ func TestStageRequiringALockNamesTheHolder(t *testing.T) {
 	if _, ok, err := e.TryAcquireResourceLock("peri", []string{"guards-sweep"}, LockExclusive, time.Minute, true); err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
+
 	_, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
 	if err == nil {
 		t.Fatal("a second actor must not start while the first holds the lock")
 	}
+
 	if !strings.Contains(err.Error(), "peri") {
 		t.Errorf("the refusal must name the holder, got %q", err)
 	}
@@ -84,6 +92,7 @@ func TestStageRequiringALockNamesTheHolder(t *testing.T) {
 func TestStageWithoutRequiresLockIsUnaffected(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.StartCommandStage("release", "build", "abc", "", "ci", ""); err != nil {
 		t.Fatalf("a stage with no lock requirement must start as before: %v", err)
 	}
@@ -96,10 +105,12 @@ func TestRequiresLockOnAnApprovalStageIsRefusedAtRegistration(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[1].RequiresLock = "guards-sweep" // "review", an approval stage
+
 	err := e.RegisterPipeline(p, "admin")
 	if err == nil {
 		t.Fatal("requires_lock on an approval stage must be refused, not silently ignored")
 	}
+
 	if !strings.Contains(err.Error(), "approval") {
 		t.Errorf("the error must explain why, got %q", err)
 	}
@@ -111,16 +122,20 @@ func TestRequiresLockOnAnApprovalStageIsRefusedAtRegistration(t *testing.T) {
 func TestForceDoesNotBypassARequiredLock(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[2].RequiresLock = "deploy-slot" // "deploy"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, ok, err := e.TryAcquireResourceLock("someone-else", []string{"deploy-slot"}, LockExclusive, time.Minute, true); err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
+
 	if _, err := e.RegisterIdentity("deployer1", ""); err != nil {
 		t.Fatalf("register identity: %v", err)
 	}
+
 	if err := e.AssignRole("deployer1", "deployer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -129,6 +144,7 @@ func TestForceDoesNotBypassARequiredLock(t *testing.T) {
 	if err == nil {
 		t.Fatal("--force must not run a stage concurrently with the holder of its required lock")
 	}
+
 	if !strings.Contains(err.Error(), "deploy-slot") {
 		t.Errorf("the refusal must name the lock, got %q", err)
 	}
@@ -161,9 +177,11 @@ func TestEitherKindOfLockSatisfiesTheGate(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := New()
 			lockedPipeline(t, e)
+
 			if err := c.acquire(e); err != nil {
 				t.Fatalf("acquire: %v", err)
 			}
+
 			if _, err := e.StartCommandStage("release", "build", "abc", "", "ci", ""); err != nil {
 				t.Fatalf("a %s lock on the required key must satisfy the gate: %v", c.name, err)
 			}
@@ -176,13 +194,16 @@ func TestEitherKindOfLockSatisfiesTheGate(t *testing.T) {
 func TestRefusalNamesAFileLockHolderToo(t *testing.T) {
 	e := New()
 	lockedPipeline(t, e)
+
 	if _, _, err := e.TryAcquireLock("peri", []string{"guards-sweep"}, LockExclusive, time.Minute, false); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
+
 	_, err := e.StartCommandStage("release", "build", "abc", "", "ci", "")
 	if err == nil {
 		t.Fatal("a file lock held by someone else must still block the stage")
 	}
+
 	if !strings.Contains(err.Error(), "peri") {
 		t.Errorf("the refusal must name the holder whatever the lock kind, got %q", err)
 	}

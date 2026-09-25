@@ -59,39 +59,49 @@ role "reviewer" {}
 
 func writeFixture(t *testing.T, content string) string {
 	t.Helper()
+
 	path := filepath.Join(t.TempDir(), "pipeline.hcl")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
+
 	return path
 }
 
 func TestParseFileRoundTrip(t *testing.T) {
 	path := writeFixture(t, exampleHCL)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	if len(pipelines) != 1 {
 		t.Fatalf("expected 1 pipeline, got %d", len(pipelines))
 	}
+
 	p := pipelines[0]
 	if p.Name != "release" {
 		t.Fatalf("unexpected name: %s", p.Name)
 	}
+
 	if len(p.Environments) != 2 || p.Environments[0] != "staging" || p.Environments[1] != "prod" {
 		t.Fatalf("unexpected environments: %v", p.Environments)
 	}
+
 	if p.BriefsDir != "/home/engi/git/myrepo/docs/changelog" {
 		t.Fatalf("unexpected briefsDir: %s", p.BriefsDir)
 	}
+
 	if p.NotifyTopic != "#release-activity" {
 		t.Fatalf("unexpected notifyTopic: %s", p.NotifyTopic)
 	}
+
 	deps, ok := p.EnvironmentDeps["prod"]
 	if !ok || len(deps) != 1 || deps[0] != "staging" {
 		t.Fatalf("expected prod -> [staging] in environment_deps, got %v", p.EnvironmentDeps)
 	}
+
 	if p.EnvironmentOwners["staging"] != "alice" || p.EnvironmentOwners["prod"] != "bob" {
 		t.Fatalf("unexpected environment_owners: %v", p.EnvironmentOwners)
 	}
@@ -104,18 +114,22 @@ func TestParseFileRoundTrip(t *testing.T) {
 	if len(p.Stages) != 4 {
 		t.Fatalf("expected 4 stages, got %d", len(p.Stages))
 	}
+
 	build := p.Stages[0]
 	if build.Type != "command" || build.CommandPolicy == nil || build.CommandPolicy.RequiredRole != "builder" || build.CommandPolicy.MaxConcurrent != 4 {
 		t.Fatalf("unexpected build stage: %+v", build)
 	}
+
 	wantBuildPath := filepath.Join(filepath.Dir(path), "scripts", "build.sh")
 	if build.Command.Path != wantBuildPath || len(build.Command.Args) != 1 || build.Command.Args[0] != "{commit}" {
 		t.Fatalf("unexpected build command: %+v (want path %s)", build.Command, wantBuildPath)
 	}
+
 	wantGatePath := filepath.Join(filepath.Dir(path), "scripts", "ci-ready.sh")
 	if len(build.PreGate) != 1 || build.PreGate[0].Command.Path != wantGatePath || build.PreGate[0].Timeout != "30s" {
 		t.Fatalf("unexpected pre_gate: %+v (want path %s)", build.PreGate, wantGatePath)
 	}
+
 	wantPostPath := filepath.Join(filepath.Dir(path), "scripts", "notify-build-done.sh")
 	if len(build.PostAction) != 1 || build.PostAction[0].Command.Path != wantPostPath {
 		t.Fatalf("unexpected post_action: %+v (want path %s)", build.PostAction, wantPostPath)
@@ -134,10 +148,12 @@ func TestParseFileRoundTrip(t *testing.T) {
 
 func TestParseFileResolvesRelativePathsAgainstFileDir(t *testing.T) {
 	dir := t.TempDir()
+
 	path := filepath.Join(dir, "sub", "pipeline.hcl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
+
 	content := `
 pipeline "rel" {
   briefs_dir = "briefs"
@@ -161,12 +177,14 @@ pipeline "rel" {
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	p := pipelines[0]
 
 	wantBriefs := filepath.Join(dir, "sub", "briefs")
 	if p.BriefsDir != wantBriefs {
 		t.Fatalf("expected briefs_dir resolved to %s, got %s", wantBriefs, p.BriefsDir)
 	}
+
 	wantBuild := filepath.Join(dir, "sub", "scripts", "build.sh")
 	if p.Stages[0].Command.Path != wantBuild {
 		t.Fatalf("expected build command resolved to %s, got %s", wantBuild, p.Stages[0].Command.Path)
@@ -175,6 +193,7 @@ pipeline "rel" {
 	if p.Stages[0].Command.Args[0] != "{commit}" {
 		t.Fatalf("expected command args untouched, got %v", p.Stages[0].Command.Args)
 	}
+
 	wantGate := filepath.Join(dir, "shared", "check.sh") // ../shared relative to sub/
 	if p.Stages[0].PreGate[0].Command.Path != wantGate {
 		t.Fatalf("expected pre_gate command resolved to %s, got %s", wantGate, p.Stages[0].PreGate[0].Command.Path)
@@ -192,14 +211,17 @@ pipeline "abs" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	p := pipelines[0]
 	if p.BriefsDir != "/tmp/already-absolute-briefs" {
 		t.Fatalf("expected absolute briefs_dir untouched, got %s", p.BriefsDir)
 	}
+
 	if p.Stages[0].Command.Path != "/usr/bin/true" {
 		t.Fatalf("expected absolute command path untouched, got %s", p.Stages[0].Command.Path)
 	}
@@ -264,15 +286,19 @@ pipeline "limited" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	build := pipelines[0].Stages[0]
+
 	rl := build.Command.ResourceLimits
 	if rl == nil || rl.CPUQuota != "200%" || rl.MemoryMax != "1G" || rl.TasksMax != 32 || rl.IOWeight != 500 {
 		t.Fatalf("unexpected stage resource_limits: %+v", rl)
 	}
+
 	gateRL := build.PreGate[0].Command.ResourceLimits
 	if gateRL == nil || gateRL.MemoryMax != "128M" || gateRL.CPUQuota != "" {
 		t.Fatalf("unexpected pre_gate resource_limits: %+v", gateRL)
@@ -289,10 +315,12 @@ pipeline "unlimited" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	if rl := pipelines[0].Stages[0].Command.ResourceLimits; rl != nil {
 		t.Fatalf("expected nil ResourceLimits when no block is given, got %+v", rl)
 	}
@@ -308,10 +336,12 @@ pipeline "simple" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	if pipelines[0].FanOutAt != 1 {
 		t.Fatalf("expected FanOutAt == len(stages) when no stage sets fans_out, got %d", pipelines[0].FanOutAt)
 	}
@@ -356,20 +386,25 @@ pipeline "diverge" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	stages := pipelines[0].Stages
 	if stages[0].Needs != nil {
 		t.Fatalf("an omitted needs must stay nil (meaning: the preceding stage), got %#v", stages[0].Needs)
 	}
+
 	if len(stages[1].Needs) != 1 || stages[1].Needs[0] != "build" {
 		t.Fatalf("unit.needs = %#v", stages[1].Needs)
 	}
+
 	if len(stages[3].Needs) != 2 || stages[3].Convergence != "any" {
 		t.Fatalf("package = needs %#v convergence %q", stages[3].Needs, stages[3].Convergence)
 	}
+
 	if stages[4].Needs == nil || len(stages[4].Needs) != 0 {
 		t.Fatalf("needs = [] must decode to an EMPTY, non-nil slice (a root stage), got %#v", stages[4].Needs)
 	}
@@ -407,10 +442,12 @@ pipeline "capped" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	stages := pipelines[0].Stages
 
 	// A stage with no block of its own inherits the whole default...
@@ -449,10 +486,12 @@ pipeline "plain" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	if rl := pipelines[0].Stages[0].Command.ResourceLimits; rl != nil {
 		t.Fatalf("expected no limits at all, got %+v", rl)
 	}
@@ -468,14 +507,17 @@ func TestParseDefaults(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+
 	good := filepath.Join(dir, "defaults.hcl")
 	if err := os.WriteFile(good, []byte("resource_limits {\n  cpu_weight = 50\n  memory_high = \"4G\"\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	rl, err := ParseDefaults(good)
 	if err != nil {
 		t.Fatalf("ParseDefaults: %v", err)
 	}
+
 	if rl == nil || rl.CPUWeight != 50 || rl.MemoryHigh != "4G" {
 		t.Fatalf("got %+v", rl)
 	}
@@ -484,6 +526,7 @@ func TestParseDefaults(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("resource_limits {\n  nonsense = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := ParseDefaults(bad); err == nil {
 		t.Fatalf("a malformed defaults.hcl must be an error, never silently ignored")
 	}
@@ -514,14 +557,17 @@ pipeline "gated" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	review := pipelines[0].Stages[1]
 	if review.Command.ResourceLimits != nil {
 		t.Fatalf("an approval stage has no command to limit, got %+v", review.Command.ResourceLimits)
 	}
+
 	if rl := review.PreGate[0].Command.ResourceLimits; rl == nil || rl.CPUWeight != 50 {
 		t.Fatalf("an approval stage's pre_gate DOES run a command and must inherit, got %+v", rl)
 	}
@@ -562,10 +608,12 @@ pipeline "svc" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	stages := pipelines[0].Stages
 
 	// A bare command name is a PATH lookup and must NOT be anchored at the config
@@ -578,6 +626,7 @@ pipeline "svc" {
 	if got := stages[1].Command.Path; !filepath.IsAbs(got) || !strings.HasSuffix(got, "/scripts/run.sh") {
 		t.Errorf("relative command path = %q, want it anchored at the config dir", got)
 	}
+
 	if tr := stages[1].Transform; tr == nil || len(tr.Command.Interpreter) != 1 || tr.Command.Interpreter[0] != "python3" {
 		t.Errorf("python transform = %+v", tr)
 	} else if !strings.Contains(tr.Command.Script, "json.load(sys.stdin)") {
@@ -587,6 +636,7 @@ pipeline "svc" {
 	if got := stages[2].Command.Script; !strings.Contains(got, "the stage itself can be a script") {
 		t.Errorf("stage script = %q", got)
 	}
+
 	if stages[2].Transform != nil {
 		t.Errorf("a stage without a transform block must not get one")
 	}
@@ -598,14 +648,17 @@ pipeline "svc" {
 // the last thing that should be ignored for being unparseable.
 func TestParseDefaultsIsTheSameAtBothLevels(t *testing.T) {
 	dir := t.TempDir()
+
 	global := filepath.Join(dir, "global.hcl")
 	if err := os.WriteFile(global, []byte("resource_limits {\n  cpu_weight = 20\n}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	rl, err := ParseDefaults(global)
 	if err != nil || rl == nil || rl.CPUWeight != 20 {
 		t.Fatalf("global defaults: %+v %v", rl, err)
 	}
+
 	if rl, err := ParseDefaults(filepath.Join(dir, "absent.hcl")); err != nil || rl != nil {
 		t.Fatalf("an absent file must be (nil, nil), got %+v %v", rl, err)
 	}
@@ -631,14 +684,17 @@ pipeline "guarded" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	stages := pipelines[0].Stages
 	if stages[0].RequiresLock != "guards-sweep" {
 		t.Fatalf("sweep.requires_lock = %q, want %q", stages[0].RequiresLock, "guards-sweep")
 	}
+
 	if stages[1].RequiresLock != "" {
 		t.Fatalf("a stage that does not declare one must stay empty, got %q", stages[1].RequiresLock)
 	}
@@ -654,10 +710,12 @@ queue {
   wait_timeout   = "30m"
 }
 `)
+
 	q, err := ParseQueue(path)
 	if err != nil {
 		t.Fatalf("ParseQueue: %v", err)
 	}
+
 	if q == nil || q.MaxConcurrent != 3 || q.WaitTimeout != 30*time.Minute {
 		t.Fatalf("queue = %+v, want max 3 / 30m", q)
 	}
@@ -701,14 +759,17 @@ pipeline "p" {
   }
 }
 `)
+
 	pipelines, err := ParseFile(path)
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
+
 	stages := pipelines[0].Stages
 	if n := stages[0].Command.ResourceLimits.Nice; n == nil || *n != 10 {
 		t.Fatalf("a stage with no block of its own must inherit nice=10, got %v", n)
 	}
+
 	if n := stages[1].Command.ResourceLimits.Nice; n == nil || *n != 0 {
 		t.Fatalf("an explicit nice = 0 must override the pipeline default, got %v", n)
 	}
@@ -719,6 +780,7 @@ pipeline "p" {
 // a repo is wherever someone cloned it.
 func TestParseRunDir(t *testing.T) {
 	abs := writeFixture(t, "run_dir = \"/mnt/nvme_data/breeze\"\n")
+
 	got, err := ParseRunDir(abs)
 	if err != nil || got != "/mnt/nvme_data/breeze" {
 		t.Fatalf("run_dir = %q (err %v)", got, err)

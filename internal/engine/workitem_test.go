@@ -7,12 +7,14 @@ import (
 
 func withPeople(t *testing.T, names ...string) *Engine {
 	t.Helper()
+
 	e := New()
 	for _, n := range names {
 		if _, err := e.RegisterIdentity(n, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
+
 	return e
 }
 
@@ -20,13 +22,16 @@ func ptr[T any](v T) *T { return &v }
 
 func TestCreateWorkItemStartsOpen(t *testing.T) {
 	e := withPeople(t, "alice", "bob")
+
 	it, err := e.CreateWorkItem("wire the thing", "alice", "bob", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if it.Status != StatusOpen {
 		t.Errorf("status = %q, want open", it.Status)
 	}
+
 	if it.Creator != "alice" || it.Assignee != "bob" || it.Reviewer != "alice" {
 		t.Errorf("people not recorded: %+v", it)
 	}
@@ -39,6 +44,7 @@ func TestNamingSomeoneWhoDoesNotExistIsRefused(t *testing.T) {
 	if _, err := e.CreateWorkItem("x", "alice", "nobdy", ""); err == nil {
 		t.Error("an unregistered assignee must be refused")
 	}
+
 	if _, err := e.CreateWorkItem("x", "alice", "", "nobdy"); err == nil {
 		t.Error("an unregistered reviewer must be refused")
 	}
@@ -56,22 +62,28 @@ func TestATitleIsRequired(t *testing.T) {
 // teach someone the channel is noise.
 func TestAStatusChangeNotifiesTheOthersButNotTheActor(t *testing.T) {
 	e := withPeople(t, "alice", "bob", "carol")
+
 	it, err := e.CreateWorkItem("wire the thing", "alice", "bob", "carol")
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, notified, err := e.UpdateWorkItem(it.ID, "bob", WorkUpdate{Status: ptr(StatusReview)})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	want := map[string]bool{"alice": true, "carol": true}
+
 	if len(notified) != 2 {
 		t.Fatalf("notified = %v, want alice and carol", notified)
 	}
+
 	for _, n := range notified {
 		if !want[n] {
 			t.Errorf("notified %q, who has no stake in this item", n)
 		}
+
 		if n == "bob" {
 			t.Error("the actor must not be told what they just did")
 		}
@@ -85,11 +97,14 @@ func TestNotifyOptOutIsHonoured(t *testing.T) {
 	if err := e.SetNotifyOptOut("alice", true); err != nil {
 		t.Fatal(err)
 	}
+
 	it, _ := e.CreateWorkItem("x", "alice", "bob", "")
+
 	_, notified, err := e.UpdateWorkItem(it.ID, "bob", WorkUpdate{Status: ptr(StatusDone)})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(notified) != 0 {
 		t.Errorf("notified = %v, but the only stakeholder opted out", notified)
 	}
@@ -99,14 +114,17 @@ func TestNotifyOptOutIsHonoured(t *testing.T) {
 // the channel — so a no-op notifies nobody and writes no audit line.
 func TestANoOpUpdateNotifiesNobody(t *testing.T) {
 	e := withPeople(t, "alice", "bob")
+
 	it, _ := e.CreateWorkItem("x", "alice", "bob", "")
 	if _, _, err := e.UpdateWorkItem(it.ID, "bob", WorkUpdate{Status: ptr(StatusDoing)}); err != nil {
 		t.Fatal(err)
 	}
+
 	_, notified, err := e.UpdateWorkItem(it.ID, "bob", WorkUpdate{Status: ptr(StatusDoing)})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(notified) != 0 {
 		t.Errorf("setting a status to what it already is must notify nobody, got %v", notified)
 	}
@@ -115,10 +133,12 @@ func TestANoOpUpdateNotifiesNobody(t *testing.T) {
 func TestAnUnknownStatusIsRefusedAndListsTheRealOnes(t *testing.T) {
 	e := withPeople(t, "alice")
 	it, _ := e.CreateWorkItem("x", "alice", "", "")
+
 	_, _, err := e.UpdateWorkItem(it.ID, "alice", WorkUpdate{Status: ptr(WorkStatus("wip"))})
 	if err == nil {
 		t.Fatal("an open status vocabulary becomes six spellings of \"in progress\"")
 	}
+
 	for _, want := range []string{"open", "doing", "review", "done", "blocked"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal should list %q, got: %v", want, err)
@@ -137,6 +157,7 @@ func TestUnassigningIsDistinctFromNotMentioningIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if got.Assignee != "bob" {
 		t.Errorf("an unmentioned field must not be cleared, got %q", got.Assignee)
 	}
@@ -146,6 +167,7 @@ func TestUnassigningIsDistinctFromNotMentioningIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if got.Assignee != "" {
 		t.Errorf("--assign \"\" must unassign, got %q", got.Assignee)
 	}
@@ -159,6 +181,7 @@ func TestListingIsNewestFirstAndSurvivesTenItems(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	items := e.WorkItems()
 	if items[0].ID != "w11" {
 		t.Errorf("newest first: got %q, want w11 (a string sort would give w9)", items[0].ID)

@@ -29,6 +29,7 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	if ttl <= 0 {
 		return nil, fmt.Errorf("a positive --ttl is required — grants are always time-bounded, never permanent")
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -36,9 +37,11 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	if !ok {
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	if !slices.Contains(p.Environments, environment) {
 		return nil, fmt.Errorf("environment %q is not declared on pipeline %q", environment, pipelineName)
 	}
+
 	if _, ok := e.identities[grantee]; !ok {
 		return nil, fmt.Errorf("identity %q not found", grantee)
 	}
@@ -46,6 +49,7 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	owner := p.EnvironmentOwners[environment]
 	granter, ok := e.identities[grantedBy]
 	isAdmin := ok && granter.HasRole("admin")
+
 	isCurrentHolder := e.holdsDeployClaimInEnvironmentLocked(environment, grantedBy)
 	if grantedBy != owner && !isAdmin && !isCurrentHolder {
 		return nil, gateErr("only environment %q's declared owner (%s), an admin, or an identity currently holding a deploy claim there may grant access to it, not %q", environment, ownerOrNone(owner), grantedBy)
@@ -67,7 +71,9 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 	e.envGrants[envGrantKey(pipelineName, environment, grantee)] = grant
 	e.audit("environment.granted", grantedBy, fmt.Sprintf("pipeline=%s environment=%s grantee=%s targets=%v expiresAt=%s", pipelineName, environment, grantee, targets, grant.ExpiresAt))
 	e.changed()
+
 	cp := *grant
+
 	return &cp, nil
 }
 
@@ -77,16 +83,19 @@ func (e *Engine) GrantEnvironmentAccess(pipelineName, environment string, target
 // held.
 func (e *Engine) holdsDeployClaimInEnvironmentLocked(environment, holder string) bool {
 	suffix := "/" + environment
+
 	for _, l := range e.locks {
 		if l.Kind != LockKindResource || l.Holder != holder {
 			continue
 		}
+
 		for _, path := range l.Paths {
 			if strings.HasPrefix(path, "deploy/") && strings.HasSuffix(path, suffix) {
 				return true
 			}
 		}
 	}
+
 	return false
 }
 
@@ -94,6 +103,7 @@ func ownerOrNone(owner string) string {
 	if owner == "" {
 		return "(no declared owner)"
 	}
+
 	return owner
 }
 
@@ -104,6 +114,7 @@ func ownerOrNone(owner string) string {
 // Pipeline.Environments.
 func deployTargets(p *Pipeline) []string {
 	var out []string
+
 	for _, s := range p.Stages {
 		if s.Type == StageDeploy {
 			t := deployTarget(s)
@@ -112,6 +123,7 @@ func deployTargets(p *Pipeline) []string {
 			}
 		}
 	}
+
 	return out
 }
 
@@ -125,13 +137,16 @@ func (e *Engine) actorAuthorizedForDeployLocked(pipelineName, environment, targe
 	if requiredRole == "" {
 		return true
 	}
+
 	if id, ok := e.identities[actor]; ok && id.HasRole(requiredRole) {
 		return true
 	}
+
 	g, ok := e.envGrants[envGrantKey(pipelineName, environment, actor)]
 	if !ok || !e.now().Before(g.ExpiresAt) {
 		return false
 	}
+
 	return len(g.Targets) == 0 || slices.Contains(g.Targets, target)
 }
 
@@ -141,6 +156,7 @@ func (e *Engine) actorAuthorizedForDeployLocked(pipelineName, environment, targe
 func (e *Engine) SweepExpiredGrants() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	now := e.now()
 	for k, g := range e.envGrants {
 		if !now.Before(g.ExpiresAt) {
@@ -155,15 +171,20 @@ func (e *Engine) SweepExpiredGrants() {
 func (e *Engine) EnvironmentGrants(pipelineName, environment string) []EnvironmentGrant {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	var out []EnvironmentGrant
+
 	for _, g := range e.envGrants {
 		if pipelineName != "" && g.Pipeline != pipelineName {
 			continue
 		}
+
 		if environment != "" && g.Environment != environment {
 			continue
 		}
+
 		out = append(out, *g)
 	}
+
 	return out
 }

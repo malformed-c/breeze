@@ -11,6 +11,7 @@ import (
 // `/bin/true` would make every assertion below vacuous.
 func noisyPipeline(t *testing.T, e *Engine) {
 	t.Helper()
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{
@@ -42,9 +43,11 @@ func TestPrunedRunStillSatisfiesItsDependentsGate(t *testing.T) {
 
 	// The run whose record must survive: the OLDEST, i.e. the first to be pruned.
 	fakeNow = base
+
 	if _, err := e.StartCommandStage("ci", "build", "old-commit", "", "agent", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	for i := 0; i < maxInstancesWithOutputPerPipeline+10; i++ {
 		fakeNow = base.Add(time.Duration(i+1) * time.Second)
 		if _, err := e.StartCommandStage("ci", "build", fmt.Sprintf("commit-%d", i), "", "agent", ""); err != nil {
@@ -59,6 +62,7 @@ func TestPrunedRunStillSatisfiesItsDependentsGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if !got.Recorded || got.Status != StageSucceeded {
 		t.Fatalf("a pruned run must still be a recorded success, got recorded=%v status=%s", got.Recorded, got.Status)
 	}
@@ -68,6 +72,7 @@ func TestPrunedRunStillSatisfiesItsDependentsGate(t *testing.T) {
 		if strings.Contains(err.Error(), "has not run yet") {
 			t.Fatalf("retention made a gate refuse on an absence it created: %v", err)
 		}
+
 		t.Fatalf("approve: %v", err)
 	}
 }
@@ -87,18 +92,23 @@ func TestPruneStageOutputDropsOutputAndSaysSo(t *testing.T) {
 			t.Fatalf("build(%d): %v", i, err)
 		}
 	}
+
 	e.PruneStageOutput()
 
 	e.mu.Lock()
 	total, withOutput, pruned := 0, 0, 0
+
 	for _, inst := range e.instances {
 		if inst.Pipeline != "ci" || inst.Stage != "build" {
 			continue
 		}
+
 		total++
+
 		if len(inst.Stdout) > 0 {
 			withOutput++
 		}
+
 		if inst.OutputPruned {
 			pruned++
 		}
@@ -109,6 +119,7 @@ func TestPruneStageOutputDropsOutputAndSaysSo(t *testing.T) {
 	if total != maxInstancesWithOutputPerPipeline+extra {
 		t.Errorf("every instance must survive; got %d of %d", total, maxInstancesWithOutputPerPipeline+extra)
 	}
+
 	if withOutput != maxInstancesWithOutputPerPipeline {
 		t.Errorf("expected the newest %d to keep their output, got %d", maxInstancesWithOutputPerPipeline, withOutput)
 	}
@@ -130,9 +141,11 @@ func TestPruneStageOutputLeavesNonTerminalInstancesAlone(t *testing.T) {
 			t.Fatalf("build(%d): %v", i, err)
 		}
 	}
+
 	if _, err := e.StartCommandStage("ci", "build", "awaiting-commit", "", "agent", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	if _, err := e.ApproveStage("ci", "review", "awaiting-commit", "", "agent", ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -143,6 +156,7 @@ func TestPruneStageOutputLeavesNonTerminalInstancesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if inst.Status != StageAwaiting || inst.OutputPruned {
 		t.Fatalf("a non-terminal instance must be untouched, got status=%s pruned=%v", inst.Status, inst.OutputPruned)
 	}
@@ -155,12 +169,14 @@ func TestPruneStageOutputNoOpBelowThreshold(t *testing.T) {
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "agent", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	e.PruneStageOutput()
 
 	inst, err := e.StageStatus("ci", "build", "abc", "")
 	if err != nil || inst.Status != StageSucceeded {
 		t.Fatalf("expected the single instance to survive: inst=%+v err=%v", inst, err)
 	}
+
 	if inst.OutputPruned || len(inst.Stdout) == 0 {
 		t.Fatalf("well below the threshold nothing should be dropped, got pruned=%v stdout=%q", inst.OutputPruned, inst.Stdout)
 	}
@@ -170,6 +186,7 @@ func TestPruneStageOutputNoOpBelowThreshold(t *testing.T) {
 // output pruned — that would be the same lie in the other direction.
 func TestPruneStageOutputDoesNotClaimToHavePrunedSilence(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name:     "quiet",
 		Stages:   []StageDef{{Name: "build", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/true"}, CommandPolicy: &CommandPolicy{}}},
@@ -178,15 +195,18 @@ func TestPruneStageOutputDoesNotClaimToHavePrunedSilence(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for i := 0; i < maxInstancesWithOutputPerPipeline+5; i++ {
 		if _, err := e.StartCommandStage("quiet", "build", fmt.Sprintf("commit-%d", i), "", "agent", ""); err != nil {
 			t.Fatalf("build(%d): %v", i, err)
 		}
 	}
+
 	e.PruneStageOutput()
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	for _, inst := range e.instances {
 		if inst.OutputPruned {
 			t.Fatalf("a run that printed nothing must not be marked OutputPruned: %+v", inst)

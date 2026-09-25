@@ -13,6 +13,7 @@ import (
 // be never. `exec lock` had no timeout at all, so "never" was the real outcome.
 func TestSeparateTryThenRegisterLosesTheWake(t *testing.T) {
 	e := New()
+
 	held, ok, err := e.TryAcquireLock("a", []string{"/tmp/x"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("setup acquire: %v %v", ok, err)
@@ -41,6 +42,7 @@ func TestSeparateTryThenRegisterLosesTheWake(t *testing.T) {
 // or is already registered when the release fires, so it cannot be missed.
 func TestAcquireOrWaitClosesTheLostWakeWindow(t *testing.T) {
 	e := New()
+
 	held, ok, err := e.TryAcquireLock("a", []string{"/tmp/x"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("setup acquire: %v %v", ok, err)
@@ -60,6 +62,7 @@ func TestAcquireOrWaitClosesTheLostWakeWindow(t *testing.T) {
 	if err := e.ReleaseLock(held.ID, "a", false); err != nil {
 		t.Fatalf("release: %v", err)
 	}
+
 	select {
 	case <-wait:
 	case <-time.After(2 * time.Second):
@@ -76,10 +79,12 @@ func TestAcquireOrWaitClosesTheLostWakeWindow(t *testing.T) {
 // caller that parked on one anyway would hang holding the lock it just got.
 func TestAcquireOrWaitReturnsNoChannelOnSuccess(t *testing.T) {
 	e := New()
+
 	lock, ok, wait, err := e.AcquireFileLockOrWait("a", []string{"/tmp/x"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok || lock == nil {
 		t.Fatalf("expected a clean acquire, got ok=%v lock=%v err=%v", ok, lock, err)
 	}
+
 	if wait != nil {
 		t.Fatalf("a successful acquire must not hand back a wait channel")
 	}
@@ -90,17 +95,21 @@ func TestAcquireOrWaitReturnsNoChannelOnSuccess(t *testing.T) {
 // canonicalization, and a deploy claim losing a wake is a stuck deploy.
 func TestAcquireResourceLockOrWaitClosesTheWindowToo(t *testing.T) {
 	e := New()
+
 	held, ok, err := e.TryAcquireResourceLock("a", []string{"gpu-0"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("setup: %v %v", ok, err)
 	}
+
 	_, ok, wait, err := e.AcquireResourceLockOrWait("b", []string{"gpu-0"}, LockExclusive, time.Minute, false)
 	if err != nil || ok || wait == nil {
 		t.Fatalf("expected a conflict with a wait channel, got ok=%v wait=%v err=%v", ok, wait, err)
 	}
+
 	if err := e.ReleaseLock(held.ID, "a", false); err != nil {
 		t.Fatalf("release: %v", err)
 	}
+
 	select {
 	case <-wait:
 	case <-time.After(2 * time.Second):

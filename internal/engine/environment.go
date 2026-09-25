@@ -10,14 +10,17 @@ func validateEnvironmentDeps(envs []string, deps map[string][]string) error {
 	for _, e := range envs {
 		known[e] = true
 	}
+
 	for env, dependsOn := range deps {
 		if !known[env] {
 			return fmt.Errorf("environment_deps references unknown environment %q", env)
 		}
+
 		for _, dep := range dependsOn {
 			if !known[dep] {
 				return fmt.Errorf("environment %q depends on unknown environment %q", env, dep)
 			}
+
 			if dep == env {
 				return fmt.Errorf("environment %q cannot depend on itself", env)
 			}
@@ -29,8 +32,11 @@ func validateEnvironmentDeps(envs []string, deps map[string][]string) error {
 		gray  = 1 // in progress (on current DFS stack)
 		black = 2 // fully processed
 	)
+
 	color := make(map[string]int, len(envs))
+
 	var visit func(node string, stack []string) error
+
 	visit = func(node string, stack []string) error {
 		color[node] = gray
 		for _, dep := range deps[node] {
@@ -43,9 +49,12 @@ func validateEnvironmentDeps(envs []string, deps map[string][]string) error {
 				}
 			}
 		}
+
 		color[node] = black
+
 		return nil
 	}
+
 	for _, e := range envs {
 		if color[e] == white {
 			if err := visit(e, nil); err != nil {
@@ -53,5 +62,6 @@ func validateEnvironmentDeps(envs []string, deps map[string][]string) error {
 			}
 		}
 	}
+
 	return nil
 }

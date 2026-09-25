@@ -16,6 +16,7 @@ import (
 func TestReconcileResolvesStagesLeftRunning(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	key := StageKey{Commit: "abc123"}
 	e.instances[instanceKey("release", "build", key)] = &StageInstance{
 		Pipeline: "release", Stage: "build", Key: key,
@@ -26,6 +27,7 @@ func TestReconcileResolvesStagesLeftRunning(t *testing.T) {
 	if n := e.ReconcileOrphanedStages(); n != 1 {
 		t.Fatalf("expected 1 instance reconciled, got %d", n)
 	}
+
 	inst := e.getInstance("release", "build", key)
 	switch {
 	case inst.Status != StageFailed:
@@ -59,17 +61,21 @@ func TestReconcileReleasesTheRunLockButNotAClaim(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := New()
 			registerReleasePipeline(t, e)
+
 			key := StageKey{Commit: "abc123"}
+
 			lockKey := stageLockKey("release", "build", key)
 			if _, ok, err := e.TryAcquireResourceLock("ci", []string{lockKey}, LockExclusive, time.Hour, c.manualClaim); err != nil || !ok {
 				t.Fatalf("setup lock: %v %v", ok, err)
 			}
+
 			e.instances[instanceKey("release", "build", key)] = &StageInstance{
 				Pipeline: "release", Stage: "build", Key: key,
 				Status: StageRunning, Actor: "ci", StartedAt: time.Now(),
 			}
 
 			e.ReconcileOrphanedStages()
+
 			if got := len(e.ListAllLocks()); got != c.wantLocks {
 				t.Fatalf("locks after reconcile = %d, want %d", got, c.wantLocks)
 			}
@@ -82,15 +88,18 @@ func TestReconcileReleasesTheRunLockButNotAClaim(t *testing.T) {
 func TestReconcileLeavesNonRunningInstancesAlone(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	for _, st := range []StageStatus{StageAwaiting, StageSucceeded, StageFailed} {
 		key := StageKey{Commit: string(st)}
 		e.instances[instanceKey("release", "review", key)] = &StageInstance{
 			Pipeline: "release", Stage: "review", Key: key, Status: st,
 		}
 	}
+
 	if n := e.ReconcileOrphanedStages(); n != 0 {
 		t.Fatalf("expected nothing to reconcile, got %d", n)
 	}
+
 	for _, st := range []StageStatus{StageAwaiting, StageSucceeded, StageFailed} {
 		if got := e.getInstance("release", "review", StageKey{Commit: string(st)}).Status; got != st {
 			t.Fatalf("status %s was changed to %s", st, got)
@@ -104,14 +113,17 @@ func TestFailureKindDistinguishesCauses(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/false"}
+
 	p.Stages[0].Timeout = time.Minute
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst.Status != StageFailed || inst.FailureKind != FailCommand {
 		t.Fatalf("a nonzero exit should be %q, got status=%s kind=%q", FailCommand, inst.Status, inst.FailureKind)
 	}
@@ -120,14 +132,17 @@ func TestFailureKindDistinguishesCauses(t *testing.T) {
 	e2 := New()
 	p2 := examplePipeline()
 	p2.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"5"}}
+
 	p2.Stages[0].Timeout = 100 * time.Millisecond
 	if err := e2.RegisterPipeline(p2, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	inst2, err := e2.StartCommandStage("release", "build", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst2.Status != StageFailed || inst2.FailureKind != FailTimedOut {
 		t.Fatalf("a timeout should be %q, got status=%s kind=%q", FailTimedOut, inst2.Status, inst2.FailureKind)
 	}
@@ -141,13 +156,16 @@ func TestFailureKindDistinguishesCauses(t *testing.T) {
 func TestCancelledStageIsKindCancelled(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	key := StageKey{Commit: "abc123"}
+
 	e.instances[instanceKey("release", "build", key)] = &StageInstance{
 		Pipeline: "release", Stage: "build", Key: key, Status: StageRunning, Actor: "ci",
 	}
 	if n := e.CancelRunningStages("daemon shut down"); n != 1 {
 		t.Fatalf("expected 1 cancelled, got %d", n)
 	}
+
 	if got := e.getInstance("release", "build", key).FailureKind; got != FailCancelled {
 		t.Fatalf("kind = %q, want %q", got, FailCancelled)
 	}
@@ -169,12 +187,14 @@ func TestOrphanReasonDistinguishesWhatIsKnown(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := New()
 			registerReleasePipeline(t, e)
+
 			key := StageKey{Commit: "abc123"}
 			e.instances[instanceKey("release", "build", key)] = &StageInstance{
 				Pipeline: "release", Stage: "build", Key: key, Status: StageRunning,
 				RunnerPID: c.pid, RunnerStart: c.start,
 			}
 			e.ReconcileOrphanedStages()
+
 			if got := e.getInstance("release", "build", key).Error; !strings.Contains(got, c.want) {
 				t.Fatalf("reason %q should contain %q", got, c.want)
 			}
@@ -192,11 +212,13 @@ func TestKillVerifiedProcessRefusesAMismatchedIdentity(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	defer cmd.Process.Kill()
+
 	pid := cmd.Process.Pid
 
 	if err := killVerifiedProcess(pid, "definitely-not-its-start-time"); err == nil {
 		t.Fatalf("a mismatched start token must refuse to signal")
 	}
+
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("the process must be untouched after a refused kill: %v", err)
 	}
@@ -206,10 +228,13 @@ func TestKillVerifiedProcessRefusesAMismatchedIdentity(t *testing.T) {
 	if token == "" {
 		t.Skip("/proc unavailable")
 	}
+
 	if err := killVerifiedProcess(pid, token); err != nil {
 		t.Fatalf("a verified kill should succeed: %v", err)
 	}
+
 	cmd.Wait()
+
 	if procStartToken(pid) == token {
 		t.Fatalf("process %d still alive after a verified kill", pid)
 	}
@@ -219,6 +244,7 @@ func TestKillVerifiedProcessRefusesAMismatchedIdentity(t *testing.T) {
 // it's used to REPORT that work may still be running, not to act on it.
 func TestGroupAliveIsAProbeNotAKill(t *testing.T) {
 	cmd := exec.Command("/bin/sleep", "30")
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
@@ -228,9 +254,11 @@ func TestGroupAliveIsAProbeNotAKill(t *testing.T) {
 	if !groupAlive(cmd.Process.Pid) {
 		t.Fatalf("expected the group to be reported alive")
 	}
+
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("the probe must not have killed anything: %v", err)
 	}
+
 	if groupAlive(999999) {
 		t.Fatalf("a nonexistent group must not report alive")
 	}

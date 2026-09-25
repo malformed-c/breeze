@@ -64,6 +64,7 @@ func requiredRoleFor(s StageDef) Role {
 			return s.DeployPolicy.RequiredRole
 		}
 	}
+
 	return ""
 }
 
@@ -106,16 +107,19 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 	e.mu.Lock()
 	fn := e.notifyFn
 	topicFn := e.notifyTopicFn
+
 	var topic string
 	if p, ok := e.pipelines[pipelineName]; ok {
 		topic = p.NotifyTopic
 	}
+
 	if fn == nil && (topicFn == nil || topic == "") {
 		e.mu.Unlock()
 		return
 	}
 
 	var targets []string
+
 	seen := make(map[string]bool)
 	add := func(name string) {
 		if name != "" && !seen[name] {
@@ -137,6 +141,7 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 		if id.Name == inst.Actor || id.NotifyOptOut {
 			return
 		}
+
 		add(id.MessTarget())
 	}
 
@@ -161,6 +166,7 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 	if len(targets) == 0 && (topicFn == nil || topic == "") {
 		return
 	}
+
 	message := fmt.Sprintf("breeze: %s/%s (%s) -> %s", pipelineName, stageName, inst.Key.ShortString(), inst.Status)
 	// A stage's transform exists to answer "and what does that mean?" — which is
 	// exactly the question a notification raises and, without this, leaves the
@@ -168,10 +174,12 @@ func (e *Engine) notifyResolution(pipelineName, stageName string, inst *StageIns
 	if inst.Summary != "" {
 		message += " — " + oneLine(inst.Summary)
 	}
+
 	thread := messThreadID(pipelineName, inst.Key.Commit)
 	if len(targets) > 0 && fn != nil {
 		fn(targets, message, thread)
 	}
+
 	if topicFn != nil && topic != "" {
 		topicFn(topic, message, thread)
 	}

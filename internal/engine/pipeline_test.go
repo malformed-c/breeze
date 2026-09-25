@@ -38,10 +38,12 @@ func TestRegisterPipelineValid(t *testing.T) {
 	if err := e.RegisterPipeline(examplePipeline(), "admin"); err != nil {
 		t.Fatalf("expected valid pipeline to register: %v", err)
 	}
+
 	p, ok := e.Pipeline("release")
 	if !ok {
 		t.Fatalf("expected pipeline to be retrievable")
 	}
+
 	if p.FanOutAt != 2 || len(p.Stages) != 4 {
 		t.Fatalf("unexpected stored pipeline: %+v", p)
 	}
@@ -51,6 +53,7 @@ func TestRegisterPipelineRejectsDeployBeforeFanOut(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[0].Type = StageDeploy
+
 	p.Stages[0].DeployPolicy = &DeployPolicy{Target: "x"}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected deploy-before-fanout to be rejected")
@@ -60,6 +63,7 @@ func TestRegisterPipelineRejectsDeployBeforeFanOut(t *testing.T) {
 func TestRegisterPipelineRejectsUnknownPlaceholder(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command.Args = []string{"{comit}"}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected unknown placeholder to be rejected")
@@ -69,14 +73,17 @@ func TestRegisterPipelineRejectsUnknownPlaceholder(t *testing.T) {
 func TestRegisterPipelineAcceptsResourceLimits(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{CPUQuota: "200%", MemoryMax: "1G", TasksMax: 32, IOWeight: 500}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("expected valid resource_limits to register: %v", err)
 	}
+
 	stored, ok := e.Pipeline("release")
 	if !ok {
 		t.Fatalf("expected pipeline to be retrievable")
 	}
+
 	if got := stored.Stages[0].Command.ResourceLimits; got == nil || got.CPUQuota != "200%" || got.TasksMax != 32 {
 		t.Fatalf("expected ResourceLimits to round-trip through registration, got %+v", got)
 	}
@@ -85,11 +92,14 @@ func TestRegisterPipelineAcceptsResourceLimits(t *testing.T) {
 func TestRegisterPipelineRejectsOutOfRangeIOWeight(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{IOWeight: 20000}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected out-of-range io_weight (>10000) to be rejected")
 	}
+
 	p2 := examplePipeline()
+
 	p2.Stages[0].Command.ResourceLimits = &hook.ResourceLimits{TasksMax: -1}
 	if err := e.RegisterPipeline(p2, "admin"); err == nil {
 		t.Fatalf("expected negative tasks_max to be rejected")
@@ -99,6 +109,7 @@ func TestRegisterPipelineRejectsOutOfRangeIOWeight(t *testing.T) {
 func TestRegisterPipelineRejectsDuplicateStageNames(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[1].Name = "build"
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected duplicate stage names to be rejected")
@@ -108,6 +119,7 @@ func TestRegisterPipelineRejectsDuplicateStageNames(t *testing.T) {
 func TestRegisterPipelineRejectsCyclicEnvironmentDeps(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.EnvironmentDeps = map[string][]string{
 		"staging": {"prod"},
 		"prod":    {"staging"},
@@ -120,6 +132,7 @@ func TestRegisterPipelineRejectsCyclicEnvironmentDeps(t *testing.T) {
 func TestRegisterPipelineRejectsSelfDependentEnvironment(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.EnvironmentDeps = map[string][]string{"staging": {"staging"}}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected self-referencing environment to be rejected")
@@ -129,6 +142,7 @@ func TestRegisterPipelineRejectsSelfDependentEnvironment(t *testing.T) {
 func TestRegisterPipelineRejectsMissingFanOutEnvironments(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Environments = nil
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected missing environments (with a fan-out point) to be rejected")
@@ -138,6 +152,7 @@ func TestRegisterPipelineRejectsMissingFanOutEnvironments(t *testing.T) {
 func TestRegisterPipelineRejectsEnvironmentOwnersReferencingUndeclaredEnvironment(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.EnvironmentOwners = map[string]string{"nonexistent-env": "alice"}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected environmentOwners referencing an undeclared environment to be rejected")
@@ -147,10 +162,12 @@ func TestRegisterPipelineRejectsEnvironmentOwnersReferencingUndeclaredEnvironmen
 func TestRegisterPipelineAcceptsEnvironmentOwners(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.EnvironmentOwners = map[string]string{"staging": "alice", "prod": "bob"}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("expected valid environmentOwners to register: %v", err)
 	}
+
 	got, ok := e.Pipeline("release")
 	if !ok || got.EnvironmentOwners["staging"] != "alice" || got.EnvironmentOwners["prod"] != "bob" {
 		t.Fatalf("unexpected stored environmentOwners: %+v", got.EnvironmentOwners)
@@ -162,11 +179,14 @@ func TestRegisterPipelineUpsertByName(t *testing.T) {
 	if err := e.RegisterPipeline(examplePipeline(), "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	p2 := examplePipeline()
+
 	p2.Stages[0].CommandPolicy.MaxConcurrent = 99
 	if err := e.RegisterPipeline(p2, "admin"); err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
+
 	got, _ := e.Pipeline("release")
 	if got.Stages[0].CommandPolicy.MaxConcurrent != 99 {
 		t.Fatalf("expected re-registration to replace the definition, got %+v", got.Stages[0].CommandPolicy)

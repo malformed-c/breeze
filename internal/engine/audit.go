@@ -26,6 +26,7 @@ func (e *Engine) audit(kind, actor, detail string) {
 	if e.auditFn == nil {
 		return
 	}
+
 	e.auditSeq++
 	e.auditFn(AuditEvent{Seq: e.auditSeq, Time: e.now(), Kind: kind, Actor: actor, Detail: detail})
 }

@@ -170,10 +170,12 @@ func ParseFile(path string) ([]wire.Pipeline, error) {
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return nil, err
 	}
+
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+
 	baseDir := filepath.Dir(absPath)
 
 	pipelines := make([]wire.Pipeline, 0, len(cfg.Pipelines))
@@ -182,9 +184,11 @@ func ParseFile(path string) ([]wire.Pipeline, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pipeline %q: %w", ph.Name, err)
 		}
+
 		resolveRelativePaths(&p, baseDir)
 		pipelines = append(pipelines, p)
 	}
+
 	return pipelines, nil
 }
 
@@ -246,12 +250,15 @@ func ParseDefaults(path string) (*wire.ResourceLimits, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
+
 	var cfg DefaultsHCL
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return nil, err
 	}
+
 	return translateResourceLimits(cfg.ResourceLimits), nil
 }
 
@@ -273,15 +280,19 @@ func ParseRunDir(path string) (string, error) {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
+
 		return "", err
 	}
+
 	var cfg DefaultsHCL
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return "", err
 	}
+
 	if cfg.RunDir != "" && !filepath.IsAbs(cfg.RunDir) {
 		return "", fmt.Errorf("run_dir %q must be an absolute path — it is resolved by the daemon, which does not share your working directory", cfg.RunDir)
 	}
+
 	return cfg.RunDir, nil
 }
 
@@ -298,15 +309,19 @@ func ParseHoursDB(path string) (string, error) {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
+
 		return "", err
 	}
+
 	var cfg DefaultsHCL
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return "", err
 	}
+
 	if cfg.HoursDB != "" && !filepath.IsAbs(cfg.HoursDB) {
 		return "", fmt.Errorf("hours_db %q must be an absolute path — it is resolved by the daemon, which does not share your working directory", cfg.HoursDB)
 	}
+
 	return cfg.HoursDB, nil
 }
 
@@ -318,29 +333,37 @@ func ParseQueue(path string) (*Queue, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
+
 		return nil, err
 	}
+
 	var cfg DefaultsHCL
 	if err := hclsimple.DecodeFile(path, nil, &cfg); err != nil {
 		return nil, err
 	}
+
 	if cfg.Queue == nil {
 		return nil, nil
 	}
+
 	q := &Queue{MaxConcurrent: cfg.Queue.MaxConcurrent, SlotDir: cfg.Queue.SlotDir}
 	if q.MaxConcurrent < 0 {
 		return nil, fmt.Errorf("queue: max_concurrent must be >= 0 (0 means no budget), got %d", q.MaxConcurrent)
 	}
+
 	if cfg.Queue.WaitTimeout != "" {
 		d, err := time.ParseDuration(cfg.Queue.WaitTimeout)
 		if err != nil {
 			return nil, fmt.Errorf("queue: wait_timeout %q: %w", cfg.Queue.WaitTimeout, err)
 		}
+
 		if d < 0 {
 			return nil, fmt.Errorf("queue: wait_timeout must not be negative, got %s", d)
 		}
+
 		q.WaitTimeout = d
 	}
+
 	return q, nil
 }
 
@@ -355,9 +378,11 @@ func resolveRelativePaths(p *wire.Pipeline, baseDir string) {
 		for j := range p.Stages[i].PreGate {
 			p.Stages[i].PreGate[j].Command.Path = resolveCommandPath(baseDir, p.Stages[i].PreGate[j].Command.Path)
 		}
+
 		for j := range p.Stages[i].PostAction {
 			p.Stages[i].PostAction[j].Command.Path = resolveCommandPath(baseDir, p.Stages[i].PostAction[j].Command.Path)
 		}
+
 		if t := p.Stages[i].Transform; t != nil {
 			t.Command.Path = resolveCommandPath(baseDir, t.Command.Path)
 		}
@@ -371,6 +396,7 @@ func resolveRelative(baseDir, p string) string {
 	if p == "" || filepath.IsAbs(p) {
 		return p
 	}
+
 	return filepath.Clean(filepath.Join(baseDir, p))
 }
 
@@ -385,6 +411,7 @@ func resolveCommandPath(baseDir, p string) string {
 	if !strings.ContainsRune(p, filepath.Separator) {
 		return p
 	}
+
 	return resolveRelative(baseDir, p)
 }
 
@@ -392,17 +419,21 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 	stages := make([]wire.StageDef, 0, len(ph.Stages))
 	fanOutAt := len(ph.Stages) // default: no fan-out point at all
 	fanOutCount := 0
+
 	for i, sh := range ph.Stages {
 		sd, err := translateStage(sh)
 		if err != nil {
 			return wire.Pipeline{}, fmt.Errorf("stage %q: %w", sh.Name, err)
 		}
+
 		stages = append(stages, sd)
+
 		if sh.FansOut {
 			fanOutCount++
 			fanOutAt = i
 		}
 	}
+
 	if fanOutCount > 1 {
 		return wire.Pipeline{}, fmt.Errorf("only one stage may set fans_out = true, found %d", fanOutCount)
 	}
@@ -411,6 +442,7 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 	if err != nil {
 		return wire.Pipeline{}, err
 	}
+
 	envOwners, err := translateEnvOwners(ph.EnvOwners)
 	if err != nil {
 		return wire.Pipeline{}, err
@@ -423,6 +455,7 @@ func translatePipeline(ph PipelineHCL) (wire.Pipeline, error) {
 		BriefsDir: ph.BriefsDir, NotifyTopic: ph.NotifyTopic, CommandTopic: ph.CommandTopic,
 	}
 	applyDefaultLimits(&p, translateResourceLimits(ph.ResourceLimits))
+
 	return p, nil
 }
 
@@ -430,27 +463,34 @@ func translateEnvDeps(block *EnvDepsBlock) (map[string][]string, error) {
 	if block == nil {
 		return nil, nil
 	}
+
 	attrs, diags := block.Remain.JustAttributes()
 	if diags.HasErrors() {
 		return nil, diags
 	}
+
 	out := make(map[string][]string, len(attrs))
 	for name, attr := range attrs {
 		val, diags := attr.Expr.Value(nil)
 		if diags.HasErrors() {
 			return nil, diags
 		}
+
 		if !val.CanIterateElements() {
 			return nil, fmt.Errorf("environment_deps.%s must be a list of environment names", name)
 		}
+
 		var deps []string
+
 		it := val.ElementIterator()
 		for it.Next() {
 			_, v := it.Element()
 			deps = append(deps, v.AsString())
 		}
+
 		out[name] = deps
 	}
+
 	return out, nil
 }
 
@@ -458,27 +498,33 @@ func translateEnvOwners(block *EnvOwnersBlock) (map[string]string, error) {
 	if block == nil {
 		return nil, nil
 	}
+
 	attrs, diags := block.Remain.JustAttributes()
 	if diags.HasErrors() {
 		return nil, diags
 	}
+
 	out := make(map[string]string, len(attrs))
 	for name, attr := range attrs {
 		val, diags := attr.Expr.Value(nil)
 		if diags.HasErrors() {
 			return nil, diags
 		}
+
 		if val.Type() != cty.String {
 			return nil, fmt.Errorf("environment_owners.%s must be a single identity name string", name)
 		}
+
 		out[name] = val.AsString()
 	}
+
 	return out, nil
 }
 
 func translateStage(sh StageHCL) (wire.StageDef, error) {
 	cmd := commandFromList(sh.Command, sh.ResourceLimits)
 	cmd.Script, cmd.Interpreter = sh.Script, sh.Interpreter
+
 	sd := wire.StageDef{
 		Name: sh.Name, Type: sh.Type, Timeout: sh.Timeout,
 		Command: cmd, Debug: sh.Debug,
@@ -491,6 +537,7 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 		if err := rejectToolAttrs(sh, "command"); err != nil {
 			return wire.StageDef{}, err
 		}
+
 		sd.CommandPolicy = &wire.CommandPolicy{RequiredRole: sh.RequiredRole, MaxConcurrent: sh.ConcurrencyLimit}
 	case "task", "release":
 		// These declare INTENT and let breeze own the argv, so a pipeline stops
@@ -504,10 +551,12 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 		if len(sh.Command) > 0 || sh.Script != "" {
 			return wire.StageDef{}, fmt.Errorf("stage %q is type %q, so breeze builds the command — remove command/script, or use type = \"command\" to spell it yourself", sh.Name, sh.Type)
 		}
+
 		argv, err := toolArgv(sh)
 		if err != nil {
 			return wire.StageDef{}, err
 		}
+
 		cmd := commandFromList(argv, sh.ResourceLimits)
 		sd.Command = cmd
 		sd.Type = "command"
@@ -516,31 +565,38 @@ func translateStage(sh StageHCL) (wire.StageDef, error) {
 		if err := rejectToolAttrs(sh, "approval"); err != nil {
 			return wire.StageDef{}, err
 		}
+
 		sd.ApprovalPolicy = &wire.ApprovalPolicy{RequiredApprovals: sh.RequiredApprovals, RequiredRole: sh.ApproverRole, BlockPredecessorActor: sh.BlockPredecessorActor}
 	case "deploy":
 		if err := rejectToolAttrs(sh, "deploy"); err != nil {
 			return wire.StageDef{}, err
 		}
+
 		sd.DeployPolicy = &wire.DeployPolicy{RequiredRole: sh.RequiredRole, Target: sh.Target}
 	default:
 		return wire.StageDef{}, fmt.Errorf("unknown stage type %q (must be command, task, release, approval, or deploy)", sh.Type)
 	}
+
 	for _, h := range sh.PreGate {
 		sd.PreGate = append(sd.PreGate, translateHook(h))
 	}
+
 	for _, h := range sh.PostAction {
 		sd.PostAction = append(sd.PostAction, translateHook(h))
 	}
+
 	if sh.Transform != nil {
 		t := translateHook(*sh.Transform)
 		sd.Transform = &t
 	}
+
 	return sd, nil
 }
 
 func translateHook(h HookHCL) wire.Hook {
 	tmpl := commandFromList(h.Command, h.ResourceLimits)
 	tmpl.Script, tmpl.Interpreter = h.Script, h.Interpreter
+
 	return wire.Hook{Command: tmpl, Timeout: h.Timeout}
 }
 
@@ -565,6 +621,7 @@ func toolArgv(sh StageHCL) ([]string, error) {
 		if sh.Taskfile != "" {
 			argv = append(argv, "--taskfile", sh.Taskfile)
 		}
+
 		return append(argv, sh.Task), nil
 	case "release":
 		if sh.Task != "" || sh.Taskfile != "" {
@@ -581,11 +638,14 @@ func toolArgv(sh StageHCL) ([]string, error) {
 		} else {
 			argv = append(argv, "release", "--clean")
 		}
+
 		if sh.ReleaseConfig != "" {
 			argv = append(argv, "--config", sh.ReleaseConfig)
 		}
+
 		return argv, nil
 	}
+
 	return nil, fmt.Errorf("stage %q: unsupported tool type %q", sh.Name, sh.Type)
 }
 
@@ -600,6 +660,7 @@ func rejectToolAttrs(sh StageHCL, kind string) error {
 	case sh.Snapshot || sh.ReleaseConfig != "":
 		return fmt.Errorf("stage %q is type %q, so snapshot/release_config do nothing here — use type = \"release\"", sh.Name, kind)
 	}
+
 	return nil
 }
 
@@ -608,6 +669,7 @@ func commandFromList(cmd []string, rl *ResourceLimitsHCL) wire.CommandTemplate {
 	if len(cmd) > 0 {
 		tmpl.Path, tmpl.Args = cmd[0], cmd[1:]
 	}
+
 	return tmpl
 }
 
@@ -615,6 +677,7 @@ func translateResourceLimits(rl *ResourceLimitsHCL) *wire.ResourceLimits {
 	if rl == nil {
 		return nil
 	}
+
 	return &wire.ResourceLimits{
 		CPUQuota: rl.CPUQuota, CPUWeight: rl.CPUWeight,
 		MemoryMax: rl.MemoryMax, MemoryHigh: rl.MemoryHigh,
@@ -641,6 +704,7 @@ func applyDefaultLimits(p *wire.Pipeline, def *wire.ResourceLimits) {
 	if def == nil {
 		return
 	}
+
 	for i := range p.Stages {
 		// An approval stage runs no command, so limiting one would be noise in
 		// `show pipeline` describing something that never executes. Its hooks are a
@@ -648,9 +712,11 @@ func applyDefaultLimits(p *wire.Pipeline, def *wire.ResourceLimits) {
 		if p.Stages[i].Type != "approval" {
 			p.Stages[i].Command.ResourceLimits = mergeLimits(p.Stages[i].Command.ResourceLimits, def)
 		}
+
 		for j := range p.Stages[i].PreGate {
 			p.Stages[i].PreGate[j].Command.ResourceLimits = mergeLimits(p.Stages[i].PreGate[j].Command.ResourceLimits, def)
 		}
+
 		for j := range p.Stages[i].PostAction {
 			p.Stages[i].PostAction[j].Command.ResourceLimits = mergeLimits(p.Stages[i].PostAction[j].Command.ResourceLimits, def)
 		}
@@ -665,39 +731,51 @@ func mergeLimits(own, def *wire.ResourceLimits) *wire.ResourceLimits {
 		cp := *def
 		return &cp
 	}
+
 	merged := *own
 	if merged.CPUQuota == "" {
 		merged.CPUQuota = def.CPUQuota
 	}
+
 	if merged.CPUWeight == 0 {
 		merged.CPUWeight = def.CPUWeight
 	}
+
 	if merged.MemoryMax == "" {
 		merged.MemoryMax = def.MemoryMax
 	}
+
 	if merged.MemoryHigh == "" {
 		merged.MemoryHigh = def.MemoryHigh
 	}
+
 	if merged.TasksMax == 0 {
 		merged.TasksMax = def.TasksMax
 	}
+
 	if merged.IOWeight == 0 {
 		merged.IOWeight = def.IOWeight
 	}
+
 	if merged.IOReadBandwidthMax == "" {
 		merged.IOReadBandwidthMax = def.IOReadBandwidthMax
 	}
+
 	if merged.IOWriteBandwidthMax == "" {
 		merged.IOWriteBandwidthMax = def.IOWriteBandwidthMax
 	}
+
 	if merged.IOReadIOPSMax == "" {
 		merged.IOReadIOPSMax = def.IOReadIOPSMax
 	}
+
 	if merged.IOWriteIOPSMax == "" {
 		merged.IOWriteIOPSMax = def.IOWriteIOPSMax
 	}
+
 	if merged.Nice == nil {
 		merged.Nice = def.Nice
 	}
+
 	return &merged
 }

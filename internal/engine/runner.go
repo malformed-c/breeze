@@ -26,15 +26,18 @@ func procStartToken(pid int) string {
 	// fields after it are counted from the LAST ')' rather than by splitting the
 	// whole line — the standard way to parse this file.
 	line := string(data)
+
 	close := strings.LastIndexByte(line, ')')
 	if close < 0 {
 		return ""
 	}
+
 	fields := strings.Fields(line[close+1:])
 	// After comm, field 3 is state; starttime is field 22 overall, i.e. index 19 here.
 	if len(fields) < 20 {
 		return ""
 	}
+
 	return fields[19]
 }
 
@@ -47,6 +50,7 @@ func runnerAlive(pid int, startToken string) bool {
 	if pid <= 0 || startToken == "" {
 		return false
 	}
+
 	return procStartToken(pid) == startToken
 }
 
@@ -58,6 +62,7 @@ func groupAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
+
 	return syscall.Kill(-pid, 0) == nil
 }
 
@@ -84,6 +89,7 @@ func killRunner(pid int, startToken string) (anomaly string) {
 		if errors.Is(err, syscall.ESRCH) {
 			return ""
 		}
+
 		return fmt.Sprintf("could not kill the identified runner (pid %d): %v", pid, err)
 	}
 	// Prefer the cgroup: a stage script using job control scatters its children
@@ -101,6 +107,7 @@ func killRunner(pid int, startToken string) (anomaly string) {
 	if tok := procStartToken(pid); tok != "" && tok != startToken {
 		return fmt.Sprintf("pid %d was reused between killing the runner and signalling its process group — an unrelated group may have been signalled", pid)
 	}
+
 	return ""
 }
 
@@ -109,10 +116,13 @@ func killRunner(pid int, startToken string) (anomaly string) {
 // the goroutine driving the run, without e.mu held.
 func (e *Engine) recordRunner(pipeline, stage string, key StageKey, pid int) {
 	token := procStartToken(pid)
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if inst := e.getInstance(pipeline, stage, key); inst != nil {
 		inst.RunnerPID, inst.RunnerStart = pid, token
+
 		e.changed()
 	}
 }
@@ -123,8 +133,10 @@ func (e *Engine) recordRunner(pipeline, stage string, key StageKey, pid int) {
 func (e *Engine) clearRunner(pipeline, stage string, key StageKey) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if inst := e.getInstance(pipeline, stage, key); inst != nil {
 		inst.RunnerPID, inst.RunnerStart = 0, ""
+
 		e.changed()
 	}
 }
@@ -152,6 +164,7 @@ func (e *Engine) ReconcileOrphanedStages() int {
 	defer e.mu.Unlock()
 
 	n := 0
+
 	for _, inst := range e.instances {
 		if !isInFlight(inst.Status) {
 			continue
@@ -166,6 +179,7 @@ func (e *Engine) ReconcileOrphanedStages() int {
 		// Three genuinely different situations, and saying the wrong one is how a
 		// survivor stays hidden. Only the first two are things we actually know.
 		var detail string
+
 		switch {
 		case runnerAlive(inst.RunnerPID, inst.RunnerStart):
 			detail = fmt.Sprintf("its runner (pid %d) outlived the daemon and was killed — nothing could collect its result any more", inst.RunnerPID)
@@ -192,6 +206,7 @@ func (e *Engine) ReconcileOrphanedStages() int {
 			// rather than asserting nothing is running.
 			detail = "the daemon it ran under is gone; its runner was never identified, so if a process did survive it was left alone — check for a stray one before retrying"
 		}
+
 		inst.Status = StageFailed
 		inst.FailureKind = FailOrphaned
 		inst.Error = "orphaned: " + detail
@@ -206,11 +221,14 @@ func (e *Engine) ReconcileOrphanedStages() int {
 
 		e.audit("stage.orphaned", inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s %s", inst.Pipeline, inst.Stage, inst.Key, detail))
 		e.notifyStageLocked(inst.Pipeline, inst.Stage, inst.Key)
+
 		n++
 	}
+
 	if n > 0 {
 		e.changed()
 	}
+
 	return n
 }
 

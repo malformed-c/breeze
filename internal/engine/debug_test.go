@@ -7,6 +7,7 @@ import "testing"
 // (RequiredRole) still applies unconditionally.
 func TestDebugStageSkipsOrderingButNotRBAC(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{
@@ -24,6 +25,7 @@ func TestDebugStageSkipsOrderingButNotRBAC(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -37,10 +39,12 @@ func TestDebugStageSkipsOrderingButNotRBAC(t *testing.T) {
 	if err := e.AssignRole("nobody", "debugger"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	inst, err := e.StartCommandStage("ci", "debug-build", "totally-untouched-commit", "", "nobody", "")
 	if err != nil {
 		t.Fatalf("expected debug stage to run without build/review having ever happened: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected success, got %s", inst.Status)
 	}
@@ -54,19 +58,24 @@ func TestDebugEnvironmentSkipsGate2AndMonotonicOrdering(t *testing.T) {
 	e := New()
 	p := examplePipeline() // build -> review -> deploy(fan-out) -> test, envs staging/prod, prod depends on staging
 	p.Environments = append(p.Environments, "debug")
+
 	p.DebugEnvironments = []string{"debug"}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -91,6 +100,7 @@ func TestDebugEnvironmentSkipsGate2AndMonotonicOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected debug environment to allow redeploying an older commit, got error: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected success, got %s", inst.Status)
 	}
@@ -104,6 +114,7 @@ func TestDebugEnvironmentSkipsGate2AndMonotonicOrdering(t *testing.T) {
 func TestRegisterPipelineRejectsUndeclaredDebugEnvironment(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.DebugEnvironments = []string{"not-a-real-environment"}
 	if err := e.RegisterPipeline(p, "admin"); err == nil {
 		t.Fatalf("expected an undeclared debug environment to be rejected at registration")

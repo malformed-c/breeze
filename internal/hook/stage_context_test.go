@@ -12,6 +12,7 @@ func envMap(kvs []string) map[string]string {
 		k, v, _ := strings.Cut(kv, "=")
 		m[k] = v
 	}
+
 	return m
 }
 
@@ -47,15 +48,18 @@ func TestStageContextExportsEmptyValuesSoNothingIsInherited(t *testing.T) {
 	env := StageContext{Pipeline: "breeze", Stage: "build", Commit: "5e1d2ab", Actor: "breeze-main"}.Env()
 
 	var names []string
+
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
 		names = append(names, k)
 	}
+
 	for _, k := range []string{"BREEZE_ENVIRONMENT", "BREEZE_BRIEF"} {
 		if !slices.Contains(names, k) {
 			t.Errorf("%s must be exported even when empty — an absent key inherits the outer run's value", k)
 		}
 	}
+
 	got := envMap(env)
 	if got["BREEZE_ENVIRONMENT"] != "" || got["BREEZE_BRIEF"] != "" {
 		t.Errorf("empty fields must export as empty, got env=%q brief=%q", got["BREEZE_ENVIRONMENT"], got["BREEZE_BRIEF"])

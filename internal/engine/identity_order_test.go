@@ -33,6 +33,7 @@ func TestIdentitiesAreSortedByName(t *testing.T) {
 		for _, id := range e.Identities() {
 			got = append(got, id.Name)
 		}
+
 		if !slices.Equal(got, want) {
 			t.Fatalf("call %d: Identities() = %v, want %v (sorted by name)", i, got, want)
 		}

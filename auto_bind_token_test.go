@@ -7,6 +7,7 @@ import (
 func testPaths(t *testing.T) paths {
 	t.Helper()
 	dir := t.TempDir()
+
 	return paths{dir: dir, identDir: dir + "/ident"}
 }
 
@@ -22,6 +23,7 @@ func TestBindSessionTokenAndResolveTokenAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTokenAuto: %v", err)
 	}
+
 	if got != "admin-token-value" {
 		t.Fatalf("expected the bound token, got %q", got)
 	}
@@ -31,6 +33,7 @@ func TestBindSessionTokenAndResolveTokenAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTokenAuto: %v", err)
 	}
+
 	if got != "" {
 		t.Fatalf("expected no token for a mismatched identity, got %q", got)
 	}
@@ -40,6 +43,7 @@ func TestBindSessionTokenAndResolveTokenAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTokenAuto: %v", err)
 	}
+
 	if got != "explicit-token" {
 		t.Fatalf("expected the explicit token to win, got %q", got)
 	}
@@ -53,6 +57,7 @@ func TestResolveTokenAutoWithoutBindingIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveTokenAuto: %v", err)
 	}
+
 	if got != "" {
 		t.Fatalf("expected no token without any prior binding, got %q", got)
 	}
@@ -69,6 +74,7 @@ func TestBindSessionTokenRebindsOnReregister(t *testing.T) {
 	if got, _ := resolveTokenAuto(p, flagSet{}, "alice"); got != "" {
 		t.Fatalf("expected alice's binding to be replaced, got %q", got)
 	}
+
 	if got, _ := resolveTokenAuto(p, flagSet{}, "bob"); got != "bob-token" {
 		t.Fatalf("expected bob's token, got %q", got)
 	}

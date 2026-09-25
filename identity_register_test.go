@@ -16,10 +16,12 @@ func newTestDaemon() *daemonServer {
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
+
 	data, err := json.Marshal(v)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
+
 	return data
 }
 
@@ -37,6 +39,7 @@ func TestIdentityRegisterRotationRequiresAuth(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected fresh registration to succeed: %s", resp.Error)
 	}
+
 	firstAdmin, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 
 	// Re-registering the SAME name with no auth at all must now be rejected.
@@ -56,6 +59,7 @@ func TestIdentityRegisterRotationRequiresAuth(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("expected self-service rotation with the correct current token to succeed: %s", resp.Error)
 	}
+
 	rotated, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 	if rotated.Token == firstAdmin.Token {
 		t.Fatalf("expected rotation to actually mint a new token")
@@ -116,6 +120,7 @@ func TestTheAdminNameIsNotClaimableAnonymously(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("bootstrap registration failed: %s", resp.Error)
 	}
+
 	boss, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 
 	// A second identity proves the store is populated by someone other than an admin.
@@ -123,6 +128,7 @@ func TestTheAdminNameIsNotClaimableAnonymously(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("registering an ordinary fresh name must still need no auth: %s", resp.Error)
 	}
+
 	alice, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 
 	// Anonymous claim on the reserved name: refused, and the refusal says WHY this
@@ -132,6 +138,7 @@ func TestTheAdminNameIsNotClaimableAnonymously(t *testing.T) {
 	if resp.OK {
 		t.Fatal(`an anonymous registration must not be able to claim the "admin" name`)
 	}
+
 	for _, want := range []string{"reserved", "admin"} {
 		if !strings.Contains(resp.Error, want) {
 			t.Errorf("refusal %q should mention %q", resp.Error, want)
@@ -153,6 +160,7 @@ func TestTheAdminNameIsNotClaimableAnonymously(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("an existing admin must be able to create the admin identity: %s", resp.Error)
 	}
+
 	created, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 	if len(created.Roles) != 0 {
 		t.Fatalf("creating an identity named admin must not itself grant the role, got %v", created.Roles)
@@ -170,6 +178,7 @@ func TestRegisterSaysWhatTheIdentityCanDo(t *testing.T) {
 	// The bootstrap identity is auto-granted admin — the response has to show it,
 	// because that grant is otherwise invisible at the exact moment it happens.
 	resp := d.dispatch(wire.Request{Op: wire.OpIdentityRegister, Payload: mustMarshal(t, wire.IdentityRegisterRequest{Name: "boss"})})
+
 	bootstrap, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 	if !slices.Contains(bootstrap.Roles, "admin") {
 		t.Fatalf("bootstrap response must report the auto-granted admin role, got %v", bootstrap.Roles)
@@ -177,6 +186,7 @@ func TestRegisterSaysWhatTheIdentityCanDo(t *testing.T) {
 
 	// An ordinary fresh name gets none, and says so.
 	resp = d.dispatch(wire.Request{Op: wire.OpIdentityRegister, Payload: mustMarshal(t, wire.IdentityRegisterRequest{Name: "alice"})})
+
 	plain, _ := decodePayload[wire.IdentityRegisterResponse](resp)
 	if len(plain.Roles) != 0 {
 		t.Fatalf("a fresh non-bootstrap name must hold no roles, got %v", plain.Roles)

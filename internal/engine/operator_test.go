@@ -8,9 +8,11 @@ import (
 func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -33,6 +35,7 @@ func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) 
 	if err := e.RegisterPipeline(failing, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("flaky", "build", "def456", "", "ci", ""); err != nil {
 		t.Fatalf("build (expected to fail as data, not error): %v", err)
 	}
@@ -42,6 +45,7 @@ func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) 
 	if len(surface.PendingApprovals) != 1 {
 		t.Fatalf("expected exactly 1 pending approval, got %d: %+v", len(surface.PendingApprovals), surface.PendingApprovals)
 	}
+
 	pa := surface.PendingApprovals[0]
 	if pa.Pipeline != "release" || pa.Stage != "review" || pa.ApprovalsGiven != 1 || pa.ApprovalsRequired != 2 || pa.ApproverRole != "reviewer" {
 		t.Fatalf("unexpected pending approval: %+v", pa)
@@ -50,6 +54,7 @@ func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) 
 	if len(surface.RecentFailures) != 1 {
 		t.Fatalf("expected exactly 1 recent failure, got %d: %+v", len(surface.RecentFailures), surface.RecentFailures)
 	}
+
 	rf := surface.RecentFailures[0]
 	if rf.Pipeline != "flaky" || rf.Stage != "build" || rf.Key.Commit != "def456" || rf.Status != StageFailed {
 		t.Fatalf("unexpected recent failure: %+v", rf)
@@ -64,6 +69,7 @@ func TestOperatorSurfaceReportsPendingApprovalsRunningAndFailures(t *testing.T) 
 
 func TestOperatorSurfaceShowsRunningStage(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name:     "ci",
 		Stages:   []StageDef{{Name: "build", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/sleep", Args: []string{"0.3"}}, CommandPolicy: &CommandPolicy{}}},
@@ -74,6 +80,7 @@ func TestOperatorSurfaceShowsRunningStage(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+
 	go func() {
 		e.StartCommandStage("ci", "build", "abc", "", "ci-agent", "")
 		close(done)
@@ -89,12 +96,15 @@ func TestOperatorSurfaceShowsRunningStage(t *testing.T) {
 				found = true
 			}
 		}
+
 		if !found {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected the in-flight build to show up in OperatorSurface().Running")
 	}
+
 	<-done
 }

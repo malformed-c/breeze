@@ -40,6 +40,7 @@ func (id *Identity) MessTarget() string {
 	if id.MessAgent != "" {
 		return id.MessAgent
 	}
+
 	return id.Name
 }
 
@@ -312,6 +313,7 @@ func (p *Pipeline) StageIndex(name string) int {
 			return i
 		}
 	}
+
 	return -1
 }
 
@@ -328,12 +330,15 @@ func (p *Pipeline) TerminalStages() []int {
 			needed[j] = true
 		}
 	}
+
 	var out []int
+
 	for i := range p.Stages {
 		if i >= p.FanOutAt && !needed[i] {
 			out = append(out, i)
 		}
 	}
+
 	return out
 }
 
@@ -348,14 +353,17 @@ func (p *Pipeline) NeedIndices(i int) []int {
 		if i == 0 {
 			return nil
 		}
+
 		return []int{i - 1}
 	}
+
 	out := make([]int, 0, len(p.Stages[i].Needs))
 	for _, name := range p.Stages[i].Needs {
 		if j := p.StageIndex(name); j >= 0 && j < i {
 			out = append(out, j)
 		}
 	}
+
 	return out
 }
 
@@ -370,6 +378,7 @@ func (k StageKey) String() string {
 	if k.Environment == "" {
 		return k.Commit
 	}
+
 	return k.Commit + "@" + k.Environment
 }
 
@@ -382,6 +391,7 @@ func (k StageKey) ShortString() string {
 	if k.Environment == "" {
 		return c
 	}
+
 	return c + "@" + k.Environment
 }
 
@@ -526,6 +536,7 @@ func (s *StageInstance) HasApprovalFrom(identity string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 

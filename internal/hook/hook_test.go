@@ -21,10 +21,12 @@ func TestRunArgvInjectionSafety(t *testing.T) {
 	for _, val := range dangerous {
 		t.Run(val, func(t *testing.T) {
 			tmpl := Template{Path: "/bin/echo", Args: []string{"{commit}"}, Timeout: 2 * time.Second}
+
 			res := Run(context.Background(), tmpl, Params{"commit": val})
 			if res.Err != nil {
 				t.Fatalf("unexpected error: %v", res.Err)
 			}
+
 			got := strings.TrimSuffix(string(res.Stdout), "\n")
 			if got != val {
 				t.Fatalf("expected literal passthrough %q, got %q (proves shell interpretation occurred)", val, got)
@@ -38,9 +40,11 @@ func TestRunTimeoutKillsProcessGroup(t *testing.T) {
 	start := time.Now()
 	res := Run(context.Background(), tmpl, Params{})
 	elapsed := time.Since(start)
+
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut=true")
 	}
+
 	if elapsed > 2*time.Second {
 		t.Fatalf("expected timeout to kill promptly, took %v", elapsed)
 	}
@@ -54,11 +58,14 @@ func TestRunTimeoutKillsGrandchild(t *testing.T) {
 	// direct child.
 	script := "sh -c 'sleep 3 && touch " + marker + "' & sleep 5"
 	tmpl := Template{Path: "/bin/sh", Args: []string{"-c", script}, Timeout: 200 * time.Millisecond}
+
 	res := Run(context.Background(), tmpl, Params{})
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut=true")
 	}
+
 	time.Sleep(2 * time.Second) // long enough for the grandchild to have fired if it survived
+
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatalf("grandchild survived timeout and created marker file — process group was not killed")
 	}
@@ -66,10 +73,12 @@ func TestRunTimeoutKillsGrandchild(t *testing.T) {
 
 func TestRunExitCodeIsData(t *testing.T) {
 	tmpl := Template{Path: "/bin/sh", Args: []string{"-c", "exit 7"}, Timeout: time.Second}
+
 	res := Run(context.Background(), tmpl, Params{})
 	if res.Err != nil {
 		t.Fatalf("nonzero exit should not populate Err: %v", res.Err)
 	}
+
 	if res.ExitCode != 7 {
 		t.Fatalf("expected exit code 7, got %d", res.ExitCode)
 	}
@@ -77,6 +86,7 @@ func TestRunExitCodeIsData(t *testing.T) {
 
 func TestRunNonexistentBinaryIsDistinctErr(t *testing.T) {
 	tmpl := Template{Path: "/no/such/binary-xyz", Timeout: time.Second}
+
 	res := Run(context.Background(), tmpl, Params{})
 	if res.Err == nil {
 		t.Fatalf("expected a start error for a nonexistent binary")
@@ -85,10 +95,12 @@ func TestRunNonexistentBinaryIsDistinctErr(t *testing.T) {
 
 func TestValidateArgsRejectsUnknownPlaceholder(t *testing.T) {
 	known := map[string]bool{"commit": true, "environment": true}
+
 	tmpl := Template{Path: "/bin/echo", Args: []string{"{commit}", "{comit}"}}
 	if err := ValidateArgs(tmpl, known); err == nil {
 		t.Fatalf("expected unknown placeholder {comit} to be rejected")
 	}
+
 	tmpl2 := Template{Path: "/bin/echo", Args: []string{"{commit}", "{environment}"}}
 	if err := ValidateArgs(tmpl2, known); err != nil {
 		t.Fatalf("expected known placeholders to validate: %v", err)
@@ -109,6 +121,7 @@ func TestWrapWithSystemdRunBuildsExpectedArgv(t *testing.T) {
 	if path != "systemd-run" {
 		t.Fatalf("expected wrapper binary systemd-run, got %q", path)
 	}
+
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--scope", "--quiet", "--collect",
 		"--property=CPUQuota=200%", "--property=MemoryMax=1G",
@@ -126,6 +139,7 @@ func TestWrapWithSystemdRunBuildsExpectedArgv(t *testing.T) {
 	if path2 != "systemd-run" {
 		t.Fatalf("expected systemd-run, got %q", path2)
 	}
+
 	for _, a := range args2 {
 		if strings.HasPrefix(a, "--property=") {
 			t.Fatalf("expected no --property flags for an all-zero ResourceLimits, got %v", args2)
@@ -140,9 +154,11 @@ func TestWrapWithSystemdRunBuildsExpectedArgv(t *testing.T) {
 // rather than failing on.
 func requireUserSystemdRun(t *testing.T) {
 	t.Helper()
+
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		t.Skip("systemd-run not on PATH")
 	}
+
 	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
 		t.Skipf("systemd-run --user --scope not usable in this environment: %v", err)
 	}
@@ -156,17 +172,21 @@ func requireUserSystemdRun(t *testing.T) {
 // in (proving --quiet suppresses systemd-run's own "Running as unit..." line).
 func TestRunWithResourceLimits(t *testing.T) {
 	requireUserSystemdRun(t)
+
 	tmpl := Template{
 		Path: "/bin/sh", Args: []string{"-c", "echo hello-from-scope; exit 5"}, Timeout: 5 * time.Second,
 		ResourceLimits: &ResourceLimits{MemoryMax: "256M"},
 	}
+
 	res := Run(context.Background(), tmpl, Params{})
 	if res.Err != nil {
 		t.Fatalf("unexpected start error: %v", res.Err)
 	}
+
 	if res.ExitCode != 5 {
 		t.Fatalf("expected the wrapped command's own exit code 5, got %d (stdout=%q stderr=%q)", res.ExitCode, res.Stdout, res.Stderr)
 	}
+
 	if got := strings.TrimSpace(string(res.Stdout)); got != "hello-from-scope" {
 		t.Fatalf("expected clean stdout %q, got %q (systemd-run banner leaking into capture?)", "hello-from-scope", got)
 	}
@@ -178,6 +198,7 @@ func TestRunWithResourceLimits(t *testing.T) {
 // execve()s in place, not through a supervisor PID the kill would miss.
 func TestRunWithResourceLimitsTimeoutStillKillsProcessGroup(t *testing.T) {
 	requireUserSystemdRun(t)
+
 	tmpl := Template{
 		Path: "/bin/sh", Args: []string{"-c", "sleep 5"}, Timeout: 200 * time.Millisecond,
 		ResourceLimits: &ResourceLimits{MemoryMax: "256M"},
@@ -185,9 +206,11 @@ func TestRunWithResourceLimitsTimeoutStillKillsProcessGroup(t *testing.T) {
 	start := time.Now()
 	res := Run(context.Background(), tmpl, Params{})
 	elapsed := time.Since(start)
+
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut=true")
 	}
+
 	if elapsed > 3*time.Second {
 		t.Fatalf("expected timeout to kill promptly through the systemd-run wrapper, took %v", elapsed)
 	}
@@ -200,6 +223,7 @@ func TestWrapWithSystemdRunPassesWeightsAndSoftLimits(t *testing.T) {
 	_, args := WrapWithSystemdRun("/bin/true", nil, &ResourceLimits{
 		CPUWeight: 50, MemoryHigh: "4G", MemoryMax: "8G",
 	})
+
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"--property=CPUWeight=50", "--property=MemoryHigh=4G", "--property=MemoryMax=8G"} {
 		if !strings.Contains(joined, want) {
@@ -217,6 +241,7 @@ func TestEmptyResourceLimitsDoNotWrap(t *testing.T) {
 			t.Fatalf("%+v should count as zero", rl)
 		}
 	}
+
 	if (&ResourceLimits{CPUWeight: 1}).IsZero() {
 		t.Fatalf("a set field must not count as zero")
 	}
@@ -228,6 +253,7 @@ func TestEmptyResourceLimitsDoNotWrap(t *testing.T) {
 	if res.Err != nil || res.ExitCode != 0 {
 		t.Fatalf("an empty limits block must not change how the command runs: %+v", res)
 	}
+
 	if got := strings.TrimSpace(string(res.Stdout)); got != "unwrapped" {
 		t.Fatalf("stdout = %q", got)
 	}
@@ -244,6 +270,7 @@ func TestRunPipesStdinAndClosesIt(t *testing.T) {
 	if res.Err != nil || res.TimedOut {
 		t.Fatalf("stdin-reading command must complete: %+v", res)
 	}
+
 	got := strings.TrimSpace(string(res.Stdout))
 	if got != `{"status":"failed"} <- eof reached` {
 		t.Fatalf("stdout = %q", got)
@@ -259,6 +286,7 @@ func TestRunWithoutStdinDoesNotHang(t *testing.T) {
 	if res.TimedOut {
 		t.Fatalf("a command reading stdin with none supplied must not hang")
 	}
+
 	if len(res.Stdout) != 0 {
 		t.Fatalf("stdout = %q, want empty", res.Stdout)
 	}
@@ -300,6 +328,7 @@ func TestRunInlineScript(t *testing.T) {
 					t.Skipf("%s not available", c.interpreter[0])
 				}
 			}
+
 			res := Run(context.Background(), Template{
 				Script: c.script, Interpreter: c.interpreter,
 				Stdin: []byte(c.stdin), Timeout: 10 * time.Second,
@@ -307,6 +336,7 @@ func TestRunInlineScript(t *testing.T) {
 			if res.Err != nil || res.ExitCode != 0 {
 				t.Fatalf("script failed: %+v stderr=%s", res, res.Stderr)
 			}
+
 			if got := strings.TrimSpace(string(res.Stdout)); got != c.want {
 				t.Fatalf("stdout = %q, want %q", got, c.want)
 			}
@@ -326,6 +356,7 @@ func TestInlineScriptDoesNotSubstitutePlaceholders(t *testing.T) {
 	if res.Err != nil || res.ExitCode != 0 {
 		t.Fatalf("script failed: %+v", res)
 	}
+
 	got := strings.TrimSpace(string(res.Stdout))
 	if got != "literal: {commit}" {
 		t.Fatalf("stdout = %q — a placeholder must stay literal inside a script body", got)
@@ -341,10 +372,12 @@ func TestInlineScriptTempFileIsRemoved(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("script failed: %+v", res)
 	}
+
 	path := strings.TrimSpace(string(res.Stdout))
 	if path == "" {
 		t.Fatalf("expected the script path on stdout")
 	}
+
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("script temp file %s still exists after the run (err=%v)", path, err)
 	}
@@ -355,6 +388,7 @@ func TestInlineScriptTempFileIsRemoved(t *testing.T) {
 // image that a restart is about to replace.
 func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
 	dir := t.TempDir()
+
 	res := Run(context.Background(), Template{
 		Path: "/bin/sh", Args: []string{"-c", "echo to-stdout; echo to-stderr >&2; exit 3"},
 		Timeout: 10 * time.Second, OutputDir: dir,
@@ -362,6 +396,7 @@ func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("run: %v", res.Err)
 	}
+
 	if res.ExitCode != 3 {
 		t.Fatalf("exit = %d, want 3", res.ExitCode)
 	}
@@ -369,6 +404,7 @@ func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
 	if got := strings.TrimSpace(string(res.Stdout)); got != "to-stdout" {
 		t.Fatalf("stdout = %q", got)
 	}
+
 	if got := strings.TrimSpace(string(res.Stderr)); got != "to-stderr" {
 		t.Fatalf("stderr = %q", got)
 	}
@@ -378,6 +414,7 @@ func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
+
 		if strings.TrimSpace(string(body)) != want {
 			t.Fatalf("%s file = %q, want %q", name, body, want)
 		}
@@ -390,23 +427,28 @@ func TestRunWritesOutputToFilesWhenAsked(t *testing.T) {
 func TestFileOutputSurvivesTheParentLettingGo(t *testing.T) {
 	dir := t.TempDir()
 	cmd := exec.Command("/bin/sh", "-c", "echo first; sleep 0.3; echo second")
+
 	of, err := openOutputFiles(dir)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+
 	cmd.Stdout, cmd.Stderr = of.stdout, of.stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	// Drop every descriptor this process holds while the child is still writing.
 	of.close()
+
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("the child must not die when the parent closes its copies: %v", err)
 	}
+
 	body, err := os.ReadFile(filepath.Join(dir, StdoutFile))
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
 	if !strings.Contains(string(body), "second") {
 		t.Fatalf("output written AFTER the parent let go was lost: %q", body)
 	}
@@ -417,10 +459,12 @@ func TestFileOutputSurvivesTheParentLettingGo(t *testing.T) {
 // property and a scope adopts processes someone else started.
 func TestNiceWrapsWithNiceNotASystemdProperty(t *testing.T) {
 	n := 15
+
 	path, args := WrapWithNice("/bin/build", []string{"x"}, &n)
 	if path != "nice" {
 		t.Fatalf("path = %q, want nice", path)
 	}
+
 	want := []string{"-n", "15", "--", "/bin/build", "x"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Fatalf("args = %v, want %v", args, want)
@@ -438,13 +482,16 @@ func TestNiceWrapsWithNiceNotASystemdProperty(t *testing.T) {
 // which would turn a working stage into a broken one.
 func TestNiceAloneDoesNotRequireASystemdScope(t *testing.T) {
 	n := 10
+
 	nice := &ResourceLimits{Nice: &n}
 	if nice.IsZero() {
 		t.Fatal("a nice-only block is not empty")
 	}
+
 	if nice.NeedsCgroup() {
 		t.Fatal("a nice-only block must not require the systemd-run wrapper")
 	}
+
 	if !(&ResourceLimits{MemoryHigh: "1G"}).NeedsCgroup() {
 		t.Fatal("a cgroup limit must still require the wrapper")
 	}
@@ -457,19 +504,24 @@ func TestNegativeNiceIsReportedAsInapplicableForANonRootDaemon(t *testing.T) {
 	if ok, _ := NicenessApplicable(&pos); !ok {
 		t.Error("a positive nice needs no privilege and must always be applicable")
 	}
+
 	if ok, _ := NicenessApplicable(nil); !ok {
 		t.Error("no niceness requested must never be a problem")
 	}
+
 	ok, why := NicenessApplicable(&neg)
 	if os.Geteuid() == 0 {
 		if !ok {
 			t.Error("root can lower niceness")
 		}
+
 		return
 	}
+
 	if ok {
 		t.Fatal("a non-root daemon cannot raise priority and must say so")
 	}
+
 	if !strings.Contains(why, "Permission denied") {
 		t.Errorf("the reason must quote what actually happens, got %q", why)
 	}

@@ -39,8 +39,10 @@ func actorOf(opts []ActorOption) string {
 	for _, fn := range opts {
 		fn(&o)
 	}
+
 	if o.actor == "" {
 		return "unattributed"
 	}
+
 	return o.actor
 }

@@ -28,9 +28,11 @@ func TestDecideOutcomeMatrix(t *testing.T) {
 	} {
 		inst := &StageInstance{}
 		decideOutcome(inst, tc.res, tc.cancelled, FailStart)
+
 		if inst.Status != tc.want || inst.FailureKind != tc.kind {
 			t.Errorf("%s: got %s/%s, want %s/%s", tc.name, inst.Status, inst.FailureKind, tc.want, tc.kind)
 		}
+
 		if inst.ExitCode != tc.res.ExitCode {
 			t.Errorf("%s: exit code %d not carried through (got %d)", tc.name, tc.res.ExitCode, inst.ExitCode)
 		}
@@ -43,6 +45,7 @@ func TestDecideOutcomeMatrix(t *testing.T) {
 func TestDecideOutcomeNamesTheLaunchFailurePerSite(t *testing.T) {
 	inst := &StageInstance{}
 	decideOutcome(inst, hook.Result{Err: errors.New("wait4: no child")}, false, FailOrphaned)
+
 	if inst.FailureKind != FailOrphaned {
 		t.Errorf("adopted launch failure should be orphaned, got %s", inst.FailureKind)
 	}
@@ -63,9 +66,11 @@ func TestOutcomeInvariantForcesAGreenOverRedToFailed(t *testing.T) {
 	if inst.Status != StageFailed || inst.FailureKind != FailCommand {
 		t.Fatalf("succeeded+exit 1 must be forced to failed/command, got %s/%s", inst.Status, inst.FailureKind)
 	}
+
 	if !strings.Contains(inst.Error, "exit code 1") {
 		t.Errorf("the correction must say what it corrected, got %q", inst.Error)
 	}
+
 	ev := find(t, *got, "stage.outcome_invariant")
 	if !strings.Contains(ev.Detail, "exitCode=1") || ev.Actor != "alice" {
 		t.Errorf("the violation must be audited with the code and the actor, got %+v", ev)
@@ -80,6 +85,7 @@ func TestOutcomeInvariantLeavesLegitimateStatesAlone(t *testing.T) {
 	e, got := auditing(t)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	for _, inst := range []*StageInstance{
 		{Status: StageSucceeded, ExitCode: 0},
 		{Status: StageFailed, ExitCode: 0, FailureKind: FailTimedOut},
@@ -89,10 +95,12 @@ func TestOutcomeInvariantLeavesLegitimateStatesAlone(t *testing.T) {
 	} {
 		st, kind, code := inst.Status, inst.FailureKind, inst.ExitCode
 		e.checkOutcome(inst)
+
 		if inst.Status != st || inst.FailureKind != kind || inst.ExitCode != code || inst.Error != "" {
 			t.Errorf("legitimate state was altered: %s/%s/%d -> %s/%s/%d %q", st, kind, code, inst.Status, inst.FailureKind, inst.ExitCode, inst.Error)
 		}
 	}
+
 	for _, ev := range *got {
 		if ev.Kind == "stage.outcome_invariant" {
 			t.Fatalf("invariant fired on a legitimate state: %+v", ev)

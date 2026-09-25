@@ -76,8 +76,11 @@ func TestPollUntilUsesTheBudgetItWasGiven(t *testing.T) {
 		{450 * time.Millisecond, 150 * time.Millisecond},
 	} {
 		start := time.Now()
+
 		probesFor(t, c.budget, c.interval)
+
 		elapsed := time.Since(start)
+
 		want := time.Duration(math.Floor(float64(c.budget)/float64(c.interval))) * c.interval
 		if elapsed < want {
 			t.Errorf("budget=%s interval=%s: gave up after %s, before the %d whole intervals its budget owes — it is ending early, and the give-up alone looks exactly like a condition met on time",
@@ -102,7 +105,9 @@ func TestPollUntilKeepsPollingWhileTheBudgetLasts(t *testing.T) {
 // a count from a run that did not give up is not a count about the budget.
 func probesFor(t *testing.T, budget, interval time.Duration) int64 {
 	t.Helper()
+
 	var probes atomic.Int64
+
 	_, err := pollUntil(context.Background(), budget, interval, func(context.Context) (struct{}, bool, error) {
 		probes.Add(1)
 		return struct{}{}, false, nil
@@ -110,6 +115,7 @@ func probesFor(t *testing.T, budget, interval time.Duration) int64 {
 	if !errors.Is(err, resilience.ErrGaveUp) {
 		t.Fatalf("budget=%s interval=%s: a condition that never held must give up, got %v", budget, interval, err)
 	}
+
 	return probes.Load()
 }
 
@@ -136,7 +142,9 @@ func TestPollUntilGivesUpAsOneErrorClass(t *testing.T) {
 // broken" (not worth 15 seconds of anyone's time).
 func TestPollUntilStopsOnAProbeErrorWithoutRetrying(t *testing.T) {
 	broken := errors.New("EBADF")
+
 	var probes atomic.Int64
+
 	_, err := pollUntil(context.Background(), time.Second, 10*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		probes.Add(1)
 		return struct{}{}, false, broken
@@ -144,6 +152,7 @@ func TestPollUntilStopsOnAProbeErrorWithoutRetrying(t *testing.T) {
 	if !errors.Is(err, broken) {
 		t.Fatalf("a probe error must come back untouched, got %v", err)
 	}
+
 	if got := probes.Load(); got != 1 {
 		t.Errorf("a probe error must not be retried, got %d probes", got)
 	}
@@ -161,14 +170,17 @@ func TestPollUntilReturnsTheProbeValue(t *testing.T) {
 		if probes.Add(1) < 2 {
 			return "", false, nil
 		}
+
 		return "connected", true, nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	if got != "connected" {
 		t.Errorf("got %q, want the probe's value", got)
 	}
+
 	if probes.Load() != 2 {
 		t.Errorf("expected to stop at the second probe, got %d", probes.Load())
 	}
@@ -181,7 +193,9 @@ func TestPollUntilReturnsTheProbeValue(t *testing.T) {
 func TestPollUntilStopsOnACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
 	var probes atomic.Int64
+
 	_, err := pollUntil(ctx, time.Minute, 10*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		probes.Add(1)
 		return struct{}{}, false, nil
@@ -189,6 +203,7 @@ func TestPollUntilStopsOnACancelledContext(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled context must stop the poll, got %v", err)
 	}
+
 	if probes.Load() != 0 {
 		t.Errorf("nothing should be probed after cancellation, got %d", probes.Load())
 	}
@@ -201,6 +216,7 @@ func TestPollUntilStopsOnACancelledContext(t *testing.T) {
 // give-up, which is a supported request rather than a bug.
 func TestAnIntervalLongerThanTheBudgetProbesOnceAndGivesUp(t *testing.T) {
 	var probes atomic.Int64
+
 	_, err := pollUntil(context.Background(), 50*time.Millisecond, 100*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		probes.Add(1)
 		return struct{}{}, false, nil
@@ -208,6 +224,7 @@ func TestAnIntervalLongerThanTheBudgetProbesOnceAndGivesUp(t *testing.T) {
 	if !errors.Is(err, resilience.ErrGaveUp) {
 		t.Fatalf("expected an honest give-up, got %v", err)
 	}
+
 	if probes.Load() != 1 {
 		t.Errorf("expected exactly one probe, got %d", probes.Load())
 	}

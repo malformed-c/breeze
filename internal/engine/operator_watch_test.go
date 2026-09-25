@@ -11,6 +11,7 @@ import (
 // timer.
 func TestSubscribeOperatorChangesWakesOnMutation(t *testing.T) {
 	e := New()
+
 	changed, cancel := e.SubscribeOperatorChanges()
 	defer cancel()
 
@@ -37,6 +38,7 @@ func TestSubscribeOperatorChangesWakesOnMutation(t *testing.T) {
 // re-fetching the current OperatorSurface().
 func TestSubscribeOperatorChangesCoalesces(t *testing.T) {
 	e := New()
+
 	changed, cancel := e.SubscribeOperatorChanges()
 	defer cancel()
 
@@ -51,6 +53,7 @@ func TestSubscribeOperatorChangesCoalesces(t *testing.T) {
 	default:
 		t.Fatalf("expected at least one pending wake after 3 mutations")
 	}
+
 	select {
 	case <-changed:
 		t.Fatalf("expected coalescing: no second pending wake queued")
@@ -82,6 +85,7 @@ func TestSubscribeOperatorChangesCancelStopsFurtherWakes(t *testing.T) {
 	e.mu.Lock()
 	n := len(e.operatorSubs)
 	e.mu.Unlock()
+
 	if n != 0 {
 		t.Fatalf("expected cancel to remove the subscription, got %d still registered", n)
 	}

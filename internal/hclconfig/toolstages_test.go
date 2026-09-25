@@ -8,13 +8,16 @@ import (
 
 func argvOf(t *testing.T, sh StageHCL) []string {
 	t.Helper()
+
 	sd, err := translateStage(sh)
 	if err != nil {
 		t.Fatalf("translateStage(%q): %v", sh.Type, err)
 	}
+
 	if sd.Type != "command" {
 		t.Fatalf("tool stages must reach the engine as command stages, got %q", sd.Type)
 	}
+
 	return append([]string{sd.Command.Path}, sd.Command.Args...)
 }
 
@@ -27,6 +30,7 @@ func TestTaskStageBuildsItsArgv(t *testing.T) {
 
 func TestTaskStageWithAnExplicitTaskfile(t *testing.T) {
 	got := argvOf(t, StageHCL{Name: "build", Type: "task", Task: "ci:build", Taskfile: "build/Taskfile.yml"})
+
 	want := []string{"task", "--taskfile", "build/Taskfile.yml", "ci:build"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv = %v, want %v", got, want)
@@ -49,10 +53,12 @@ func TestReleaseStageDefaultsToARealRelease(t *testing.T) {
 
 func TestReleaseSnapshotPublishesNothing(t *testing.T) {
 	got := argvOf(t, StageHCL{Name: "release", Type: "release", Snapshot: true, ReleaseConfig: ".goreleaser.yml"})
+
 	want := []string{"goreleaser", "build", "--snapshot", "--clean", "--config", ".goreleaser.yml"}
 	if !slices.Equal(got, want) {
 		t.Errorf("argv = %v, want %v", got, want)
 	}
+
 	if slices.Contains(got, "release") {
 		t.Error("a snapshot must never invoke goreleaser's publishing path")
 	}
@@ -76,6 +82,7 @@ func TestTaskStageNeedsATarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("a task stage naming no target must be refused")
 	}
+
 	if !strings.Contains(err.Error(), "task = ") {
 		t.Errorf("the refusal should show the attribute to add, got: %v", err)
 	}
@@ -103,6 +110,7 @@ func TestUnknownTypeNamesTheRealOptions(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error for an unknown type")
 	}
+
 	for _, want := range []string{"task", "release", "command", "approval", "deploy"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error should list %q as a valid type, got: %v", want, err)

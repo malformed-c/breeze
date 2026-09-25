@@ -32,6 +32,7 @@ func TestValidateResourceLimitsRejectsMalformed(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected %+v to be rejected", c.rl)
 			}
+
 			if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("error should name the offending field %q, got %q", c.want, err)
 			}
@@ -97,6 +98,7 @@ func TestSetDefaultResourceLimitsValidates(t *testing.T) {
 	if err := e.SetDefaultResourceLimits(&hook.ResourceLimits{CPUQuota: "1400"}); err == nil {
 		t.Fatalf("a malformed machine floor must be refused, not silently installed")
 	}
+
 	if e.DefaultResourceLimits() != nil {
 		t.Fatalf("a refused floor must not be installed")
 	}
@@ -105,6 +107,7 @@ func TestSetDefaultResourceLimitsValidates(t *testing.T) {
 	if err := e.SetDefaultResourceLimits(&hook.ResourceLimits{}); err != nil {
 		t.Fatalf("an empty block should be accepted as 'no floor': %v", err)
 	}
+
 	if e.DefaultResourceLimits() != nil {
 		t.Fatalf("an empty block must clear the floor, not set an empty one")
 	}
@@ -147,9 +150,11 @@ func TestMergeResourceLimitsIsPerField(t *testing.T) {
 	if got := MergeResourceLimits(nil, machine); got.CPUWeight != 20 {
 		t.Fatalf("nil own must take the default whole: %+v", got)
 	}
+
 	if got := MergeResourceLimits(perDaemon, nil); got.MemoryHigh != "16G" || got.CPUWeight != 0 {
 		t.Fatalf("nil default must leave own alone: %+v", got)
 	}
+
 	if machine.MemoryHigh != "4G" || perDaemon.CPUWeight != 0 {
 		t.Fatalf("merging must not mutate its inputs")
 	}
@@ -196,6 +201,7 @@ func TestIOCapsReachTheSystemdRunArgv(t *testing.T) {
 	_, args := hook.WrapWithSystemdRun("/bin/true", nil, &hook.ResourceLimits{
 		IOReadBandwidthMax: "/dev/sda 50M", IOWriteIOPSMax: "/var/lib 900",
 	})
+
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"--property=IOReadBandwidthMax=/dev/sda 50M",
@@ -214,6 +220,7 @@ func TestIOCapAloneIsNotZero(t *testing.T) {
 	if rl.IsZero() {
 		t.Fatal("a block setting only an IO cap must still wrap the command")
 	}
+
 	if !(&hook.ResourceLimits{}).IsZero() {
 		t.Fatal("an empty block must stay zero")
 	}
@@ -227,6 +234,7 @@ func TestEffectiveLimitsReachTheStageEnvironment(t *testing.T) {
 	env := limitEnv(&hook.ResourceLimits{
 		CPUQuota: "1400%", MemoryHigh: "12G", MemoryMax: "16G", TasksMax: 1024,
 	})
+
 	joined := strings.Join(env, " ")
 	for _, want := range []string{
 		"BREEZE_CPU_QUOTA=1400%", "BREEZE_MEMORY_HIGH=12G",
@@ -264,9 +272,11 @@ func TestEffectiveLimitsReachTheStageEnvironment(t *testing.T) {
 	if !strings.Contains(only, "BREEZE_CPU_QUOTA=200%") || !strings.Contains(only, "BREEZE_CPU_QUOTA_PERCENT=200") {
 		t.Errorf("a set limit must export both its notation and its integer, got %q", only)
 	}
+
 	if strings.Contains(only, "BREEZE_MEMORY") || strings.Contains(only, "BREEZE_TASKS") {
 		t.Errorf("an unset limit must not appear at all, got %q", only)
 	}
+
 	if got := limitEnv(nil); got != nil {
 		t.Errorf("no limits means no variables, got %v", got)
 	}

@@ -1,0 +1,15 @@
+# golangci-lint configuration for breeze.
+#
+# CI does not run the linter (ci/test.sh is `go test ./... -race -count=1`), so
+# this is for local runs and editor integration. The default linter set stays on
+# — this file ADDS wsl_v5 rather than replacing the baseline.
+version: "2"
+
+linters:
+  enable:
+    # wsl_v5 governs blank lines between statements. breeze deliberately cuddles
+    # related ones — `err := f()` immediately above `if err != nil` — and does so
+    # consistently, so this linter disagreed with the house style in 3,286 places.
+    # wsl_v5 has only two knobs in v2 (allow-first-in-block, branch-max-lines); the
+    # cuddling rules are not configurable, so the volume could not be tuned away.
+    - wsl_v5

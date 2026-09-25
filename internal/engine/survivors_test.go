@@ -12,6 +12,7 @@ import (
 
 func skipWithoutScopes(t *testing.T) {
 	t.Helper()
+
 	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
 		t.Skipf("systemd-run --user --scope unusable: %v", err)
 	}
@@ -23,6 +24,7 @@ func skipWithoutScopes(t *testing.T) {
 // `breeze operator` showed nothing in flight.
 func TestSurvivorsOfANormalExitAreReapedAndRecorded(t *testing.T) {
 	skipWithoutScopes(t)
+
 	e := New()
 	e.SetRunDir(t.TempDir()) // output to files, as a real stage does
 	marker := t.TempDir() + "/alive"
@@ -41,6 +43,7 @@ func TestSurvivorsOfANormalExitAreReapedAndRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("the command itself exited 0; status = %s", inst.Status)
 	}
@@ -53,8 +56,11 @@ func TestSurvivorsOfANormalExitAreReapedAndRecorded(t *testing.T) {
 
 	// REAPED: the marker must stop growing.
 	time.Sleep(300 * time.Millisecond)
+
 	before, _ := os.ReadFile(marker)
+
 	time.Sleep(600 * time.Millisecond)
+
 	after, _ := os.ReadFile(marker)
 	if len(after) > len(before) {
 		t.Errorf("survivors of a normal exit must be reaped: marker grew %d -> %d after the stage finished", len(before), len(after))
@@ -66,11 +72,13 @@ func TestSurvivorsOfANormalExitAreReapedAndRecorded(t *testing.T) {
 // either way, because the fact is worth knowing regardless of the intent.
 func TestDeclaredLeavesProcessesIsRecordedButNotReaped(t *testing.T) {
 	skipWithoutScopes(t)
+
 	e := New()
 	e.SetRunDir(t.TempDir()) // output to files, as a real stage does
 	marker := t.TempDir() + "/alive"
 	p := examplePipeline()
 	p.Stages[0].LeavesProcesses = true
+
 	p.Stages[0].Command = CommandTemplate{
 		Path:           "/bin/sh",
 		Args:           []string{"-c", `( while true; do date >> ` + marker + `; sleep 0.2; done ) & exit 0`},
@@ -79,6 +87,7 @@ func TestDeclaredLeavesProcessesIsRecordedButNotReaped(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("release", "build", "abc", "", "ci", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -89,8 +98,11 @@ func TestDeclaredLeavesProcessesIsRecordedButNotReaped(t *testing.T) {
 	}
 
 	time.Sleep(300 * time.Millisecond)
+
 	before, _ := os.ReadFile(marker)
+
 	time.Sleep(600 * time.Millisecond)
+
 	after, _ := os.ReadFile(marker)
 	if len(after) <= len(before) {
 		t.Error("a stage declaring leaves_processes must NOT have its work reaped")
@@ -99,6 +111,8 @@ func TestDeclaredLeavesProcessesIsRecordedButNotReaped(t *testing.T) {
 	if pid := got.RunnerPID; pid > 0 {
 		_ = pid
 	}
+
 	exec.Command("pkill", "-f", marker).Run()
+
 	_ = strings.TrimSpace("")
 }

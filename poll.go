@@ -42,6 +42,7 @@ import (
 func pollUntil[T any](ctx context.Context, budget, interval time.Duration, probe func(context.Context) (T, bool, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
+
 	return resilience.RetryUntil(ctx, resilience.UntilPolicy{
 		Backoff: func(int) time.Duration { return interval },
 	}, probe)

@@ -25,15 +25,19 @@ func TestShutdownCanBeTriggeredMoreThanOnce(t *testing.T) {
 func TestConcurrentShutdownTriggersDoNotPanic(t *testing.T) {
 	d := &daemonServer{stop: make(chan struct{})}
 	done := make(chan struct{})
+
 	for range 8 {
 		go func() {
 			d.beginShutdown()
+
 			done <- struct{}{}
 		}()
 	}
+
 	for range 8 {
 		<-done
 	}
+
 	select {
 	case <-d.stop:
 	default:

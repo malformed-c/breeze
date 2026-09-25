@@ -30,6 +30,7 @@ func writeBriefFile(dir, filename, header, section string) {
 	}
 
 	path := filepath.Join(dir, filename)
+
 	needsHeader := false
 	if info, err := os.Stat(path); err != nil || info.Size() == 0 {
 		needsHeader = true
@@ -48,6 +49,7 @@ func writeBriefFile(dir, filename, header, section string) {
 			return
 		}
 	}
+
 	if _, err := f.WriteString(section); err != nil {
 		log.Printf("warning: brief: append section %s: %v", path, err)
 	}

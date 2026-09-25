@@ -58,6 +58,7 @@ func (e *Engine) checkOutcome(inst *StageInstance) {
 	if inst.Status != StageSucceeded || inst.ExitCode == 0 {
 		return
 	}
+
 	e.audit("stage.outcome_invariant", inst.Actor, fmt.Sprintf(
 		"pipeline=%s stage=%s key=%s: recorded SUCCEEDED with exitCode=%d — forced to failed; this is a breeze defect, report it",
 		inst.Pipeline, inst.Stage, inst.Key, inst.ExitCode))

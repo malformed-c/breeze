@@ -11,6 +11,7 @@ import (
 // PreGate/PostAction/main-command paths, for exercising the three-rule hook contract.
 func pipelineWithHooks(t *testing.T, e *Engine, mainCmd []string, preGate, postAction []Hook) {
 	t.Helper()
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{{
@@ -38,9 +39,11 @@ func TestPreGateFailureBlocksMainCommandAndSurfacesAsRPCError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected pre-gate failure to surface as an RPC-level error")
 	}
+
 	if _, statErr := os.Stat(marker); statErr == nil {
 		t.Fatalf("main command must not run when its pre-gate fails")
 	}
+
 	inst, _ := e.StageStatus("ci", "build", "abc", "")
 	if inst.Status != StageGateFailed {
 		t.Fatalf("expected persisted status gate_failed, got %s", inst.Status)
@@ -50,10 +53,12 @@ func TestPreGateFailureBlocksMainCommandAndSurfacesAsRPCError(t *testing.T) {
 func TestMainCommandFailureIsDataNotRPCError(t *testing.T) {
 	e := New()
 	pipelineWithHooks(t, e, []string{"/bin/false"}, nil, nil)
+
 	inst, err := e.StartCommandStage("ci", "build", "abc", "", "agent", "")
 	if err != nil {
 		t.Fatalf("a failing main command must not be an RPC-level error: %v", err)
 	}
+
 	if inst.Status != StageFailed {
 		t.Fatalf("expected Status=failed as data, got %s", inst.Status)
 	}
@@ -63,10 +68,12 @@ func TestPostActionFailureDoesNotAffectReturnedResult(t *testing.T) {
 	e := New()
 	pipelineWithHooks(t, e, []string{"/bin/true"}, nil,
 		[]Hook{{Command: CommandTemplate{Path: "/bin/false"}, Timeout: minute}})
+
 	inst, err := e.StartCommandStage("ci", "build", "abc", "", "agent", "")
 	if err != nil {
 		t.Fatalf("post-action failure must not affect the triggering call: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected the main command's own success to stand, got %s", inst.Status)
 	}
@@ -80,9 +87,11 @@ func TestMultiplePreGatesFailFastInOrder(t *testing.T) {
 		{Command: CommandTemplate{Path: "/bin/false"}, Timeout: minute},
 		{Command: CommandTemplate{Path: "/bin/sh", Args: []string{"-c", "touch " + secondRan}}, Timeout: minute},
 	}, nil)
+
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "agent", ""); err == nil {
 		t.Fatalf("expected first pre-gate's failure to be surfaced")
 	}
+
 	if _, statErr := os.Stat(secondRan); statErr == nil {
 		t.Fatalf("second pre-gate must not run after the first one fails (fail-fast)")
 	}
@@ -96,16 +105,20 @@ func TestMultiplePostActionsRunIndependently(t *testing.T) {
 		{Command: CommandTemplate{Path: "/bin/false"}, Timeout: minute},
 		{Command: CommandTemplate{Path: "/bin/sh", Args: []string{"-c", "touch " + secondRan}}, Timeout: minute},
 	})
+
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "agent", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(secondRan); err == nil {
 			return // success: the second post-action ran despite the first failing
 		}
+
 		time.Sleep(20 * time.Millisecond)
 	}
+
 	t.Fatalf("expected the second post-action to run independently of the first's failure")
 }
 
@@ -114,9 +127,11 @@ func TestApprovalPreGateRunsOnceAtFirstTouch(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{{
@@ -129,9 +144,11 @@ func TestApprovalPreGateRunsOnceAtFirstTouch(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.ApproveStage("ci", "review", "abc", "", "alice", ""); err == nil {
 		t.Fatalf("expected approval pre-gate failure to be surfaced")
 	}
+
 	inst, _ := e.StageStatus("ci", "review", "abc", "")
 	if inst.Status != StageGateFailed {
 		t.Fatalf("expected gate_failed, got %s", inst.Status)

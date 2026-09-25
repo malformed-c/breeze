@@ -42,6 +42,7 @@ func (e *Engine) PruneStageOutput() {
 	defer e.mu.Unlock()
 
 	byPipeline := make(map[string][]*StageInstance)
+
 	for _, inst := range e.instances {
 		if isTerminalStatus(inst.Status) {
 			byPipeline[inst.Pipeline] = append(byPipeline[inst.Pipeline], inst)
@@ -49,6 +50,7 @@ func (e *Engine) PruneStageOutput() {
 	}
 
 	pruned := false
+
 	for _, insts := range byPipeline {
 		if len(insts) <= maxInstancesWithOutputPerPipeline {
 			continue
@@ -56,15 +58,18 @@ func (e *Engine) PruneStageOutput() {
 		// Newest first, so "keep the most recent N" is a prefix — the runs someone
 		// might still go and read are the ones that just happened.
 		sort.Slice(insts, func(i, j int) bool { return insts[i].FinishedAt.After(insts[j].FinishedAt) })
+
 		for _, inst := range insts[maxInstancesWithOutputPerPipeline:] {
 			if len(inst.Stdout) == 0 && len(inst.Stderr) == 0 {
 				continue // nothing to drop; don't claim output was pruned when there was none
 			}
+
 			inst.Stdout, inst.Stderr = nil, nil
 			inst.OutputPruned = true
 			pruned = true
 		}
 	}
+
 	if pruned {
 		e.changed()
 	}

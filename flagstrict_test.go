@@ -9,8 +9,10 @@ import (
 func TestFlagsInUsageDerivesTheAcceptedSet(t *testing.T) {
 	got := flagsInUsage(`breeze run pipeline <name> <commit> [--env NAME] [--brief "..."] [--set NAME=VALUE] [--serial] --as WHO [--token T | --token-file PATH]`)
 	want := []string{"--env", "--brief", "--set", "--serial", "--as", "--token", "--token-file"}
+
 	slices.Sort(got)
 	slices.Sort(want)
+
 	if !slices.Equal(got, want) {
 		t.Errorf("flagsInUsage = %v, want %v", got, want)
 	}
@@ -26,10 +28,12 @@ func TestFlagsInUsageDerivesTheAcceptedSet(t *testing.T) {
 // distinguishable from accepted-and-applied.
 func TestAFlagACommandDoesNotReadIsRefusedNotIgnored(t *testing.T) {
 	f := parseFlags([]string{"--set", "PREROLL_CONTROL=x", "--json"})
+
 	handled, err := f.only("breeze show pipeline <name> [--json]")
 	if !handled || err == nil {
 		t.Fatal("a flag the command does not read must be refused")
 	}
+
 	for _, want := range []string{"--set", "silently ignored", "--json"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q should mention %q", err, want)
@@ -65,6 +69,7 @@ func TestHelpAndUnknownStillBehave(t *testing.T) {
 	if handled, err := parseFlags([]string{"--help"}).only("breeze ps [--json]"); !handled || err != nil {
 		t.Errorf("--help should print usage and stop cleanly, got handled=%v err=%v", handled, err)
 	}
+
 	handled, err := parseFlags([]string{"--nope"}).only("breeze ps [--json]")
 	if !handled || err == nil || !strings.Contains(err.Error(), "unrecognized") {
 		t.Errorf("an unknown flag must stay a hard error, got handled=%v err=%v", handled, err)
@@ -82,6 +87,7 @@ func TestExtraPositionalIsRefusedNotDropped(t *testing.T) {
 	const usage = "breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"
 
 	f := parseFlags([]string{"deployer", "claude-svcproxy", "--as", "admin", ".git"})
+
 	err := f.exactArgs(usage, 2)
 	if err == nil {
 		t.Fatal("an argument the command does not read must be refused, not dropped")
@@ -112,6 +118,7 @@ func TestSeenDistinguishesSuppliedFromAbsent(t *testing.T) {
 	if !f.seen["--brief"] {
 		t.Error("--brief with an empty value was still supplied")
 	}
+
 	if f.seen["--serial"] {
 		t.Error("--serial was never supplied")
 	}

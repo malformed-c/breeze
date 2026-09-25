@@ -28,5 +28,6 @@ func execSelfAsDaemon() error {
 	if err != nil {
 		return err
 	}
+
 	return syscall.Exec(exe, []string{exe, "start", "daemon"}, os.Environ())
 }

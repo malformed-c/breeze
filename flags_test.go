@@ -22,6 +22,7 @@ func TestParseFlagsRoutesUnrecognizedFlagsAwayFromPositionals(t *testing.T) {
 	if !f.help {
 		t.Fatalf("expected --help to set f.help")
 	}
+
 	if len(f.rest) != 0 {
 		t.Fatalf("expected --help to NOT land in f.rest, got %v", f.rest)
 	}
@@ -38,6 +39,7 @@ func TestParseFlagsRoutesUnrecognizedFlagsAwayFromPositionals(t *testing.T) {
 	if f.unknownFlag != "--tokne" {
 		t.Fatalf("expected the typo'd flag to be captured as unknownFlag, got %q", f.unknownFlag)
 	}
+
 	for _, r := range f.rest {
 		if r == "--tokne" {
 			t.Fatalf("expected the typo'd flag to never land in rest, got %v", f.rest)
@@ -54,6 +56,7 @@ func TestRejectUnknownFlags(t *testing.T) {
 
 	// --help: handled, but no error — caller should print usage and return cleanly.
 	f = flagSet{help: true}
+
 	handled, err := f.rejectUnknownFlags("breeze foo bar")
 	if !handled || err != nil {
 		t.Fatalf("expected --help to be handled with a nil error, got handled=%v err=%v", handled, err)
@@ -61,6 +64,7 @@ func TestRejectUnknownFlags(t *testing.T) {
 
 	// An unrecognized flag: handled, WITH an error — never silently proceeds.
 	f = flagSet{unknownFlag: "--bogus"}
+
 	handled, err = f.rejectUnknownFlags("breeze foo bar")
 	if !handled || err == nil {
 		t.Fatalf("expected an unknown flag to be handled with a non-nil error, got handled=%v err=%v", handled, err)
@@ -78,6 +82,7 @@ func TestTailFlagIsHonouredRegardlessOfOutcome(t *testing.T) {
 	if !asked.tailSet || asked.tail != 200 {
 		t.Fatalf("--tail 200 did not parse: %+v", asked)
 	}
+
 	unasked := parseFlags([]string{"--env", "local"})
 	if unasked.tailSet {
 		t.Fatalf("tailSet must distinguish an explicit --tail from the default")
@@ -118,19 +123,26 @@ func captureStderr(t *testing.T, fn func()) string {
 
 func captureStream(t *testing.T, target **os.File, fn func()) string {
 	t.Helper()
+
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	saved := *target
 	*target = w
+
 	fn()
+
 	*target = saved
+
 	w.Close()
+
 	b, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return string(b)
 }
 

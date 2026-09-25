@@ -52,6 +52,7 @@ func TestStageRequiresTextGraph(t *testing.T) {
 			{Name: "audit", Needs: []string{}},
 		},
 	}
+
 	cases := []struct {
 		index int
 		want  string
@@ -70,6 +71,7 @@ func TestStageRequiresTextGraph(t *testing.T) {
 
 func TestSortedKeys(t *testing.T) {
 	m := map[string][]string{"prod": {"staging"}, "canary": {}, "staging": nil}
+
 	want := []string{"canary", "prod", "staging"}
 	if got := sortedKeys(m); !reflect.DeepEqual(got, want) {
 		t.Fatalf("sortedKeys() = %v, want %v", got, want)
@@ -106,10 +108,12 @@ func TestStatusLineDistinguishesProjectionFromRecord(t *testing.T) {
 	if !strings.Contains(projected, "no run recorded") {
 		t.Fatalf("a projection must say so, got %q", projected)
 	}
+
 	recorded := statusLine(wire.StageInstance{Status: "failed", FailureKind: "timed_out", Recorded: true})
 	if strings.Contains(recorded, "no run recorded") {
 		t.Fatalf("a real record must not be labelled a projection, got %q", recorded)
 	}
+
 	if !strings.Contains(recorded, "timed_out") {
 		t.Fatalf("the failure kind must survive, got %q", recorded)
 	}

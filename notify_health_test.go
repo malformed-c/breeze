@@ -16,23 +16,28 @@ func fakeMess(t *testing.T, code int, stderr string) (path, logFile string) {
 	dir := t.TempDir()
 	path = filepath.Join(dir, "mess")
 	logFile = filepath.Join(dir, "calls.log")
+
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logFile + "\n" +
 		"echo " + stderr + " >&2\nexit " + strconv.Itoa(code) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	return path, logFile
 }
 
 func readCalls(t *testing.T, logFile string) string {
 	t.Helper()
+
 	b, err := os.ReadFile(logFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ""
 		}
+
 		t.Fatal(err)
 	}
+
 	return string(b)
 }
 
@@ -58,6 +63,7 @@ func TestBrokenNotifierAlertsTheHuman(t *testing.T) {
 	if notifierStatus() == "" {
 		t.Fatal("a failing send must mark the notifier unhealthy")
 	}
+
 	waitFor(t, func() bool { return strings.Contains(readCalls(t, logFile), " user ") },
 		"expected an alert addressed to the human mailbox \"user\"")
 
@@ -76,8 +82,10 @@ func TestBrokenNotifierAlertsTheHuman(t *testing.T) {
 	// A permanently dead target must cost ONE alert, not one per stage — and the
 	// alert's own failure must not re-trigger the alert.
 	before := strings.Count(readCalls(t, logFile), " user ")
+
 	runMessBestEffort(messPath, "the ci/build outcome", "send", "--as", messSender, "claude-verify", "breeze: ci/test -> failed")
 	time.Sleep(100 * time.Millisecond)
+
 	if after := strings.Count(readCalls(t, logFile), " user "); after != before {
 		t.Errorf("alert fired %d extra times while already failing; must fire once per transition", after-before)
 	}
@@ -94,7 +102,9 @@ func TestHealthyNotifierAlertsNobody(t *testing.T) {
 	if s := notifierStatus(); s != "" {
 		t.Fatalf("a successful send must leave the notifier healthy, got %q", s)
 	}
+
 	time.Sleep(100 * time.Millisecond)
+
 	if calls := readCalls(t, logFile); strings.Contains(calls, " user ") {
 		t.Errorf("no alert should be sent when nothing is wrong, got:\n%s", calls)
 	}
@@ -102,12 +112,15 @@ func TestHealthyNotifierAlertsNobody(t *testing.T) {
 
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
+
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 	t.Fatal(msg)
 }

@@ -11,6 +11,7 @@ import (
 // a real session don't conflict with anything).
 func BenchmarkTryAcquireLockUncontended(b *testing.B) {
 	e := New()
+
 	for i := 0; b.Loop(); i++ {
 		path := fmt.Sprintf("/repo/file-%d", i)
 		if _, ok, err := e.TryAcquireLock("holder", []string{path}, LockExclusive, time.Hour, false); err != nil || !ok {
@@ -27,13 +28,16 @@ func BenchmarkTryAcquireLockManyExistingLocks(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			e := New()
+
 			for i := range n {
 				path := fmt.Sprintf("/repo/existing-%d", i)
 				if _, ok, err := e.TryAcquireLock("other-holder", []string{path}, LockExclusive, time.Hour, false); err != nil || !ok {
 					b.Fatalf("setup acquire failed: ok=%v err=%v", ok, err)
 				}
 			}
+
 			b.ResetTimer()
+
 			for i := 0; b.Loop(); i++ {
 				path := fmt.Sprintf("/repo/new-%d", i)
 				if _, ok, err := e.TryAcquireLock("holder", []string{path}, LockExclusive, time.Hour, false); err != nil || !ok {
@@ -50,11 +54,13 @@ func BenchmarkTryAcquireLockManyExistingLocks(b *testing.B) {
 // TestConcurrentLockRaces exercises for correctness; here it's timed.
 func BenchmarkTryAcquireLockConcurrentContention(b *testing.B) {
 	e := New()
+
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			holder := fmt.Sprintf("holder-%d-%d", time.Now().UnixNano(), i)
 			e.TryAcquireLock(holder, []string{"/repo/contended-file"}, LockExclusive, time.Hour, false)
+
 			i++
 		}
 	})
@@ -67,13 +73,16 @@ func BenchmarkTryAcquireResourceLockManyExistingLocks(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			e := New()
+
 			for i := range n {
 				key := fmt.Sprintf("resource-%d", i)
 				if _, ok, err := e.TryAcquireResourceLock("other-holder", []string{key}, LockExclusive, time.Hour, false); err != nil || !ok {
 					b.Fatalf("setup acquire failed: ok=%v err=%v", ok, err)
 				}
 			}
+
 			b.ResetTimer()
+
 			for i := 0; b.Loop(); i++ {
 				key := fmt.Sprintf("new-resource-%d", i)
 				if _, ok, err := e.TryAcquireResourceLock("holder", []string{key}, LockExclusive, time.Hour, false); err != nil || !ok {
@@ -92,13 +101,16 @@ func BenchmarkListLocks(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			e := New()
+
 			for i := range n {
 				path := fmt.Sprintf("/repo/file-%d", i)
 				if _, ok, err := e.TryAcquireLock("holder", []string{path}, LockExclusive, time.Hour, false); err != nil || !ok {
 					b.Fatalf("setup acquire failed: ok=%v err=%v", ok, err)
 				}
 			}
+
 			b.ResetTimer()
+
 			for b.Loop() {
 				e.ListLocks()
 			}
@@ -118,13 +130,16 @@ func BenchmarkSweepExpiredLocks(b *testing.B) {
 			e := New()
 			fakeNow := time.Now()
 			e.now = func() time.Time { return fakeNow }
+
 			for i := range n {
 				path := fmt.Sprintf("/repo/file-%d", i)
 				if _, ok, err := e.TryAcquireLock("holder", []string{path}, LockExclusive, time.Hour, false); err != nil || !ok {
 					b.Fatalf("setup acquire failed: ok=%v err=%v", ok, err)
 				}
 			}
+
 			b.ResetTimer()
+
 			for b.Loop() {
 				e.SweepExpiredLocks()
 			}
@@ -133,6 +148,7 @@ func BenchmarkSweepExpiredLocks(b *testing.B) {
 			e := New()
 			fakeNow := time.Now()
 			e.now = func() time.Time { return fakeNow }
+
 			b.StopTimer()
 			// Classic b.N form (not b.Loop): each iteration needs setup work
 			// excluded from the timed region, which b.Loop doesn't support
@@ -144,7 +160,9 @@ func BenchmarkSweepExpiredLocks(b *testing.B) {
 						b.Fatalf("setup acquire failed: ok=%v err=%v", ok, err)
 					}
 				}
+
 				fakeNow = fakeNow.Add(2 * time.Minute)
+
 				b.StartTimer()
 				e.SweepExpiredLocks()
 				b.StopTimer()

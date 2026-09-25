@@ -34,6 +34,7 @@ func (e *Engine) runPreGates(hooks []Hook, params breezehook.Params) error {
 			return gateErr("pre-gate hook #%d (%s) exited %d; output: %s", i, h.Command.Path, res.ExitCode, res.OutputTail(2048))
 		}
 	}
+
 	return nil
 }
 
@@ -47,6 +48,7 @@ func (e *Engine) runPostActions(hooks []Hook, params breezehook.Params, pipeline
 			if res.Err == nil && !res.TimedOut && res.ExitCode == 0 {
 				return
 			}
+
 			e.mu.Lock()
 			e.audit("hook.action.failed", actor, fmt.Sprintf(
 				"pipeline=%s stage=%s command=%s exitCode=%d timedOut=%v err=%v output=%s",
@@ -71,11 +73,14 @@ func (e *Engine) runTransform(h *Hook, in TransformInput, params breezehook.Para
 	if h == nil {
 		return ""
 	}
+
 	tmpl := e.toHookTemplate(*h)
+
 	payload, err := json.Marshal(in)
 	if err != nil {
 		return "(transform not run: " + err.Error() + ")"
 	}
+
 	tmpl.Stdin = payload
 
 	res := breezehook.Run(context.Background(), tmpl, params)
@@ -89,17 +94,21 @@ func (e *Engine) runTransform(h *Hook, in TransformInput, params breezehook.Para
 		if tail == "" {
 			tail = "no output"
 		}
+
 		return e.transformFailed(actor, in, fmt.Sprintf("exited %d: %s", res.ExitCode, tail))
 	}
+
 	summary := strings.TrimSpace(string(res.Stdout))
 	if summary == "" {
 		// Succeeding while producing nothing is its own small lie: the operator sees
 		// no summary and cannot tell whether one was configured.
 		return e.transformFailed(actor, in, "exited 0 but wrote nothing to stdout")
 	}
+
 	if len(summary) > maxSummary {
 		summary = summary[:maxSummary] + "… (truncated)"
 	}
+
 	return summary
 }
 
@@ -108,6 +117,7 @@ func (e *Engine) transformFailed(actor string, in TransformInput, why string) st
 	e.audit("stage.transform.failed", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s %s", in.Pipeline, in.Stage, in.Commit, why))
 	e.changed()
 	e.mu.Unlock()
+
 	return "(transform " + why + ")"
 }
 
@@ -134,9 +144,11 @@ func transformInputFor(inst *StageInstance, target string, timedOut bool) Transf
 	if !inst.StartedAt.IsZero() {
 		in.StartedAt = inst.StartedAt.Format(time.RFC3339)
 	}
+
 	if !inst.FinishedAt.IsZero() {
 		in.FinishedAt = inst.FinishedAt.Format(time.RFC3339)
 		in.DurationMs = inst.FinishedAt.Sub(inst.StartedAt).Milliseconds()
 	}
+
 	return in
 }
