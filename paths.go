@@ -62,10 +62,13 @@ func resolvePaths() (paths, error) {
 			if err != nil {
 				cwd = "(unknown — could not determine cwd)"
 			}
+
 			return paths{}, fmt.Errorf("%q is not recognized as inside a git repo, and $BREEZE_DIR is not set — breeze has no machine-wide fallback; cd into the repo you meant, or set $BREEZE_DIR explicitly", cwd)
 		}
+
 		dir = filepath.Join(gitDir, "breeze")
 	}
+
 	return pathsForDir(dir), nil
 }
 
@@ -97,10 +100,12 @@ func gitOutput(args ...string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return "", false
 	}
+
 	return s, true
 }
 
@@ -119,10 +124,12 @@ func detectGitCommonDir() (string, bool) {
 	if !ok {
 		return "", false
 	}
+
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", false
 	}
+
 	return abs, true
 }
 
@@ -138,10 +145,12 @@ func detectGitToplevel() (string, bool) {
 	if !ok {
 		return "", false
 	}
+
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", false
 	}
+
 	return abs, true
 }
 
@@ -158,10 +167,15 @@ func looksLikeAbbreviatedSHA(s string) bool {
 
 func isHex(s string) bool {
 	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+		isDigit := r >= '0' && r <= '9'
+		isLower := r >= 'a' && r <= 'f'
+		isUpper := r >= 'A' && r <= 'F'
+
+		if !isDigit && !isLower && !isUpper {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -195,6 +209,7 @@ func resolveCommitVerbose(raw string) string {
 	if out == raw && looksLikeAbbreviatedSHA(raw) {
 		fmt.Fprintf(os.Stderr, "breeze: %q could not be resolved to a commit in this directory's repo, so it was sent as-is — if you meant a commit in another repo, run this from there or pass the full sha\n", raw)
 	}
+
 	return out
 }
 
@@ -219,6 +234,7 @@ func resolveCommit(raw string) string {
 	if full, ok := expandCommit(raw); ok {
 		return full
 	}
+
 	return raw
 }
 
@@ -228,6 +244,7 @@ func isFullSHA(s string) bool {
 	if len(s) != 40 {
 		return false
 	}
+
 	return isHex(s)
 }
 
@@ -248,6 +265,7 @@ func envSuffix(env string) string {
 	if env == "" {
 		return ""
 	}
+
 	return " → " + env
 }
 
@@ -255,6 +273,7 @@ func shortCommitForDisplay(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]
 	}
+
 	return commit
 }
 
@@ -277,17 +296,22 @@ func canonicalLockPaths(raw []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		out[i] = abs
+
 		toplevel, ok := detectGitToplevel()
 		if !ok {
 			continue
 		}
+
 		rel, err := filepath.Rel(toplevel, abs)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue // outside this worktree entirely — keep the absolute path
 		}
+
 		out[i] = rel
 	}
+
 	return out, nil
 }
 
@@ -300,9 +324,11 @@ func globalDefaultsPath() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "breeze", "defaults.hcl")
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
+
 	return filepath.Join(home, ".config", "breeze", "defaults.hcl")
 }

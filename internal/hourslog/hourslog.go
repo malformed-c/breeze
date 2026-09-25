@@ -87,14 +87,17 @@ func Init(path string) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // a Close error on a handle being torn down carries no action
+
 	if _, err := db.Exec(schemaV1); err != nil {
 		return fmt.Errorf("creating the hours schema: %w", err)
 	}
+
 	return nil
 }
 
@@ -139,6 +142,7 @@ func (e Entry) Secs() int {
 	if d < 0 {
 		return 0
 	}
+
 	return int(d.Seconds())
 }
 
@@ -153,11 +157,12 @@ func Record(dbPath string, e Entry) error {
 	if strings.TrimSpace(e.Task) == "" {
 		return errors.New("a time entry needs a task summary")
 	}
+
 	db, err := open(dbPath)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // a Close error on a handle being torn down carries no action
 
 	if err := checkSchema(db); err != nil {
 		return err
@@ -173,7 +178,9 @@ func Record(dbPath string, e Entry) error {
 	if err != nil {
 		return err
 	}
+
 	secs := e.Secs()
+
 	_, err = tx.Exec(
 		`INSERT INTO task_log (task_id, begin_ts, end_ts, secs_spent, comment, active) VALUES (?, ?, ?, ?, ?, 0)`,
 		taskID, e.Begin.UTC(), e.End.UTC(), secs, e.Comment)
@@ -181,13 +188,16 @@ func Record(dbPath string, e Entry) error {
 		if isActiveTimerAbort(err) {
 			return ErrActiveTimer
 		}
+
 		return fmt.Errorf("recording the time entry: %w", err)
 	}
+
 	if _, err := tx.Exec(
 		`UPDATE task SET secs_spent = secs_spent + ?, updated_at = ? WHERE id = ?`,
 		secs, time.Now().UTC(), taskID); err != nil {
 		return fmt.Errorf("updating the task total: %w", err)
 	}
+
 	return tx.Commit()
 }
 
@@ -201,10 +211,12 @@ func open(dbPath string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close() // the handle never opened successfully
 		return nil, err
 	}
+
 	return db, nil
 }
 
@@ -213,13 +225,16 @@ func open(dbPath string) (*sql.DB, error) {
 // the columns move, and breeze keeps inserting rows that are accepted and wrong.
 func checkSchema(db *sql.DB) error {
 	var version int
+
 	err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM db_versions`).Scan(&version)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrNoDB, err)
 	}
+
 	if version != 1 {
 		return fmt.Errorf("hours database is at schema version %d, but breeze only knows version 1 — check what changed before recording into it", version)
 	}
+
 	return nil
 }
 
@@ -228,6 +243,7 @@ func checkSchema(db *sql.DB) error {
 // external id — so the task name is the integration's contract.
 func taskIDFor(tx *sql.Tx, summary string) (int64, error) {
 	var id int64
+
 	err := tx.QueryRow(`SELECT id FROM task WHERE summary = ?`, summary).Scan(&id)
 	switch {
 	case err == nil:
@@ -235,13 +251,16 @@ func taskIDFor(tx *sql.Tx, summary string) (int64, error) {
 	case !errors.Is(err, sql.ErrNoRows):
 		return 0, fmt.Errorf("looking up the task: %w", err)
 	}
+
 	now := time.Now().UTC()
+
 	res, err := tx.Exec(
 		`INSERT INTO task (summary, secs_spent, active, created_at, updated_at) VALUES (?, 0, 1, ?, ?)`,
 		summary, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("creating the task: %w", err)
 	}
+
 	return res.LastInsertId()
 }
 

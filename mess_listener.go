@@ -48,16 +48,20 @@ func runMessCommandListener(ctx context.Context, eng *engine.Engine, stateDir st
 	if err != nil {
 		return
 	}
+
 	topics := commandTopics(eng)
 	if len(topics) == 0 {
 		return
 	}
+
 	identity := daemonMessIdentity(stateDir)
+
 	for _, topic := range topics {
 		subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := exec.CommandContext(subCtx, messPath, "sub", topic, "--as", identity).Run(); err != nil {
 			log.Printf("mess command listener: failed to subscribe to %s: %v", topic, err)
 		}
+
 		cancel()
 	}
 
@@ -67,9 +71,11 @@ func runMessCommandListener(ctx context.Context, eng *engine.Engine, stateDir st
 			return
 		default:
 		}
+
 		if err := messListenOnce(ctx, messPath, identity, eng); err != nil && ctx.Err() == nil {
 			log.Printf("mess command listener: %v; reconnecting in 5s", err)
 		}
+
 		select {
 		case <-ctx.Done():
 			return
@@ -98,26 +104,33 @@ func daemonMessIdentity(stateDir string) string {
 // disconnects) — the caller loops this for reconnect-on-disconnect resilience.
 func messListenOnce(ctx context.Context, messPath, identity string, eng *engine.Engine) error {
 	cmd := exec.CommandContext(ctx, messPath, "listen", "--as", identity, "--json")
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("opening stdout pipe: %w", err)
 	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting `mess listen`: %w", err)
 	}
+
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
 	for scanner.Scan() {
 		var m messInboundMessage
 		if err := json.Unmarshal(scanner.Bytes(), &m); err != nil {
 			continue // not a message line we understand — ignore, never crash the listener
 		}
+
 		handleMessCommand(eng, messPath, identity, m)
 	}
+
 	if err := scanner.Err(); err != nil {
-		cmd.Wait()
+		_ = cmd.Wait() // the scanner error is the answer; Wait's is not
 		return fmt.Errorf("reading `mess listen` output: %w", err)
 	}
+
 	return cmd.Wait()
 }
 
@@ -125,13 +138,16 @@ func messListenOnce(ctx context.Context, messPath, identity string, eng *engine.
 // currently-registered pipeline.
 func commandTopics(eng *engine.Engine) []string {
 	seen := map[string]bool{}
+
 	var topics []string
+
 	for _, p := range eng.Pipelines() {
 		if p.CommandTopic != "" && !seen[p.CommandTopic] {
 			seen[p.CommandTopic] = true
 			topics = append(topics, p.CommandTopic)
 		}
 	}
+
 	return topics
 }
 
@@ -155,6 +171,7 @@ func handleMessCommand(eng *engine.Engine, messPath, identity string, m messInbo
 	if m.Kind != "topic" || !strings.HasPrefix(m.Body, commandPrefix) {
 		return
 	}
+
 	reply := func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		runMessBestEffort(messPath, "a reply on topic "+m.Topic, "pub", m.Topic, msg, "--thread", m.ID, "--as", identity)
@@ -202,11 +219,13 @@ func handleMessCommand(eng *engine.Engine, messPath, identity string, m messInbo
 	// it's authorized and recorded through the exact same ApproveStage RBAC/audit
 	// path a CLI-issued `stage approve` goes through, just with a marked actor.
 	fullBrief := fmt.Sprintf("(via mess from %s) %s", m.From, brief)
+
 	inst, err := eng.ApproveStage(pipelineName, stageName, commit, environment, actor, fullBrief)
 	if err != nil {
 		reply("breeze: approval by %s rejected: %v", actor, err)
 		return
 	}
+
 	reply("breeze: %s/%s (%s) approved by %s -> %s", pipelineName, stageName, shortCommitForDisplay(commit), actor, inst.Status)
 }
 
@@ -220,6 +239,7 @@ func identityForMessSender(eng *engine.Engine, sender string) (string, bool) {
 			return id.Name, true
 		}
 	}
+
 	return "", false
 }
 
@@ -234,10 +254,12 @@ func parseApproveCommand(body string) (pipelineName, stageName, commit, environm
 	if len(fields) < 2 {
 		return "", "", "", "", "", fmt.Errorf(`usage: @breeze approve <pipeline>/<stage> <commit> [--env NAME] [--brief text...]`)
 	}
+
 	parts := strings.SplitN(fields[0], "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", "", "", fmt.Errorf("invalid <pipeline>/<stage> %q — expected \"pipeline/stage\"", fields[0])
 	}
+
 	pipelineName, stageName = parts[0], parts[1]
 	commit = fields[1]
 
@@ -249,6 +271,7 @@ func parseApproveCommand(body string) (pipelineName, stageName, commit, environm
 			if i >= len(fields) {
 				return "", "", "", "", "", fmt.Errorf("--env requires a value")
 			}
+
 			environment = fields[i]
 			i++
 		case "--brief":
@@ -258,5 +281,6 @@ func parseApproveCommand(body string) (pipelineName, stageName, commit, environm
 			return "", "", "", "", "", fmt.Errorf("unrecognized argument %q", fields[i])
 		}
 	}
+
 	return pipelineName, stageName, commit, environment, brief, nil
 }

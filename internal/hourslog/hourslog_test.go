@@ -19,14 +19,17 @@ import (
 func newDB(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hours.db")
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
+
 	if _, err := db.Exec(schemaV1); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
+
 	return path
 }
 
@@ -44,20 +47,26 @@ func TestRecordCreatesTaskAndEntry(t *testing.T) {
 	db, _ := sql.Open("sqlite", path)
 	defer db.Close()
 
-	var summary string
-	var taskSecs int
+	var (
+		summary  string
+		taskSecs int
+	)
 	if err := db.QueryRow(`SELECT summary, secs_spent FROM task`).Scan(&summary, &taskSecs); err != nil {
 		t.Fatalf("task row: %v", err)
 	}
+
 	if summary != "breeze/breeze/deploy" || taskSecs != 300 {
 		t.Errorf("task = %q/%ds, want breeze/breeze/deploy/300s", summary, taskSecs)
 	}
 
-	var logSecs, active int
-	var comment string
+	var (
+		logSecs, active int
+		comment         string
+	)
 	if err := db.QueryRow(`SELECT secs_spent, comment, active FROM task_log`).Scan(&logSecs, &comment, &active); err != nil {
 		t.Fatalf("log row: %v", err)
 	}
+
 	if logSecs != 300 || comment != "deploy 5e1d2ab to local" {
 		t.Errorf("log = %ds %q, want 300s with the brief", logSecs, comment)
 	}
@@ -77,6 +86,7 @@ func TestRecordAccumulatesOntoOneTask(t *testing.T) {
 			t.Fatalf("Record: %v", err)
 		}
 	}
+
 	db, _ := sql.Open("sqlite", path)
 	defer db.Close()
 
@@ -84,9 +94,11 @@ func TestRecordAccumulatesOntoOneTask(t *testing.T) {
 	db.QueryRow(`SELECT COUNT(*) FROM task`).Scan(&tasks)
 	db.QueryRow(`SELECT COUNT(*) FROM task_log`).Scan(&logs)
 	db.QueryRow(`SELECT secs_spent FROM task`).Scan(&total)
+
 	if tasks != 1 || logs != 2 {
 		t.Errorf("want 1 task and 2 logs, got %d and %d", tasks, logs)
 	}
+
 	if total != 420 {
 		t.Errorf("task total = %d, want 420 — the denormalized total must match the sum of its entries", total)
 	}
@@ -98,12 +110,14 @@ func TestRecordAccumulatesOntoOneTask(t *testing.T) {
 // say so, rather than a stage run vanishing while its author watches a timer.
 func TestRecordReportsAnActiveTimerRatherThanFailingQuietly(t *testing.T) {
 	path := newDB(t)
+
 	db, _ := sql.Open("sqlite", path)
 	if _, err := db.Exec(
 		`INSERT INTO task_log (task_id, begin_ts, secs_spent, comment, active) VALUES (1, ?, 0, 'user is tracking something', 1)`,
 		time.Now().UTC()); err != nil {
 		t.Fatalf("seeding an active timer: %v", err)
 	}
+
 	db.Close()
 
 	err := Record(path, entry("breeze/breeze/deploy", 300))
@@ -116,6 +130,7 @@ func TestRecordReportsAnActiveTimerRatherThanFailingQuietly(t *testing.T) {
 // a column other rows are summed with.
 func TestNegativeDurationsFloorAtZero(t *testing.T) {
 	e := entry("breeze/breeze/build", 0)
+
 	e.End = e.Begin.Add(-time.Hour)
 	if got := e.Secs(); got != 0 {
 		t.Errorf("Secs() = %d, want 0 for an end before its begin", got)

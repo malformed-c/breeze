@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -15,31 +16,40 @@ import (
 // invariant when multiple concurrent requests share ONE holder name.
 func TestConcurrentLockRaces(t *testing.T) {
 	e := New()
+
 	const n = 50
+
 	var wg sync.WaitGroup
+
 	results := make([]bool, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			_, ok, err := e.TryAcquireLock(fmt.Sprintf("holder-%d", i), []string{"/repo/file"}, LockExclusive, time.Hour, false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
+
 			results[i] = ok
 		}(i)
 	}
+
 	wg.Wait()
 
 	granted := 0
+
 	for _, ok := range results {
 		if ok {
 			granted++
 		}
 	}
+
 	if granted != 1 {
 		t.Fatalf("expected exactly 1 exclusive holder to succeed, got %d", granted)
 	}
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected exactly 1 lock in engine state, got %d", len(e.ListLocks()))
 	}
@@ -54,35 +64,44 @@ func TestConcurrentLockRaces(t *testing.T) {
 // error indistinguishable from "someone else has it."
 func TestConcurrentReacquireBySameHolderIsIdempotent(t *testing.T) {
 	e := New()
+
 	const n = 50
+
 	var wg sync.WaitGroup
+
 	results := make([]bool, n)
+
 	ids := make([]string, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			lock, ok, err := e.TryAcquireLock("holder", []string{"/repo/file"}, LockExclusive, time.Hour, false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 				return
 			}
+
 			results[i] = ok
 			if lock != nil {
 				ids[i] = lock.ID
 			}
 		}(i)
 	}
+
 	wg.Wait()
 
 	for i, ok := range results {
 		if !ok {
 			t.Fatalf("expected every same-holder re-acquire to succeed (idempotent), goroutine %d got a conflict", i)
 		}
+
 		if ids[i] != ids[0] {
 			t.Fatalf("expected every re-acquire to report the SAME lock ID, goroutine %d got %q vs goroutine 0's %q", i, ids[i], ids[0])
 		}
 	}
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected exactly 1 lock in engine state (no duplicates), got %d", len(e.ListLocks()))
 	}
@@ -90,18 +109,22 @@ func TestConcurrentReacquireBySameHolderIsIdempotent(t *testing.T) {
 
 func TestSharedLocksDoNotConflict(t *testing.T) {
 	e := New()
+
 	_, ok1, err := e.TryAcquireLock("a", []string{"/repo/file"}, LockShared, time.Hour, false)
 	if err != nil || !ok1 {
 		t.Fatalf("expected first shared lock to succeed: ok=%v err=%v", ok1, err)
 	}
+
 	_, ok2, err := e.TryAcquireLock("b", []string{"/repo/file"}, LockShared, time.Hour, false)
 	if err != nil || !ok2 {
 		t.Fatalf("expected second shared lock to succeed: ok=%v err=%v", ok2, err)
 	}
+
 	_, ok3, err := e.TryAcquireLock("c", []string{"/repo/file"}, LockExclusive, time.Hour, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	if ok3 {
 		t.Fatalf("expected exclusive request to conflict with existing shared locks")
 	}
@@ -109,18 +132,64 @@ func TestSharedLocksDoNotConflict(t *testing.T) {
 
 func TestReleaseRequiresHolderUnlessForced(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if err := e.ReleaseLock(lock.ID, "bob", false); err == nil {
 		t.Fatalf("expected release by non-holder to fail without --force")
 	}
+
 	if err := e.ReleaseLock(lock.ID, "bob", true); err != nil {
 		t.Fatalf("expected forced release to succeed: %v", err)
 	}
+
 	if len(e.ListLocks()) != 0 {
 		t.Fatalf("expected lock to be gone after release")
+	}
+}
+
+// TestForcedReleaseCanOnlyFailByNotFindingTheLock is what licenses the seven
+// internal callers that discard ReleaseLock's result as `_ =`. Their claim is that a
+// forced release has no failure mode worth reporting: the only two errors are
+// ErrNotFound and a holder mismatch, and force=true rules out the second. That is a
+// claim about the exit paths, so it is pinned here rather than left as a comment that
+// a later edit to ReleaseLock could quietly invalidate — and it is exactly the kind of
+// claim that should be tested, because I once wrote the opposite one from reading the
+// call site and never checking what the function can return.
+//
+// ErrNotFound is not a failure for a cleanup path; it is the state it was reaching for.
+//
+// What this pins is narrower than "there are only two errors", which is what the doc on
+// ReleaseLock claims: it exercises the two cases the `_ =` call sites depend on — a
+// forced release ignores the holder, and an absent lock reports ErrNotFound. It cannot
+// enumerate return paths, so a NEW error added on some other path would not fail here.
+// What it does catch is the realistic regression: force ceasing to bypass the holder
+// check, or the absent-lock case changing its answer. The full claim lives in the
+// function's doc, where someone changing it is looking.
+func TestForcedReleaseCanOnlyFailByNotFindingTheLock(t *testing.T) {
+	e := New()
+
+	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, 0, false)
+	if err != nil || !ok {
+		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
+	}
+
+	if err := e.ReleaseLock(lock.ID, "anyone", true); err != nil {
+		t.Fatalf("a forced release by a non-holder must succeed: %v", err)
+	}
+
+	// Released already: the only thing a second forced release can say.
+	err = e.ReleaseLock(lock.ID, "anyone", true)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a forced release of an absent lock must report ErrNotFound and nothing else, got %v", err)
+	}
+
+	// And an id that was never a lock at all is the same answer, not a new one.
+	if err := e.ReleaseLock("no-such-lock", "anyone", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("releasing an unknown id must report ErrNotFound, got %v", err)
 	}
 }
 
@@ -131,17 +200,21 @@ func TestReleaseRequiresHolderUnlessForced(t *testing.T) {
 // re-reports the existing lock instead.
 func TestReacquireBySameHolderIsIdempotent(t *testing.T) {
 	e := New()
+
 	first, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false)
 	if err != nil || !ok {
 		t.Fatalf("first acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	second, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false)
 	if err != nil || !ok {
 		t.Fatalf("expected re-acquire by the same holder to succeed, not conflict: ok=%v err=%v", ok, err)
 	}
+
 	if second.ID != first.ID {
 		t.Fatalf("expected the same lock to be re-reported, got a new one: first=%s second=%s", first.ID, second.ID)
 	}
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected exactly 1 lock (no duplicate), got %d", len(e.ListLocks()))
 	}
@@ -168,6 +241,7 @@ func TestReacquireByAttachedLockIsNotIdempotent(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, true); err != nil || !ok {
 		t.Fatalf("attached acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || ok {
 		t.Fatalf("expected a detached request to conflict with an existing attached lock, not adopt it: ok=%v err=%v", ok, err)
 	}
@@ -185,6 +259,7 @@ func TestNewAttachedRequestNeverReentrantAgainstExistingDetached(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("detached acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, true); err != nil || ok {
 		t.Fatalf("expected a new ATTACHED request to conflict with alice's own existing detached lock, not adopt it: ok=%v err=%v", ok, err)
 	}
@@ -200,6 +275,7 @@ func TestNewAttachedRequestNeverReentrantAgainstExistingAttached(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, true); err != nil || !ok {
 		t.Fatalf("first attached acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, true); err != nil || ok {
 		t.Fatalf("expected a second attached request to conflict with the first, not adopt it: ok=%v err=%v", ok, err)
 	}
@@ -218,10 +294,12 @@ func TestNewAttachedRequestNeverReentrantAgainstExistingAttached(t *testing.T) {
 // deliberate decision, not an accidental regression.
 func TestResourceReentrancyIgnoresManualClaimMismatch(t *testing.T) {
 	e := New()
+
 	claimed, ok, err := e.TryAcquireResourceLock("alice", []string{"deploy/app/staging"}, LockExclusive, time.Hour, true)
 	if err != nil || !ok {
 		t.Fatalf("manual claim failed: ok=%v err=%v", ok, err)
 	}
+
 	if !claimed.ManualClaim {
 		t.Fatalf("test setup: expected ManualClaim=true")
 	}
@@ -230,9 +308,11 @@ func TestResourceReentrancyIgnoresManualClaimMismatch(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected the plain re-acquire to be treated as reentrant (current behavior), got ok=%v err=%v", ok, err)
 	}
+
 	if plain.ID != claimed.ID {
 		t.Fatalf("expected the SAME lock to be re-reported, got a new one")
 	}
+
 	if !plain.ManualClaim {
 		t.Fatalf("expected the re-reported lock to still show ManualClaim=true (unchanged by the plain, non-claim request) — current, documented behavior")
 	}
@@ -244,31 +324,40 @@ func TestResourceReentrancyIgnoresManualClaimMismatch(t *testing.T) {
 // path but had no goroutine-hammering test of their own.
 func TestConcurrentResourceLockRaces(t *testing.T) {
 	e := New()
+
 	const n = 50
+
 	var wg sync.WaitGroup
+
 	results := make([]bool, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			_, ok, err := e.TryAcquireResourceLock(fmt.Sprintf("holder-%d", i), []string{"gpu-0"}, LockExclusive, time.Hour, false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
+
 			results[i] = ok
 		}(i)
 	}
+
 	wg.Wait()
 
 	granted := 0
+
 	for _, ok := range results {
 		if ok {
 			granted++
 		}
 	}
+
 	if granted != 1 {
 		t.Fatalf("expected exactly 1 exclusive holder to succeed, got %d", granted)
 	}
+
 	if len(e.ListResourceLocks()) != 1 {
 		t.Fatalf("expected exactly 1 lock in engine state, got %d", len(e.ListResourceLocks()))
 	}
@@ -283,35 +372,45 @@ func TestConcurrentResourceLockRaces(t *testing.T) {
 // hold at once.
 func TestConcurrentMixedSharedExclusiveRaceNeverGrantsBothAtOnce(t *testing.T) {
 	e := New()
+
 	const n = 100
+
 	var wg sync.WaitGroup
+
 	type result struct {
 		ok   bool
 		mode LockMode
 	}
+
 	results := make([]result, n)
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
+
 			mode := LockShared
 			if i%3 == 0 { // roughly a third exclusive, the rest shared
 				mode = LockExclusive
 			}
+
 			_, ok, err := e.TryAcquireLock(fmt.Sprintf("holder-%d", i), []string{"/repo/file"}, mode, time.Hour, false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
+
 			results[i] = result{ok: ok, mode: mode}
 		}(i)
 	}
+
 	wg.Wait()
 
 	grantedExclusive, grantedShared := 0, 0
+
 	for _, r := range results {
 		if !r.ok {
 			continue
 		}
+
 		if r.mode == LockExclusive {
 			grantedExclusive++
 		} else {
@@ -324,9 +423,11 @@ func TestConcurrentMixedSharedExclusiveRaceNeverGrantsBothAtOnce(t *testing.T) {
 	if grantedExclusive > 1 {
 		t.Fatalf("expected at most 1 exclusive grant, got %d", grantedExclusive)
 	}
+
 	if grantedExclusive > 0 && grantedShared > 0 {
 		t.Fatalf("expected exclusive and shared grants to be mutually exclusive, got %d exclusive and %d shared simultaneously", grantedExclusive, grantedShared)
 	}
+
 	if grantedExclusive == 0 && grantedShared == 0 {
 		t.Fatalf("expected SOME grant to succeed (first-come exclusive, or a run of shared)")
 	}
@@ -341,12 +442,15 @@ func TestReleaseAllLocksReleasesOnlyRequestedHoldersLocks(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/a"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire a failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/b"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire b failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireResourceLock("alice", []string{"deploy/app/prod"}, LockExclusive, time.Hour, true); err != nil || !ok {
 		t.Fatalf("acquire resource lock failed: ok=%v err=%v", ok, err)
 	}
+
 	bobLock, ok, err := e.TryAcquireLock("bob", []string{"/repo/c"}, LockExclusive, time.Hour, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire c failed: ok=%v err=%v", ok, err)
@@ -356,9 +460,11 @@ func TestReleaseAllLocksReleasesOnlyRequestedHoldersLocks(t *testing.T) {
 	if len(released) != 3 {
 		t.Fatalf("expected 3 locks released, got %d: %+v", len(released), released)
 	}
+
 	if len(e.ListAllLocks()) != 1 {
 		t.Fatalf("expected only bob's lock to remain, got %d", len(e.ListAllLocks()))
 	}
+
 	remaining := e.ListAllLocks()
 	if remaining[0].ID != bobLock.ID {
 		t.Fatalf("expected bob's lock %s to survive, got %s", bobLock.ID, remaining[0].ID)
@@ -377,13 +483,16 @@ func TestFindConflictingFileLockNamesTheHolder(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	conflicts := e.FindConflictingFileLock([]string{"/repo/file"}, LockExclusive)
 	if len(conflicts) != 1 || conflicts[0].Lock.Holder != "alice" {
 		t.Fatalf("expected FindConflictingFileLock to find exactly alice's lock, got %+v", conflicts)
 	}
+
 	if !slices.Equal(conflicts[0].Overlap, []string{"/repo/file"}) {
 		t.Fatalf("expected the overlap to be exactly the requested path, got %v", conflicts[0].Overlap)
 	}
+
 	if conflicts := e.FindConflictingFileLock([]string{"/repo/other-file"}, LockExclusive); len(conflicts) != 0 {
 		t.Fatalf("expected no conflict for an unrelated path, got %+v", conflicts)
 	}
@@ -400,6 +509,7 @@ func TestFindConflictingFileLockNamesTheHolder(t *testing.T) {
 // full path set.
 func TestFindConflictingFileLockOverlapExcludesUnrequestedPaths(t *testing.T) {
 	e := New()
+
 	held6 := []string{"/repo/a.go", "/repo/b.go", "/repo/c.go", "/repo/d.go", "/repo/e.go", "/repo/f.go"}
 	if _, ok, err := e.TryAcquireLock("peri", held6, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
@@ -408,10 +518,12 @@ func TestFindConflictingFileLockOverlapExcludesUnrequestedPaths(t *testing.T) {
 	// A different, non-identical 4-path request from the SAME holder, overlapping
 	// on exactly one path ("/repo/c.go") with the existing 6-path lock.
 	requested := []string{"/repo/x.go", "/repo/y.go", "/repo/c.go", "/repo/z.go"}
+
 	conflicts := e.FindConflictingFileLock(requested, LockExclusive)
 	if len(conflicts) != 1 {
 		t.Fatalf("expected exactly one conflict (partial overlap is not reentrant), got %+v", conflicts)
 	}
+
 	if !slices.Equal(conflicts[0].Overlap, []string{"/repo/c.go"}) {
 		t.Fatalf("expected the overlap to be exactly the one shared path, got %v (held lock's full set: %v)", conflicts[0].Overlap, conflicts[0].Lock.Paths)
 	}
@@ -429,6 +541,7 @@ func TestFindConflictingFileLockReportsEveryConflictingHolder(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockShared, time.Hour, false); err != nil || !ok {
 		t.Fatalf("alice's shared acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("bob", []string{"/repo/file"}, LockShared, time.Hour, false); err != nil || !ok {
 		t.Fatalf("bob's shared acquire failed: ok=%v err=%v", ok, err)
 	}
@@ -437,10 +550,12 @@ func TestFindConflictingFileLockReportsEveryConflictingHolder(t *testing.T) {
 	if len(conflicts) != 2 {
 		t.Fatalf("expected both alice's and bob's shared locks to be reported as conflicts, got %+v", conflicts)
 	}
+
 	holders := map[string]bool{conflicts[0].Lock.Holder: true, conflicts[1].Lock.Holder: true}
 	if !holders["alice"] || !holders["bob"] {
 		t.Fatalf("expected conflicts to name both alice and bob, got %+v", conflicts)
 	}
+
 	for _, c := range conflicts {
 		if !slices.Equal(c.Overlap, []string{"/repo/file"}) {
 			t.Fatalf("expected each conflict's overlap to be the requested path, got %+v", c)
@@ -460,16 +575,19 @@ func TestFindConflictingFileLockReportsEveryConflictingHolder(t *testing.T) {
 // identically for opaque keys, not just real file paths.
 func TestFindConflictingResourceLockOverlapExcludesUnrequestedKeys(t *testing.T) {
 	e := New()
+
 	held := []string{"deploy/app/staging", "deploy/app/prod", "gpu-0", "gpu-1"}
 	if _, ok, err := e.TryAcquireResourceLock("peri", held, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
 
 	requested := []string{"gpu-0", "gpu-2", "gpu-3"}
+
 	conflicts := e.FindConflictingResourceLock(requested, LockExclusive)
 	if len(conflicts) != 1 {
 		t.Fatalf("expected exactly one conflict, got %+v", conflicts)
 	}
+
 	if !slices.Equal(conflicts[0].Overlap, []string{"gpu-0"}) {
 		t.Fatalf("expected the overlap to be exactly the one shared key, got %v (held lock's full set: %v)", conflicts[0].Overlap, conflicts[0].Lock.Paths)
 	}
@@ -477,6 +595,7 @@ func TestFindConflictingResourceLockOverlapExcludesUnrequestedKeys(t *testing.T)
 
 func TestWaitChannelWakesOnRelease(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
@@ -488,6 +607,7 @@ func TestWaitChannelWakesOnRelease(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+
 	go func() {
 		<-wait
 		close(done)
@@ -519,6 +639,7 @@ func TestWaitChannelWakesOnRelease(t *testing.T) {
 // short of that other path also happening to be released/expired later.
 func TestNotifyPathsLockedPrunesStaleWaiterEntriesForOtherPaths(t *testing.T) {
 	e := New()
+
 	wait, err := e.WaitChannelsForPaths([]string{"/repo/a.go", "/repo/b.go"})
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
@@ -543,9 +664,11 @@ func TestNotifyPathsLockedPrunesStaleWaiterEntriesForOtherPaths(t *testing.T) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if _, stillThere := e.waiters["lock:/repo/b.go"]; stillThere {
 		t.Fatalf("expected the stale waiter entry under the UNTOUCHED path to be pruned, but e.waiters[%q] still exists: %v", "lock:/repo/b.go", e.waiters["lock:/repo/b.go"])
 	}
+
 	if _, stillThere := e.waiters["lock:/repo/a.go"]; stillThere {
 		t.Fatalf("expected the touched path's own waiter entry to be gone too")
 	}
@@ -557,6 +680,7 @@ func TestNotifyPathsLockedPrunesStaleWaiterEntriesForOtherPaths(t *testing.T) {
 // real file path.
 func TestWaitChannelWakesOnReleaseForResourceKey(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireResourceLock("alice", []string{"gpu-0"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
@@ -568,6 +692,7 @@ func TestWaitChannelWakesOnReleaseForResourceKey(t *testing.T) {
 	}
 
 	done := make(chan struct{})
+
 	go func() {
 		<-wait
 		close(done)
@@ -595,6 +720,7 @@ func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("file lock acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("resource lock acquire failed: ok=%v err=%v", ok, err)
 	}
@@ -603,6 +729,7 @@ func TestResourceLocksSeparateFromFileLocks(t *testing.T) {
 	if len(files) != 1 || files[0].Kind != LockKindFile {
 		t.Fatalf("expected exactly 1 file lock, got %+v", files)
 	}
+
 	resources := e.ListResourceLocks()
 	if len(resources) != 1 || resources[0].Kind != LockKindResource {
 		t.Fatalf("expected exactly 1 resource lock, got %+v", resources)
@@ -630,6 +757,7 @@ func TestListAllLocksUnionsFileAndResourceKinds(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("file lock acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireResourceLock("ci", []string{"deploy/myapp/prod"}, LockExclusive, time.Hour, false); err != nil || !ok {
 		t.Fatalf("resource lock acquire failed: ok=%v err=%v", ok, err)
 	}
@@ -638,7 +766,9 @@ func TestListAllLocksUnionsFileAndResourceKinds(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("expected ListAllLocks to return both the file lock and the resource lock, got %+v", all)
 	}
+
 	var sawFile, sawResource bool
+
 	for _, l := range all {
 		switch l.Kind {
 		case LockKindFile:
@@ -647,6 +777,7 @@ func TestListAllLocksUnionsFileAndResourceKinds(t *testing.T) {
 			sawResource = true
 		}
 	}
+
 	if !sawFile || !sawResource {
 		t.Fatalf("expected both kinds present, got %+v", all)
 	}
@@ -669,12 +800,14 @@ func TestDetachedLockTTLIsTheCrashBackstop(t *testing.T) {
 	// alice "crashes" here — never calls ReleaseLock.
 
 	fakeNow = fakeNow.Add(2 * time.Minute)
+
 	e.SweepExpiredLocks()
 
 	lock, ok, err := e.TryAcquireLock("bob", []string{"/repo/file"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("expected bob to reclaim the crashed holder's expired lock, got ok=%v err=%v", ok, err)
 	}
+
 	if lock.Holder != "bob" {
 		t.Fatalf("expected bob to be the new holder, got %q", lock.Holder)
 	}
@@ -696,15 +829,18 @@ func TestOperatorForceReclaimsDiscoveredLock(t *testing.T) {
 	// The operator ("admin") discovers the orphaned lock via a listing, not
 	// by already knowing its ID ahead of time.
 	var found *FileLock
+
 	for _, l := range e.ListLocks() {
 		if slices.Contains(l.Paths, "/repo/stale-file") {
 			cp := l
 			found = &cp
 		}
 	}
+
 	if found == nil {
 		t.Fatalf("expected to discover alice's lock via ListLocks")
 	}
+
 	if found.ExpiresAt.IsZero() {
 		t.Fatalf("test setup: expected a real TTL/expiry, not an unlimited lock")
 	}
@@ -731,10 +867,12 @@ func TestOperatorForceReclaimsDiscoveredLock(t *testing.T) {
 // merely implicit from reading the code.
 func TestCrossWaitBlocksForeverWithNoTimeout(t *testing.T) {
 	e := New()
+
 	lockX, ok, err := e.TryAcquireLock("A", []string{"/x"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("A's acquire of /x failed: ok=%v err=%v", ok, err)
 	}
+
 	lockY, ok, err := e.TryAcquireLock("B", []string{"/y"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("B's acquire of /y failed: ok=%v err=%v", ok, err)
@@ -744,12 +882,14 @@ func TestCrossWaitBlocksForeverWithNoTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
+
 	waitB, err := e.WaitChannelsForPaths([]string{"/x"}) // B now wants A's /x
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
 
 	aDone, bDone := make(chan struct{}), make(chan struct{})
+
 	go func() { <-waitA; close(aDone) }()
 	go func() { <-waitB; close(bDone) }()
 
@@ -769,6 +909,7 @@ func TestCrossWaitBlocksForeverWithNoTimeout(t *testing.T) {
 	if err := e.ReleaseLock(lockX.ID, "A", false); err != nil {
 		t.Fatalf("release /x: %v", err)
 	}
+
 	if err := e.ReleaseLock(lockY.ID, "B", false); err != nil {
 		t.Fatalf("release /y: %v", err)
 	}
@@ -778,6 +919,7 @@ func TestCrossWaitBlocksForeverWithNoTimeout(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("expected A's waiter to finally wake once /x was released")
 	}
+
 	select {
 	case <-bDone:
 	case <-time.After(time.Second):
@@ -790,14 +932,17 @@ func TestCrossWaitBlocksForeverWithNoTimeout(t *testing.T) {
 // not just the minimal 2-agent case.
 func TestThreeWayCrossWaitCycleAlsoBlocksForever(t *testing.T) {
 	e := New()
+
 	lockX, ok, err := e.TryAcquireLock("A", []string{"/x"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("A's acquire of /x failed: ok=%v err=%v", ok, err)
 	}
+
 	lockY, ok, err := e.TryAcquireLock("B", []string{"/y"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("B's acquire of /y failed: ok=%v err=%v", ok, err)
 	}
+
 	lockZ, ok, err := e.TryAcquireLock("C", []string{"/z"}, LockExclusive, 0, false)
 	if err != nil || !ok {
 		t.Fatalf("C's acquire of /z failed: ok=%v err=%v", ok, err)
@@ -807,16 +952,19 @@ func TestThreeWayCrossWaitCycleAlsoBlocksForever(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
+
 	waitB, err := e.WaitChannelsForPaths([]string{"/z"}) // B wants C's /z
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
+
 	waitC, err := e.WaitChannelsForPaths([]string{"/x"}) // C wants A's /x
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
 
 	done := make(chan struct{}, 3)
+
 	go func() { <-waitA; done <- struct{}{} }()
 	go func() { <-waitB; done <- struct{}{} }()
 	go func() { <-waitC; done <- struct{}{} }()
@@ -830,9 +978,11 @@ func TestThreeWayCrossWaitCycleAlsoBlocksForever(t *testing.T) {
 	if err := e.ReleaseLock(lockX.ID, "A", false); err != nil {
 		t.Fatalf("release /x: %v", err)
 	}
+
 	if err := e.ReleaseLock(lockY.ID, "B", false); err != nil {
 		t.Fatalf("release /y: %v", err)
 	}
+
 	if err := e.ReleaseLock(lockZ.ID, "C", false); err != nil {
 		t.Fatalf("release /z: %v", err)
 	}
@@ -857,12 +1007,15 @@ func TestSweepExpiredLocks(t *testing.T) {
 	}
 
 	e.SweepExpiredLocks()
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("lock should not be swept before TTL elapses")
 	}
 
 	fakeNow = fakeNow.Add(2 * time.Minute)
+
 	e.SweepExpiredLocks()
+
 	if len(e.ListLocks()) != 0 {
 		t.Fatalf("expected lock to be swept after TTL elapses")
 	}
@@ -882,9 +1035,11 @@ func TestSweepExpiredLocksNeverSweepsUnlimitedLocks(t *testing.T) {
 	}
 
 	fakeNow = fakeNow.Add(24 * 365 * time.Hour) // arbitrarily far in the future
+
 	for range 5 {
 		e.SweepExpiredLocks()
 	}
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected a TTL=0 (unlimited) lock to survive indefinitely, got %d locks", len(e.ListLocks()))
 	}
@@ -903,9 +1058,11 @@ func TestSweepExpiredLocksHandlesMultipleSimultaneousExpirations(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/a.go"}, LockExclusive, time.Minute, false); err != nil || !ok {
 		t.Fatalf("alice's acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("bob", []string{"/repo/b.go"}, LockShared, time.Minute, false); err != nil || !ok {
 		t.Fatalf("bob's acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if _, ok, err := e.TryAcquireLock("carol", []string{"/repo/b.go"}, LockShared, time.Minute, false); err != nil || !ok {
 		t.Fatalf("carol's acquire failed: ok=%v err=%v", ok, err)
 	}
@@ -914,22 +1071,26 @@ func TestSweepExpiredLocksHandlesMultipleSimultaneousExpirations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
+
 	waitB, err := e.WaitChannelsForPaths([]string{"/repo/b.go"})
 	if err != nil {
 		t.Fatalf("WaitChannelsForPaths: %v", err)
 	}
 
 	fakeNow = fakeNow.Add(2 * time.Minute) // all three locks now expired
+
 	e.SweepExpiredLocks()
 
 	if len(e.ListLocks()) != 0 {
 		t.Fatalf("expected all three simultaneously-expired locks to be swept, got %d remaining", len(e.ListLocks()))
 	}
+
 	select {
 	case <-waitA:
 	default:
 		t.Fatalf("expected the /repo/a.go waiter to be woken")
 	}
+
 	select {
 	case <-waitB:
 	default:
@@ -947,10 +1108,12 @@ func TestSweepExpiredLocksHandlesMultipleSimultaneousExpirations(t *testing.T) {
 // exclusive path while the first `lock exec` process was still running).
 func TestRenewLockRejectsAttachedLock(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, 0, true)
 	if err != nil || !ok {
 		t.Fatalf("attached acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if err := e.RenewLock(lock.ID, "alice", time.Hour); err == nil {
 		t.Fatalf("expected renewing an attached lock to be rejected")
 	}
@@ -981,9 +1144,11 @@ func TestSweepExpiredLocksNeverSweepsAttachedLocks(t *testing.T) {
 	if _, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Minute, true); err != nil || !ok {
 		t.Fatalf("attached acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	fakeNow = fakeNow.Add(2 * time.Minute)
 
 	e.SweepExpiredLocks()
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected the attached lock to survive sweep despite an expired-looking TTL")
 	}
@@ -1002,9 +1167,11 @@ func TestRenewLockExtendsExpiry(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	origExpiry := lock.ExpiresAt
 
 	fakeNow = fakeNow.Add(30 * time.Second)
+
 	if err := e.RenewLock(lock.ID, "alice", time.Hour); err != nil {
 		t.Fatalf("renew failed: %v", err)
 	}
@@ -1013,6 +1180,7 @@ func TestRenewLockExtendsExpiry(t *testing.T) {
 	if !renewed.ExpiresAt.After(origExpiry) {
 		t.Fatalf("expected the renewed expiry (%s) to be later than the original (%s)", renewed.ExpiresAt, origExpiry)
 	}
+
 	wantExpiry := fakeNow.Add(time.Hour)
 	if !renewed.ExpiresAt.Equal(wantExpiry) {
 		t.Fatalf("expected renewed ExpiresAt to be now+1h (%s), got %s", wantExpiry, renewed.ExpiresAt)
@@ -1023,10 +1191,12 @@ func TestRenewLockExtendsExpiry(t *testing.T) {
 // their own lock — there is no --force equivalent for renew (unlike release).
 func TestRenewLockRejectsWrongHolder(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if err := e.RenewLock(lock.ID, "bob", time.Hour); err == nil {
 		t.Fatalf("expected renewing someone else's lock to be rejected")
 	}
@@ -1048,13 +1218,16 @@ func TestRenewLockRejectsNonexistentID(t *testing.T) {
 // backstop entirely for a lock the holder now wants to keep indefinitely).
 func TestRenewLockZeroTTLClearsExpiry(t *testing.T) {
 	e := New()
+
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if err := e.RenewLock(lock.ID, "alice", 0); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
+
 	renewed := e.ListLocks()[0]
 	if renewed.TTL != 0 || !renewed.ExpiresAt.IsZero() {
 		t.Fatalf("expected TTL=0 renew to clear TTL/ExpiresAt entirely, got %+v", renewed)
@@ -1078,6 +1251,7 @@ func TestRenewLockBeforeSweepPreventsExpiry(t *testing.T) {
 
 	// Renew with 5 seconds left on the original TTL.
 	fakeNow = fakeNow.Add(55 * time.Second)
+
 	if err := e.RenewLock(lock.ID, "alice", time.Minute); err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -1085,14 +1259,18 @@ func TestRenewLockBeforeSweepPreventsExpiry(t *testing.T) {
 	// Advance to exactly when the ORIGINAL (pre-renewal) TTL would have
 	// elapsed, and sweep — the renewal must have already prevented this.
 	fakeNow = fakeNow.Add(10 * time.Second)
+
 	e.SweepExpiredLocks()
+
 	if len(e.ListLocks()) != 1 {
 		t.Fatalf("expected the renewed lock to survive past its ORIGINAL expiry")
 	}
 
 	// But it must still expire at its NEW (renewed) expiry.
 	fakeNow = fakeNow.Add(time.Minute)
+
 	e.SweepExpiredLocks()
+
 	if len(e.ListLocks()) != 0 {
 		t.Fatalf("expected the renewed lock to eventually expire at its new TTL")
 	}
@@ -1104,12 +1282,14 @@ func TestLockLifecycleIsAudited(t *testing.T) {
 	e.now = func() time.Time { return fakeNow }
 
 	var kinds []string
+
 	e.SetAuditFn(func(ev AuditEvent) { kinds = append(kinds, ev.Kind) })
 
 	lock, ok, err := e.TryAcquireLock("alice", []string{"/repo/file"}, LockExclusive, time.Minute, false)
 	if err != nil || !ok {
 		t.Fatalf("acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	if err := e.ReleaseLock(lock.ID, "alice", false); err != nil {
 		t.Fatalf("release failed: %v", err)
 	}
@@ -1118,13 +1298,16 @@ func TestLockLifecycleIsAudited(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("second acquire failed: ok=%v err=%v", ok, err)
 	}
+
 	fakeNow = fakeNow.Add(2 * time.Minute)
+
 	e.SweepExpiredLocks()
 
 	want := []string{"lock.acquired", "lock.released", "lock.acquired", "lock.expired"}
 	if len(kinds) != len(want) {
 		t.Fatalf("expected audit kinds %v, got %v", want, kinds)
 	}
+
 	for i, k := range want {
 		if kinds[i] != k {
 			t.Fatalf("expected audit kinds %v, got %v", want, kinds)

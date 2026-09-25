@@ -25,6 +25,7 @@ import (
 // but the underlying bug and fix apply to any state change.
 func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -38,6 +39,7 @@ func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
 	if err != nil || d == nil {
 		t.Fatalf("bind: d=%v err=%v", d, err)
 	}
+
 	acceptDone := runAcceptLoopForTest(d, p.sock)
 
 	// Mutate, then IMMEDIATELY signal stop — racing the shutdown against the async
@@ -46,6 +48,7 @@ func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
 	if _, err := d.eng.RegisterIdentity("race-test-identity", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	close(d.stop)
 
 	select {
@@ -58,12 +61,15 @@ func TestShutdownWaitsForPendingSnapshotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+
 	found := false
+
 	for _, id := range snap.Identities {
 		if id.Name == "race-test-identity" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected the identity registered right before shutdown to have been persisted, got identities: %+v", snap.Identities)
 	}
@@ -81,6 +87,7 @@ func TestOpRestartSetsRestartingAndClosesStop(t *testing.T) {
 
 	serverConn, clientConn := net.Pipe()
 	done := make(chan struct{})
+
 	go func() {
 		d.handleConn(serverConn)
 		close(done)
@@ -89,13 +96,16 @@ func TestOpRestartSetsRestartingAndClosesStop(t *testing.T) {
 	if err := json.NewEncoder(clientConn).Encode(wire.Request{Op: wire.OpRestart}); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
+
 	var resp wire.Response
 	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	if !resp.OK {
 		t.Fatalf("expected an OK ack before the daemon tears anything down, got: %+v", resp)
 	}
+
 	clientConn.Close()
 
 	select {
@@ -107,6 +117,7 @@ func TestOpRestartSetsRestartingAndClosesStop(t *testing.T) {
 	if !d.restarting.Load() {
 		t.Fatalf("expected d.restarting to be set by an OpRestart request")
 	}
+
 	select {
 	case <-d.stop:
 	default:
@@ -120,12 +131,14 @@ func TestOpRestartSetsRestartingAndClosesStop(t *testing.T) {
 // an OpStop the same way a real one started via runDaemon would.
 func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 	done := make(chan struct{})
+
 	go func() {
 		<-d.stop
 		d.listener.Close()
 	}()
 	go func() {
 		defer close(done)
+
 		for {
 			conn, err := d.listener.Accept()
 			if err != nil {
@@ -139,11 +152,14 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 					os.Remove(sock)
 				default:
 				}
+
 				return
 			}
+
 			d.conns.Go(func() { d.handleConn(conn) })
 		}
 	}()
+
 	return done
 }
 
@@ -157,6 +173,7 @@ func runAcceptLoopForTest(d *daemonServer, sock string) <-chan struct{} {
 // started, then a restart moments later).
 func TestShutdownCancelsRunningStages(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -170,6 +187,7 @@ func TestShutdownCancelsRunningStages(t *testing.T) {
 	if err != nil || d == nil {
 		t.Fatalf("bind: d=%v err=%v", d, err)
 	}
+
 	acceptDone := runAcceptLoopForTest(d, p.sock)
 
 	pipeline := engine.Pipeline{
@@ -189,6 +207,7 @@ func TestShutdownCancelsRunningStages(t *testing.T) {
 
 	// Wait for the stage to actually reach Running before shutting down.
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		insts, err := d.eng.PipelineStatus("release", "abc123")
 		if err == nil {
@@ -198,14 +217,18 @@ func TestShutdownCancelsRunningStages(t *testing.T) {
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("stage never reached Running before deadline")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 running:
 
 	close(d.stop)
+
 	select {
 	case <-acceptDone:
 	case <-time.After(3 * time.Second):
@@ -216,15 +239,19 @@ running:
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+
 	found := false
+
 	for _, inst := range snap.StageInstances {
 		if inst.Pipeline == "release" && inst.Stage == "build" {
 			found = true
+
 			if inst.Status != engine.StageFailed {
 				t.Fatalf("expected the stuck stage to be cancelled to Failed on shutdown, got %s", inst.Status)
 			}
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected to find the build instance in the persisted snapshot")
 	}
@@ -246,6 +273,7 @@ func TestWaitConnsIdleBlocksUntilInFlightHandlersFinish(t *testing.T) {
 	d := newTestDaemon()
 
 	release := make(chan struct{})
+
 	d.conns.Go(func() {
 		<-release // simulates a handler still doing real work (e.g. hook.Run)
 	})
@@ -273,6 +301,7 @@ func TestWaitConnsIdleBlocksUntilInFlightHandlersFinish(t *testing.T) {
 // step without killing the test binary.
 func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -286,6 +315,7 @@ func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 	if err != nil || d == nil {
 		t.Fatalf("bind: d=%v err=%v", d, err)
 	}
+
 	acceptDone := runAcceptLoopForTest(d, p.sock)
 
 	pipeline := engine.Pipeline{
@@ -316,6 +346,7 @@ func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 	// WHILE that request is still blocked waiting for the command to finish —
 	// exactly the reported race (a restart landing mid-stage-run).
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		insts, err := d.eng.PipelineStatus("release", "abc123")
 		if err == nil {
@@ -325,19 +356,25 @@ func TestShutdownWaitsForInFlightRequest(t *testing.T) {
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("stage never reached Running before deadline")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 running:
 	close(d.stop)
 
 	var resp wire.Response
+
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
 		t.Fatalf("expected the in-flight caller to get a real response, not a connection error: %v", err)
 	}
+
 	if !resp.OK {
 		t.Fatalf("expected an OK response (stage outcome is data, not an RPC error), got: %+v", resp)
 	}
@@ -353,6 +390,7 @@ running:
 // against the same BREEZE_DIR and asserts exactly one binds/holds the flock.
 func TestSingleDaemonInstanceGuarantee(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -363,9 +401,14 @@ func TestSingleDaemonInstanceGuarantee(t *testing.T) {
 	}
 
 	const n = 5
-	var wg sync.WaitGroup
-	var successes atomic.Int32
+
+	var (
+		wg        sync.WaitGroup
+		successes atomic.Int32
+	)
+
 	stopChans := make([]*daemonServer, 0)
+
 	var mu sync.Mutex
 
 	for range n {
@@ -374,12 +417,15 @@ func TestSingleDaemonInstanceGuarantee(t *testing.T) {
 			if err != nil || d == nil {
 				return // expected for the losers (flock contention, or dial-probe saw the winner)
 			}
+
 			successes.Add(1)
 			mu.Lock()
+
 			stopChans = append(stopChans, d)
 			mu.Unlock()
 		})
 	}
+
 	wg.Wait()
 
 	if successes.Load() != 1 {
@@ -404,6 +450,7 @@ func TestSingleDaemonInstanceGuarantee(t *testing.T) {
 // rather than silently leaving a stale instance running forever alongside a new one.
 func TestExplicitDaemonStartDisplacesExisting(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -417,12 +464,14 @@ func TestExplicitDaemonStartDisplacesExisting(t *testing.T) {
 	if err != nil || first == nil {
 		t.Fatalf("expected the first explicit start to succeed: d=%v err=%v", first, err)
 	}
+
 	firstDone := runAcceptLoopForTest(first, p.sock)
 
 	second, err := tryBindDaemon(p, false)
 	if err != nil {
 		t.Fatalf("expected the second explicit start to displace the first and succeed, got err: %v", err)
 	}
+
 	if second == nil {
 		t.Fatalf("expected the second explicit start to actually take over (non-nil), not defer")
 	}
@@ -461,6 +510,7 @@ func tryStartDaemonForTest(p paths) (*daemonServer, error) {
 // keeps it from coming back.
 func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 	dir := t.TempDir()
+
 	p := paths{
 		dir: dir, sock: dir + "/breeze.sock", lockfile: dir + "/breeze.lock",
 		state: dir + "/state.json", audit: dir + "/audit.jsonl",
@@ -470,10 +520,12 @@ func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 	if err := p.ensureDir(); err != nil {
 		t.Fatalf("ensureDir: %v", err)
 	}
+
 	d, err := tryBindDaemon(p, false)
 	if err != nil || d == nil {
 		t.Fatalf("bind: d=%v err=%v", d, err)
 	}
+
 	defer func() {
 		syscall.Flock(d.lockFD, syscall.LOCK_UN)
 		syscall.Close(d.lockFD)
@@ -484,6 +536,7 @@ func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("F_GETFD: %v", errno)
 	}
+
 	if flags&syscall.FD_CLOEXEC == 0 {
 		t.Fatalf("the lock fd is NOT close-on-exec: every stage command the daemon forks would inherit the flock, and one surviving runner would block every future daemon start for this directory")
 	}
@@ -493,6 +546,7 @@ func TestDaemonLockFDIsCloseOnExec(t *testing.T) {
 // in-flight run without needing a live child process.
 func registerRunningStage(t *testing.T, d *daemonServer, pipeline, stage, commit, actor string) {
 	t.Helper()
+
 	p := engine.Pipeline{
 		Name:     pipeline,
 		Stages:   []engine.StageDef{{Name: stage, Type: engine.StageCommand, Timeout: time.Minute, Command: engine.CommandTemplate{Path: "/bin/sleep", Args: []string{"30"}}, CommandPolicy: &engine.CommandPolicy{}}},
@@ -504,28 +558,35 @@ func registerRunningStage(t *testing.T, d *daemonServer, pipeline, stage, commit
 	// A real start through the real path, left in flight — no test-only hook into
 	// the engine, so what's asserted is what a live daemon would actually see.
 	go d.eng.StartCommandStage(pipeline, stage, commit, "", actor, "")
+
 	deadline := time.Now().Add(3 * time.Second)
 	for d.eng.RunningStageCount() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("stage never reached running")
 		}
+
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
 func restartRequest(t *testing.T, d *daemonServer, force bool) wire.Response {
 	t.Helper()
+
 	serverConn, clientConn := net.Pipe()
 	go d.handleConn(serverConn)
+
 	payload, _ := json.Marshal(wire.RestartRequest{Force: force})
 	if err := json.NewEncoder(clientConn).Encode(wire.Request{Op: wire.OpRestart, Payload: payload}); err != nil {
 		t.Fatalf("encode: %v", err)
 	}
+
 	var resp wire.Response
 	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+
 	clientConn.Close()
+
 	return resp
 }
 
@@ -549,6 +610,7 @@ func TestRestartIsDeferredWhileStagesAreRunning(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("a busy restart is DEFERRED, not refused: %+v", resp)
 	}
+
 	out, err := decodePayload[wire.RestartResponse](resp)
 	if err != nil || !out.Deferred {
 		t.Fatalf("the response must say it was deferred, got %+v (%v)", out, err)
@@ -563,11 +625,13 @@ func TestRestartIsDeferredWhileStagesAreRunning(t *testing.T) {
 	if d.restarting.Load() {
 		t.Fatal("a deferred restart must not flag the daemon as restarting yet")
 	}
+
 	select {
 	case <-d.stop:
 		t.Fatal("a deferred restart must not close the stop channel")
 	default:
 	}
+
 	if !d.restartWhenIdle.Load() {
 		t.Fatal("a deferred restart must record the intent, or it never happens")
 	}
@@ -588,6 +652,7 @@ func TestRestartForcedProceedsWithStagesRunning(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a forced restart must trigger the shutdown path")
 	}
+
 	if !d.restarting.Load() {
 		t.Fatal("a forced restart must flag the daemon as restarting")
 	}
@@ -632,7 +697,9 @@ func TestShutdownPersistsFinalStateEvenWhenTheWriterIsStuck(t *testing.T) {
 	}
 
 	start := time.Now()
+
 	d.persistFinalState(50 * time.Millisecond)
+
 	if time.Since(start) > 3*time.Second {
 		t.Fatalf("persistFinalState must be bounded by its wait, took %s", time.Since(start))
 	}
@@ -641,8 +708,10 @@ func TestShutdownPersistsFinalStateEvenWhenTheWriterIsStuck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nothing was written despite the stuck writer: %v", err)
 	}
+
 	reloaded := engine.New()
 	reloaded.Load(snap)
+
 	if _, ok := reloaded.Identity("late-arrival"); !ok {
 		t.Fatal("a mutation made before shutdown must survive even when the async writer never drains; without the synchronous write a finished stage reloads as orphaned")
 	}

@@ -48,8 +48,10 @@ func decodeHolder(s string) (Holder, bool) {
 	if len(f) != 7 {
 		return Holder{}, false
 	}
+
 	pid, _ := strconv.Atoi(f[0])
 	ns, _ := strconv.ParseInt(f[6], 10, 64)
+
 	return Holder{PID: pid, Dir: f[1], Pipeline: f[2], Stage: f[3], Key: f[4], Actor: f[5], Since: time.Unix(0, ns)}, true
 }
 
@@ -67,10 +69,12 @@ func Dir() string {
 	if runtime := filepath.Join("/run/user", strconv.Itoa(os.Getuid())); isDir(runtime) {
 		return filepath.Join(runtime, "breeze", "slots")
 	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
+
 	return filepath.Join(home, ".local", "state", "breeze", "slots")
 }
 
@@ -96,7 +100,7 @@ func (s *Slot) Release() {
 	// close, and by process death, which is the property that makes this
 	// self-healing: a daemon killed mid-run cannot leak a slot the way a counter
 	// file or a database row would.
-	syscall.Ftruncate(s.fd, 0)
+	_ = syscall.Ftruncate(s.fd, 0) // a stale holder record, not a held slot: the flock is released by the close below either way
 	syscall.Close(s.fd)
 	s.fd = 0
 }
@@ -111,9 +115,11 @@ func Acquire(dir string, max int, h Holder, timeout time.Duration, waiting func(
 	if max <= 0 {
 		return &Slot{}, nil
 	}
+
 	if dir == "" {
 		return nil, fmt.Errorf("no machine-wide slot directory could be determined (no /run/user/%d and no home directory), so the queue cannot be enforced", os.Getuid())
 	}
+
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating slot directory %s: %w", dir, err)
 	}
@@ -121,6 +127,7 @@ func Acquire(dir string, max int, h Holder, timeout time.Duration, waiting func(
 	if s := tryAcquire(dir, max, h); s != nil {
 		return s, nil
 	}
+
 	if waiting != nil {
 		waiting(Holders(dir, max))
 	}
@@ -131,7 +138,9 @@ func Acquire(dir string, max int, h Holder, timeout time.Duration, waiting func(
 			return nil, fmt.Errorf("timed out after %s waiting for one of the machine's %d stage slots; in use by:\n%s",
 				timeout, max, describe(Holders(dir, max)))
 		}
+
 		time.Sleep(250 * time.Millisecond)
+
 		if s := tryAcquire(dir, max, h); s != nil {
 			return s, nil
 		}
@@ -144,18 +153,27 @@ func Acquire(dir string, max int, h Holder, timeout time.Duration, waiting func(
 func tryAcquire(dir string, max int, h Holder) *Slot {
 	for i := range max {
 		path := filepath.Join(dir, fmt.Sprintf("slot-%d", i))
+
 		fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_CLOEXEC, 0o600)
 		if err != nil {
 			continue
 		}
+
 		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 			syscall.Close(fd)
 			continue
 		}
-		syscall.Ftruncate(fd, 0)
-		syscall.Pwrite(fd, []byte(h.encode()), 0)
+
+		// The flock above is what HOLDS the slot; these two only describe it for
+		// `breeze board`. A failed write therefore leaves a busy slot that reports as
+		// unheld until the next acquire rewrites the file — the same "point-in-time
+		// read" caveat Holders already carries, and not a slot that can be double-taken.
+		_ = syscall.Ftruncate(fd, 0)
+		_, _ = syscall.Pwrite(fd, []byte(h.encode()), 0)
+
 		return &Slot{fd: fd, path: path}
 	}
+
 	return nil
 }
 
@@ -166,24 +184,31 @@ func tryAcquire(dir string, max int, h Holder) *Slot {
 // standing fact. A point-in-time read is not a claim about any later moment.
 func Holders(dir string, max int) []Holder {
 	var out []Holder
+
 	for i := range max {
 		path := filepath.Join(dir, fmt.Sprintf("slot-%d", i))
+
 		fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0o600)
 		if err != nil {
 			continue // never created yet, therefore free
 		}
+
 		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-			syscall.Flock(fd, syscall.LOCK_UN) // it was free; leave it that way
+			_ = syscall.Flock(fd, syscall.LOCK_UN) // it was free; leave it that way // an unlock immediately followed by a close of the same fd cannot strand the lock: the close drops the flock either way
 			syscall.Close(fd)
+
 			continue
 		}
+
 		syscall.Close(fd)
+
 		if data, err := os.ReadFile(path); err == nil {
 			if h, ok := decodeHolder(string(data)); ok {
 				out = append(out, h)
 			}
 		}
 	}
+
 	return out
 }
 
@@ -191,10 +216,12 @@ func describe(hs []Holder) string {
 	if len(hs) == 0 {
 		return "  (nothing — the holders finished while this was being reported)"
 	}
+
 	var b strings.Builder
 	for _, h := range hs {
 		fmt.Fprintf(&b, "  %s\n", h)
 	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 

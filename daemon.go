@@ -92,6 +92,7 @@ type daemonServer struct {
 // that genuinely cannot be caught, and would put them back where they started.
 func (d *daemonServer) handleSignals() {
 	ch := make(chan os.Signal, 2)
+
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-ch
@@ -119,10 +120,12 @@ func (d *daemonServer) beginShutdown() {
 // whatever it was waiting on) finishes well inside the bound.
 func (d *daemonServer) waitConnsIdle(timeout time.Duration) bool {
 	done := make(chan struct{})
+
 	go func() {
 		d.conns.Wait()
 		close(done)
 	}()
+
 	select {
 	case <-done:
 		return true
@@ -147,6 +150,7 @@ func (d *daemonServer) waitConnsIdle(timeout time.Duration) bool {
 // agent trying to check usage ended up displacing/duplicating a live daemon instead.
 func runDaemon(p paths, args []string) error {
 	autoStart := false
+
 	if len(args) > 0 {
 		switch args[0] {
 		case "--auto-start":
@@ -155,10 +159,12 @@ func runDaemon(p paths, args []string) error {
 			return fmt.Errorf("usage: breeze start daemon [--auto-start] — run the foreground daemon for the current directory's state (see `breeze restart daemon` to replace a running one without blocking your shell); %q is not a recognized flag, refusing to start a daemon for it", args[0])
 		}
 	}
+
 	d, err := tryBindDaemon(p, autoStart)
 	if err != nil {
 		return err
 	}
+
 	if d == nil {
 		// Auto-start lost a race to another concurrent auto-start (or a real daemon
 		// was already there) — quiet, friendly no-op, not an error.
@@ -166,6 +172,7 @@ func runDaemon(p paths, args []string) error {
 	}
 
 	go d.sweepLoop()
+
 	d.handleSignals()
 	log.Printf("breeze daemon listening on %s (pid %d)", p.sock, os.Getpid())
 
@@ -175,7 +182,7 @@ func runDaemon(p paths, args []string) error {
 	go func() {
 		<-d.stop
 		messCancel()
-		d.listener.Close()
+		closeQuietly(d.listener)
 	}()
 
 	for {
@@ -224,9 +231,11 @@ func runDaemon(p paths, args []string) error {
 				// flock/socket cleanup (or a restart's re-exec) would proceed while
 				// it was still pending, silently losing that last mutation on reload.
 				d.persistFinalState(5 * time.Second)
-				syscall.Flock(d.lockFD, syscall.LOCK_UN)
+				_ = syscall.Flock(d.lockFD, syscall.LOCK_UN) // an unlock immediately followed by a close of the same fd cannot strand the lock: the close drops the flock either way
 				syscall.Close(d.lockFD)
-				os.Remove(p.sock)
+
+				_ = os.Remove(p.sock) // best-effort: a stale socket is removed again before the next bind, so a leftover is harmless
+
 				if d.restarting.Load() {
 					// Re-exec in place (same PID) so a restart picks up whatever
 					// binary is currently on disk — never returns on success. The
@@ -236,14 +245,17 @@ func runDaemon(p paths, args []string) error {
 					log.Printf("restart: failed to re-exec, exiting instead: %v", err)
 					os.Exit(1)
 				}
+
 				if err := deregisterSelf(p); err != nil {
 					log.Printf("warning: failed to remove this daemon from the discovery registry: %v", err)
 				}
+
 				return nil
 			default:
 				return err
 			}
 		}
+
 		d.conns.Go(func() { d.handleConn(conn) })
 	}
 }
@@ -270,11 +282,14 @@ func (d *daemonServer) notifyTask(item *engine.WorkItem, actor, what string) []s
 		if name == "" || name == actor || slices.Contains(who, name) {
 			continue
 		}
+
 		who = append(who, name)
 	}
+
 	if len(who) == 0 {
 		return nil
 	}
+
 	return d.notifyList(who, fmt.Sprintf("%s — by %s", what, actor))
 }
 
@@ -290,11 +305,13 @@ func appendAuditLine(path string, ev engine.AuditEvent) {
 		return
 	}
 	defer f.Close()
+
 	data, err := json.Marshal(ev)
 	if err != nil {
 		log.Printf("warning: failed to marshal audit event: %v", err)
 		return
 	}
+
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		log.Printf("warning: failed to append audit log: %v", err)
 	}
@@ -303,6 +320,7 @@ func appendAuditLine(path string, ev engine.AuditEvent) {
 func (d *daemonServer) sweepLoop() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-d.stop:
@@ -318,6 +336,7 @@ func (d *daemonServer) sweepLoop() {
 				log.Printf("idle now — performing the deferred restart")
 				d.restarting.Store(true)
 				d.beginShutdown()
+
 				return
 			}
 		}
@@ -325,7 +344,8 @@ func (d *daemonServer) sweepLoop() {
 }
 
 func (d *daemonServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer closeQuietly(conn)
+
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
 
@@ -334,6 +354,7 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		if !errors.Is(err, io.EOF) {
 			log.Printf("decode error: %v", err)
 		}
+
 		return
 	}
 
@@ -341,10 +362,12 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		d.handleLockExec(conn, enc, req)
 		return
 	}
+
 	if req.Op == wire.OpOperatorWatch {
 		d.handleOperatorWatch(conn, enc, req)
 		return
 	}
+
 	if req.Op == wire.OpRestart {
 		// Refuse while stages are running, unless forced. Adoption means a restart is
 		// safe for the RUN, so this guard is not about survival — it is about consent:
@@ -364,8 +387,9 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		// here, so it couples them, exactly as requires_lock does for stage starts.
 		var rr wire.RestartRequest
 		if len(req.Payload) > 0 {
-			json.Unmarshal(req.Payload, &rr) // absent/garbled payload = not forced, the safe reading
+			_ = json.Unmarshal(req.Payload, &rr) // absent/garbled payload = not forced, the safe reading
 		}
+
 		if !rr.Force {
 			if running := d.eng.RunningStages(); len(running) > 0 {
 				// Not refused: DEFERRED. The guard's job is to never interrupt a run
@@ -376,6 +400,7 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 				// anyone was looking. The daemon can look every five seconds.
 				d.restartWhenIdle.Store(true)
 				log.Printf("restart deferred: %d stage(s) in flight; will restart in place when idle", len(running))
+
 				names := make([]string, 0, len(running))
 				for _, inst := range running {
 					// A queued stage has no process, but a re-exec destroys the goroutine
@@ -385,9 +410,12 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 					if inst.Status == engine.StageQueued {
 						state = ", queued for a machine slot"
 					}
+
 					names = append(names, fmt.Sprintf("%s/%s (%s%s)", inst.Pipeline, inst.Stage, inst.Actor, state))
 				}
-				enc.Encode(okResponse(wire.RestartResponse{Deferred: true, Running: names}))
+
+				reply(enc, okResponse(wire.RestartResponse{Deferred: true, Running: names}))
+
 				return
 			}
 		}
@@ -397,9 +425,10 @@ func (d *daemonServer) handleConn(conn net.Conn) {
 		// path OpStop uses; runDaemon's accept loop re-execs once it's fully wound
 		// down, never from this connection-handling goroutine directly (avoids a
 		// race between this goroutine's own exec and the main loop's shutdown).
-		enc.Encode(okResponse(wire.RestartResponse{}))
+		reply(enc, okResponse(wire.RestartResponse{}))
 		d.restarting.Store(true)
 		d.beginShutdown()
+
 		return
 	}
 
@@ -424,7 +453,23 @@ func okResponse(payload any) wire.Response {
 	if err != nil {
 		return errResponse(err)
 	}
+
 	return wire.Response{OK: true, Payload: data}
+}
+
+// reply writes a response and deliberately discards the write error.
+//
+// Every call site is the LAST thing a request handler does — the response goes
+// out and the handler returns, or the connection is torn down with it. A failed
+// write there means the peer went away mid-write, and there is no one left to
+// tell: the alternative to ignoring it is logging an error about a client that
+// has already disconnected, on a path that runs while the daemon is shutting
+// down. Stating that once, here, is why the handler call sites read `reply(enc,
+// …)` rather than nine copies of `_ = enc.Encode(…)` — which is the same
+// decision, written nine times, where the ninth reader cannot tell it from an
+// oversight.
+func reply(enc *json.Encoder, resp wire.Response) {
+	_ = enc.Encode(resp)
 }
 
 // credentialExempt lists the ops that must still be reachable with an invalid
@@ -465,10 +510,12 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if req.As == "" {
 			return okResponse(wire.WhoAmIResponse{})
 		}
+
 		id, ok := d.eng.Identity(req.As)
 		if !ok {
 			return okResponse(wire.WhoAmIResponse{Name: req.As})
 		}
+
 		return okResponse(wire.WhoAmIResponse{Name: id.Name, Roles: rolesToStrings(id.Roles), Registered: true})
 
 	case wire.OpTaskCreate:
@@ -476,23 +523,28 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if req.As == "" {
 			return errResponse(fmt.Errorf("creating a task needs an identity: pass --as NAME — an item whose creator is nobody cannot be answered"))
 		}
+
 		item, err := d.eng.CreateWorkItem(p.Title, req.As, p.Assignee, p.Reviewer)
 		if err != nil {
 			return errResponse(err)
 		}
 		// Assigning someone at creation is itself news to them.
 		notified := d.notifyTask(item, req.As, fmt.Sprintf("created %s: %s", item.ID, item.Title))
+
 		return okResponse(wire.TaskResponse{Item: workItemToWire(*item), Notified: notified})
 
 	case wire.OpTaskList:
 		items := d.eng.WorkItems()
+
 		out := make([]wire.WorkItem, 0, len(items))
 		for _, it := range items {
 			out = append(out, workItemToWire(it))
 		}
+
 		return okResponse(wire.TaskListResponse{Items: out})
 
 	case wire.OpTaskUpdate:
@@ -500,22 +552,27 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if req.As == "" {
 			return errResponse(fmt.Errorf("changing a task needs an identity: pass --as NAME — the point of the record is who moved it"))
 		}
+
 		up := engine.WorkUpdate{Assignee: p.Assignee, Reviewer: p.Reviewer, Blocked: p.Blocked}
 		if p.Status != nil {
 			st := engine.WorkStatus(*p.Status)
 			up.Status = &st
 		}
+
 		item, stakeholders, err := d.eng.UpdateWorkItem(p.ID, req.As, up)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		var notified []string
 		if len(stakeholders) > 0 {
 			notified = d.notifyList(stakeholders, fmt.Sprintf("%s [%s] %s — changed by %s", item.ID, item.Status, item.Title, req.As))
 		}
+
 		return okResponse(wire.TaskResponse{Item: workItemToWire(*item), Notified: notified})
 
 	case wire.OpAuthCheck:
@@ -525,26 +582,33 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		id, err := d.requireTier2(req)
 		if err != nil {
 			return okResponse(wire.AuthCheckResponse{Authorized: false, Reason: err.Error()})
 		}
+
 		if p.RequiredRole != "" && !id.HasRole(engine.Role(p.RequiredRole)) {
 			return okResponse(wire.AuthCheckResponse{Authorized: false, Reason: fmt.Sprintf("identity %q does not hold role %q", id.Name, p.RequiredRole)})
 		}
+
 		return okResponse(wire.AuthCheckResponse{Authorized: true})
 
 	case wire.OpPs:
 		ids := d.eng.Identities()
+
 		infos := make([]wire.IdentityInfo, 0, len(ids))
 		for _, id := range ids {
 			infos = append(infos, identityToWire(id))
 		}
+
 		locks := d.eng.ListLocks()
+
 		lockInfos := make([]wire.LockInfo, 0, len(locks))
 		for _, l := range locks {
 			lockInfos = append(lockInfos, lockToWire(l))
 		}
+
 		return okResponse(wire.PsResponse{Identities: infos, Locks: lockInfos})
 
 	case wire.OpIdentityRegister:
@@ -591,6 +655,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				return errResponse(fmt.Errorf("identity name %q is reserved on a store that already has an admin: any other fresh name can be registered without a token, and this one is what breeze's own recovery advice points at, so only an existing admin may create it. %w", p.Name, err))
 			}
 		}
+
 		token, err := d.eng.RegisterIdentity(p.Name, p.MessAgent, engine.By(req.As))
 		if err != nil {
 			return errResponse(err)
@@ -604,6 +669,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if id, ok := d.eng.Identity(p.Name); ok {
 			roles = rolesToStrings(id.Roles)
 		}
+
 		return okResponse(wire.IdentityRegisterResponse{Name: p.Name, Token: token, Roles: roles})
 
 	case wire.OpIdentityNotify:
@@ -614,76 +680,94 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if req.As == "" {
 			return errResponse(fmt.Errorf("--as is required"))
 		}
+
 		if err := d.eng.SetNotifyOptOut(req.As, p.OptOut); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpIdentityRevoke:
 		if err := d.requireAdmin(req); err != nil {
 			return errResponse(err)
 		}
+
 		var p wire.IdentityRevokeRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.RevokeIdentity(p.Name, engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpRoleAssign:
 		if err := d.requireAdmin(req); err != nil {
 			return errResponse(err)
 		}
+
 		var p wire.RoleAssignRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.AssignRole(p.Identity, engine.Role(p.Role), engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpRoleRevoke:
 		if err := d.requireAdmin(req); err != nil {
 			return errResponse(err)
 		}
+
 		var p wire.RoleRevokeRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.RevokeRole(p.Identity, engine.Role(p.Role), engine.By(req.As)); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpRoleList:
 		ids := d.eng.Identities()
+
 		infos := make([]wire.IdentityInfo, 0, len(ids))
 		for _, id := range ids {
 			infos = append(infos, identityToWire(id))
 		}
+
 		return okResponse(wire.RoleListResponse{Identities: infos})
 
 	case wire.OpPipelineRegister:
 		if err := d.requireAdmin(req); err != nil {
 			return errResponse(err)
 		}
+
 		var p wire.PipelineRegisterRequest
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, err := pipelineFromWire(p.Pipeline)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.RegisterPipeline(pipeline, req.As); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpPipelineShow:
@@ -691,18 +775,22 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Name)
 		if !ok {
 			return errResponse(engine.ErrNotFound)
 		}
+
 		return okResponse(wire.PipelineShowResponse{Pipeline: pipelineToWire(*pipeline)})
 
 	case wire.OpPipelineList:
 		pipelines := d.eng.Pipelines()
+
 		out := make([]wire.Pipeline, 0, len(pipelines))
 		for _, p := range pipelines {
 			out = append(out, pipelineToWire(p))
 		}
+
 		return okResponse(wire.PipelineListResponse{Pipelines: out})
 
 	case wire.OpPipelineStatus:
@@ -710,14 +798,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		instances, err := d.eng.PipelineStatus(p.Pipeline, p.Commit)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		out := make([]wire.StageInstance, 0, len(instances))
 		for _, inst := range instances {
 			out = append(out, stageInstanceToWire(inst))
 		}
+
 		return okResponse(wire.PipelineStatusResponse{Instances: out})
 
 	case wire.OpStageStart:
@@ -725,19 +816,26 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
-		var inst *engine.StageInstance
-		var err error
+
+		var (
+			inst *engine.StageInstance
+			err  error
+		)
+
 		switch pipeline.Stages[i].Type {
 		case engine.StageCommand:
 			if p.Force {
@@ -754,9 +852,11 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		default:
 			return errResponse(fmt.Errorf("stage %q is not a command/deploy stage; use stage.approve", p.Stage))
 		}
+
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageStartResponse{Instance: stageInstanceToWire(*inst)})
 
 	case wire.OpDeployRollback:
@@ -764,14 +864,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if pipeline.Stages[i].Type != engine.StageDeploy {
 			return errResponse(fmt.Errorf("stage %q is not a deploy stage", p.Stage))
 		}
@@ -780,10 +883,12 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+
 		inst, err := d.eng.RollbackDeployStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageStartResponse{Instance: stageInstanceToWire(*inst)})
 
 	case wire.OpDeployClaim:
@@ -791,14 +896,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if pipeline.Stages[i].Type != engine.StageDeploy {
 			return errResponse(fmt.Errorf("stage %q is not a deploy stage", p.Stage))
 		}
@@ -807,14 +915,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+
 		ttl, err := parseOptionalDuration(p.TTL)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		lock, target, err := d.eng.ClaimDeployLock(p.Pipeline, p.Stage, p.Environment, req.As, ttl)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.DeployClaimResponse{LockID: lock.ID, Target: target, ExpiresAt: lock.ExpiresAt})
 
 	case wire.OpStageClaim:
@@ -822,14 +933,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if pipeline.Stages[i].Type != engine.StageCommand {
 			return errResponse(fmt.Errorf("stage %q is not a command stage (deploy stages use `deploy claim` instead)", p.Stage))
 		}
@@ -838,14 +952,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+
 		ttl, err := parseOptionalDuration(p.TTL)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		lock, err := d.eng.ClaimStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, ttl)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageClaimResponse{LockID: lock.ID, ExpiresAt: lock.ExpiresAt})
 
 	case wire.OpDeployGrant:
@@ -859,14 +976,17 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if _, err := d.requireTier2(req); err != nil {
 			return errResponse(err)
 		}
+
 		ttl, err := parseOptionalDuration(p.TTL)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		grant, err := d.eng.GrantEnvironmentAccess(p.Pipeline, p.Environment, p.Targets, p.Grantee, req.As, ttl)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.DeployGrantResponse{Grantee: grant.Grantee, Targets: grant.Targets, ExpiresAt: grant.ExpiresAt})
 
 	case wire.OpDeployGrantList:
@@ -874,7 +994,9 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		grants := d.eng.EnvironmentGrants(p.Pipeline, p.Environment)
+
 		infos := make([]wire.EnvironmentGrantInfo, 0, len(grants))
 		for _, g := range grants {
 			infos = append(infos, wire.EnvironmentGrantInfo{
@@ -882,6 +1004,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				Grantee: g.Grantee, GrantedBy: g.GrantedBy, ExpiresAt: g.ExpiresAt,
 			})
 		}
+
 		return okResponse(wire.DeployGrantListResponse{Grants: infos})
 
 	case wire.OpStageApprove:
@@ -889,21 +1012,26 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+
 		inst, err := d.eng.ApproveStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Brief)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageApproveResponse{Instance: stageInstanceToWire(*inst)})
 
 	case wire.OpStageCancel:
@@ -911,21 +1039,26 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		pipeline, ok := d.eng.Pipeline(p.Pipeline)
 		if !ok {
 			return errResponse(fmt.Errorf("pipeline %q not found", p.Pipeline))
 		}
+
 		i := pipeline.StageIndex(p.Stage)
 		if i < 0 {
 			return errResponse(fmt.Errorf("stage %q not found in pipeline %q", p.Stage, p.Pipeline))
 		}
+
 		if err := d.requireTier2ForStage(req, pipeline.Stages[i]); err != nil {
 			return errResponse(err)
 		}
+
 		inst, err := d.eng.CancelStage(p.Pipeline, p.Stage, p.Commit, p.Environment, req.As, p.Reason)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageCancelResponse{Instance: stageInstanceToWire(*inst)})
 
 	case wire.OpStageStatus:
@@ -933,10 +1066,12 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		inst, err := d.eng.StageStatus(p.Pipeline, p.Stage, p.Commit, p.Environment)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(wire.StageStatusResponse{Instance: stageInstanceToWire(*inst)})
 
 	case wire.OpStageWait:
@@ -944,10 +1079,12 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		timeout, err := parseOptionalDuration(p.Timeout)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		inst, waitErr := d.eng.WaitForStage(p.Pipeline, p.Stage, p.Commit, p.Environment, timeout)
 		if inst == nil {
 			return errResponse(waitErr)
@@ -962,11 +1099,14 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		records := d.eng.DeployHistory(p.Pipeline, p.Stage, p.Environment, p.Limit)
+
 		out := make([]wire.DeployHistoryEntry, 0, len(records))
 		for _, r := range records {
 			out = append(out, deployRecordToWire(r))
 		}
+
 		return okResponse(wire.DeployHistoryResponse{Entries: out})
 
 	case wire.OpOperatorSurface:
@@ -980,17 +1120,21 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.ReleaseLock(p.ID, req.As, p.Force); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpLockReleaseAll:
 		released := d.eng.ReleaseAllLocks(req.As)
+
 		out := make([]wire.LockInfo, 0, len(released))
 		for _, l := range released {
 			out = append(out, lockToWire(l))
 		}
+
 		return okResponse(wire.LockReleaseAllResponse{Released: out})
 
 	case wire.OpLockRenew:
@@ -998,13 +1142,16 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 		if err := json.Unmarshal(req.Payload, &p); err != nil {
 			return errResponse(err)
 		}
+
 		ttl, err := parseOptionalDuration(p.TTL)
 		if err != nil {
 			return errResponse(err)
 		}
+
 		if err := d.eng.RenewLock(p.ID, req.As, ttl); err != nil {
 			return errResponse(err)
 		}
+
 		return okResponse(struct{}{})
 
 	case wire.OpLockList:
@@ -1014,20 +1161,24 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				return errResponse(err)
 			}
 		}
+
 		var locks []engine.FileLock
 		if p.All {
 			locks = d.eng.ListAllLocks()
 		} else {
 			locks = d.eng.ListLocks()
 		}
+
 		out := make([]wire.LockInfo, 0, len(locks))
 		for _, l := range locks {
 			out = append(out, lockToWire(l))
 		}
+
 		return okResponse(wire.LockListResponse{Locks: out})
 
 	case wire.OpInventory:
 		resources := d.eng.ListResourceLocks()
+
 		out := make([]wire.ResourceInfo, 0, len(resources))
 		for _, r := range resources {
 			out = append(out, wire.ResourceInfo{
@@ -1035,6 +1186,7 @@ func (d *daemonServer) dispatch(req wire.Request) wire.Response {
 				Holder: r.Holder, AcquiredAt: r.AcquiredAt, ExpiresAt: r.ExpiresAt,
 			})
 		}
+
 		return okResponse(wire.InventoryResponse{Resources: out})
 
 	default:
@@ -1062,6 +1214,7 @@ func (d *daemonServer) requireAdmin(req wire.Request) error {
 	if err != nil {
 		return err
 	}
+
 	if !id.HasRole("admin") {
 		held := "no roles at all"
 		if len(id.Roles) > 0 {
@@ -1072,6 +1225,7 @@ func (d *daemonServer) requireAdmin(req wire.Request) error {
 		// useless for deciding what to do next.
 		return fmt.Errorf("identity %q lacks the \"admin\" role this operation requires (%s) — an existing admin can grant it with `breeze assign role admin %s`", id.Name, held, id.Name)
 	}
+
 	return nil
 }
 
@@ -1097,6 +1251,7 @@ func (d *daemonServer) requireTier2ForStage(req wire.Request, stage engine.Stage
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -1107,6 +1262,7 @@ func (d *daemonServer) requireTier2(req wire.Request) (*engine.Identity, error) 
 	if req.As == "" || req.Token == "" {
 		return nil, fmt.Errorf("this operation requires an identity AND its token: pass --as NAME with --token T or --token-file PATH (a session that ran `breeze register identity` is bound to both and can omit them)")
 	}
+
 	return d.eng.VerifyToken(req.As, req.Token)
 }
 
@@ -1126,9 +1282,11 @@ func lockAcquireConflictErr(conflicts []engine.LockConflict) error {
 		if !c.Lock.ExpiresAt.IsZero() {
 			expiry = c.Lock.ExpiresAt.Format(time.RFC3339)
 		}
+
 		parts[i] = fmt.Sprintf("%v is already held by %q (mode %s, since %s, expires %s)",
 			c.Overlap, c.Lock.Holder, c.Lock.Mode, c.Lock.AcquiredAt.Format(time.RFC3339), expiry)
 	}
+
 	return fmt.Errorf("lock conflict: %s", strings.Join(parts, "; "))
 }
 
@@ -1137,17 +1295,21 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		return errResponse(err)
 	}
+
 	if len(p.Paths) > 0 && len(p.Resources) > 0 {
 		return errResponse(fmt.Errorf("lock acquire: paths and resources are mutually exclusive in one request"))
 	}
+
 	mode := engine.LockShared
 	if !p.Shared {
 		mode = engine.LockExclusive
 	}
+
 	ttl, err := parseOptionalDuration(p.TTL)
 	if err != nil {
 		return errResponse(err)
 	}
+
 	if ttl == 0 {
 		ttl = 30 * time.Minute // default crash backstop
 	}
@@ -1171,6 +1333,7 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 		return d.eng.AcquireFileLockOrWait(req.As, p.Paths, mode, ttl, false)
 	}
 	findConflict := func() []engine.LockConflict { return d.eng.FindConflictingFileLock(p.Paths, mode) }
+
 	if len(p.Resources) > 0 {
 		acquire = func() (*engine.FileLock, bool, <-chan struct{}, error) {
 			return d.eng.AcquireResourceLockOrWait(req.As, p.Resources, mode, ttl, false)
@@ -1179,24 +1342,30 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 	}
 
 	deadline := time.Now().Add(timeout)
+
 	for {
 		lock, ok, wait, err := acquire()
 		if err != nil {
 			return errResponse(err)
 		}
+
 		if ok {
 			return okResponse(wire.LockAcquireResponse{Lock: lockToWire(*lock)})
 		}
+
 		if !p.Wait {
 			if conflicts := findConflict(); len(conflicts) > 0 {
 				return conflictResponse(lockAcquireConflictErr(conflicts))
 			}
+
 			return conflictResponse(engine.ErrLockConflict)
 		}
+
 		remaining := time.Until(deadline)
 		if timeout > 0 && remaining <= 0 {
 			return conflictResponse(fmt.Errorf("timed out waiting for lock"))
 		}
+
 		if timeout > 0 {
 			select {
 			case <-wait:
@@ -1216,9 +1385,10 @@ func (d *daemonServer) handleLockAcquire(req wire.Request) wire.Response {
 func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire.Request) {
 	var p wire.LockExecRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		enc.Encode(errResponse(err))
+		reply(enc, errResponse(err))
 		return
 	}
+
 	mode := engine.LockShared
 	if !p.Shared {
 		mode = engine.LockExclusive
@@ -1226,7 +1396,7 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 
 	timeout, err := parseOptionalDuration(p.Timeout)
 	if err != nil {
-		enc.Encode(errResponse(err))
+		reply(enc, errResponse(err))
 		return
 	}
 
@@ -1236,35 +1406,43 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 	// defaults to failing fast, exactly like `acquire lock`, and blocks only when
 	// asked to (`--wait`, optionally bounded by `--timeout`).
 	var lock *engine.FileLock
+
 	deadline := time.Now().Add(timeout)
+
 	for {
 		l, ok, wait, err := d.eng.AcquireFileLockOrWait(req.As, p.Paths, mode, 0, true)
 		if err != nil {
-			enc.Encode(errResponse(err))
+			reply(enc, errResponse(err))
 			return
 		}
+
 		if ok {
 			lock = l
 			break
 		}
+
 		if !p.Wait {
 			if conflicts := d.eng.FindConflictingFileLock(p.Paths, mode); len(conflicts) > 0 {
-				enc.Encode(conflictResponse(lockAcquireConflictErr(conflicts)))
+				reply(enc, conflictResponse(lockAcquireConflictErr(conflicts)))
 				return
 			}
-			enc.Encode(conflictResponse(engine.ErrLockConflict))
+
+			reply(enc, conflictResponse(engine.ErrLockConflict))
+
 			return
 		}
+
 		remaining := time.Until(deadline)
 		if timeout > 0 && remaining <= 0 {
-			enc.Encode(conflictResponse(fmt.Errorf("timed out waiting for lock")))
+			reply(enc, conflictResponse(fmt.Errorf("timed out waiting for lock")))
 			return
 		}
+
 		if timeout > 0 {
 			select {
 			case <-wait:
 			case <-time.After(remaining):
-				enc.Encode(conflictResponse(fmt.Errorf("timed out waiting for lock")))
+				reply(enc, conflictResponse(fmt.Errorf("timed out waiting for lock")))
 				return
 			}
 		} else {
@@ -1273,19 +1451,23 @@ func (d *daemonServer) handleLockExec(conn net.Conn, enc *json.Encoder, req wire
 	}
 
 	if err := enc.Encode(okResponse(wire.LockAcquireResponse{Lock: lockToWire(*lock)})); err != nil {
-		d.eng.ReleaseLock(lock.ID, req.As, true)
+		_ = d.eng.ReleaseLock(lock.ID, req.As, true)
 		return
 	}
 
 	// Block until the client disconnects (process death closes the socket -> EOF),
 	// then force-release. This is the crash-safety guarantee attached mode provides.
 	gone := make(chan struct{})
+
 	go func() {
-		io.Copy(io.Discard, conn)
+		_, _ = io.Copy(io.Discard, conn) // draining until the peer goes away IS the disconnect signal; a short read is the expected end
+
 		close(gone)
 	}()
+
 	<-gone
-	d.eng.ReleaseLock(lock.ID, req.As, true)
+
+	_ = d.eng.ReleaseLock(lock.ID, req.As, true)
 }
 
 func lockToWire(l engine.FileLock) wire.LockInfo {
@@ -1307,27 +1489,32 @@ func operatorSurfaceToWire(surface engine.OperatorSurface) wire.OperatorSurfaceR
 			StartedAt: pa.StartedAt,
 		})
 	}
+
 	for _, r := range surface.Running {
 		out.Running = append(out.Running, wire.RunningStage{
 			Pipeline: r.Pipeline, Stage: r.Stage, Commit: r.Key.Commit, Environment: r.Key.Environment,
 			Actor: r.Actor, StartedAt: r.StartedAt, Queued: r.Queued,
 		})
 	}
+
 	for _, f := range surface.RecentFailures {
 		out.RecentFailures = append(out.RecentFailures, wire.RecentFailure{
 			Pipeline: f.Pipeline, Stage: f.Stage, Commit: f.Key.Commit, Environment: f.Key.Environment,
 			Status: string(f.Status), Error: f.Error, FinishedAt: f.FinishedAt,
 		})
 	}
+
 	for _, s := range surface.RecentSuccesses {
 		out.RecentSuccesses = append(out.RecentSuccesses, wire.RecentSuccess{
 			Pipeline: s.Pipeline, Stage: s.Stage, Commit: s.Key.Commit, Environment: s.Key.Environment,
 			FinishedAt: s.FinishedAt,
 		})
 	}
+
 	for _, l := range surface.Locks {
 		out.Locks = append(out.Locks, lockToWire(l))
 	}
+
 	return out
 }
 
@@ -1342,8 +1529,10 @@ func (d *daemonServer) handleOperatorWatch(conn net.Conn, enc *json.Encoder, _ w
 	defer cancel()
 
 	gone := make(chan struct{})
+
 	go func() {
-		io.Copy(io.Discard, conn)
+		_, _ = io.Copy(io.Discard, conn) // draining until the peer goes away IS the disconnect signal; a short read is the expected end
+
 		close(gone)
 	}()
 
@@ -1353,6 +1542,7 @@ func (d *daemonServer) handleOperatorWatch(conn net.Conn, enc *json.Encoder, _ w
 	if !push() { // initial snapshot immediately on subscribe
 		return
 	}
+
 	for {
 		select {
 		case <-gone:
@@ -1361,6 +1551,7 @@ func (d *daemonServer) handleOperatorWatch(conn net.Conn, enc *json.Encoder, _ w
 			if !ok {
 				return
 			}
+
 			if !push() {
 				return
 			}
@@ -1373,6 +1564,7 @@ func rolesToStrings(roles []engine.Role) []string {
 	for i, r := range roles {
 		out[i] = string(r)
 	}
+
 	return out
 }
 
@@ -1380,31 +1572,8 @@ func parseOptionalDuration(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
 	}
-	return time.ParseDuration(s)
-}
 
-// restartRefusal renders the running stages a restart would interrupt. It lists them
-// rather than counting them: a count tells you to go and look, and "go and look" is
-// the step that failed. Whoever reads this should not need a second command to decide.
-func restartRefusal(running []engine.StageInstance) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "refusing to restart: %d stage(s) in flight right now, and a restart interrupts whoever is watching them\n", len(running))
-	now := time.Now()
-	for _, inst := range running {
-		// A QUEUED stage has not started — it is waiting for a machine slot — and
-		// saying "running" about it would misdescribe the very thing this message
-		// exists to describe accurately. It is still listed, because a restart
-		// destroys the goroutine holding its place in the queue.
-		state := "running"
-		if inst.Status == engine.StageQueued {
-			state = "queued for a machine slot"
-		}
-		fmt.Fprintf(&b, "  %s/%s %s  actor=%s  %s %s\n",
-			inst.Pipeline, inst.Stage, inst.Key.ShortString(), inst.Actor, state, now.Sub(inst.StartedAt).Round(time.Second))
-	}
-	b.WriteString("adoption would carry them across (they survive a restart), so this is about consent, not safety — " +
-		"if they are yours or you have asked, `breeze restart daemon --force`")
-	return b.String()
+	return time.ParseDuration(s)
 }
 
 // queueStatus reports the machine-wide budget and who currently holds its slots, or
@@ -1419,13 +1588,16 @@ func queueStatus(eng *engine.Engine) *wire.QueueStatus {
 	if q.Max <= 0 {
 		return nil
 	}
+
 	out := &wire.QueueStatus{Max: q.Max, Dir: q.Dir}
 	if q.WaitTimeout > 0 {
 		out.WaitTimeout = q.WaitTimeout.String()
 	}
+
 	for _, h := range slots.Holders(q.Dir, q.Max) {
 		out.InUse = append(out.InUse, h.String())
 	}
+
 	return out
 }
 
@@ -1448,6 +1620,7 @@ func (d *daemonServer) persistFinalState(wait time.Duration) {
 	if !d.saver.waitIdle(wait) {
 		log.Printf("warning: a snapshot save was still in flight after %s — writing the current state synchronously before shutting down", wait)
 	}
+
 	if err := engine.SaveSnapshot(d.paths.state, d.eng.SnapshotNow()); err != nil {
 		log.Printf("warning: final snapshot write failed: %v — state on disk may be behind, and a stage that finished may reload as orphaned", err)
 	}

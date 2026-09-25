@@ -24,16 +24,20 @@ func canonicalPaths(paths []string) []string {
 	for _, p := range paths {
 		out = append(out, filepath.Clean(p))
 	}
+
 	sort.Strings(out)
 	// dedupe
 	deduped := out[:0]
+
 	var last string
 	for i, p := range out {
 		if i == 0 || p != last {
 			deduped = append(deduped, p)
 		}
+
 		last = p
 	}
+
 	return deduped
 }
 
@@ -43,11 +47,13 @@ func locksConflict(paths []string, mode LockMode, existing *FileLock) bool {
 	if mode != LockExclusive && existing.Mode != LockExclusive {
 		return false // both shared: no conflict regardless of path overlap
 	}
+
 	for _, p := range paths {
 		if slices.Contains(existing.Paths, p) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -87,12 +93,15 @@ func (e *Engine) FindConflictingFileLock(rawPaths []string, mode LockMode) []Loc
 func (e *Engine) FindConflictingResourceLock(keys []string, mode LockMode) []LockConflict {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
+
 	return e.findConflicting(sorted, mode)
 }
 func (e *Engine) findConflicting(paths []string, mode LockMode) []LockConflict {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	var conflicts []LockConflict
+
 	for _, existing := range e.locks {
 		if locksConflict(paths, mode, existing) {
 			conflicts = append(conflicts, LockConflict{Lock: existing, Overlap: intersectPaths(paths, existing.Paths)})
@@ -102,6 +111,7 @@ func (e *Engine) findConflicting(paths []string, mode LockMode) []LockConflict {
 	// callers (e.g. the CLI's conflict error) list every conflict, so their
 	// order should be stable run to run, not just their content.
 	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Lock.ID < conflicts[j].Lock.ID })
+
 	return conflicts
 }
 
@@ -113,12 +123,15 @@ func intersectPaths(a, b []string) []string {
 	for _, p := range b {
 		inB[p] = true
 	}
+
 	var out []string
+
 	for _, p := range a {
 		if inB[p] {
 			out = append(out, p)
 		}
 	}
+
 	return out
 }
 
@@ -133,6 +146,7 @@ func intersectPaths(a, b []string) []string {
 func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockMode, ttl time.Duration, manualClaim bool) (*FileLock, bool, error) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
+
 	return e.tryAcquire(LockKindResource, holder, sorted, mode, ttl, false, manualClaim)
 }
 
@@ -144,6 +158,7 @@ func (e *Engine) TryAcquireResourceLock(holder string, keys []string, mode LockM
 func (e *Engine) lockHeldBy(holder, key string) *FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.lockHeldByLocked(holder, key)
 }
 
@@ -155,6 +170,7 @@ func (e *Engine) lockHeldByLocked(holder, key string) *FileLock {
 			return l
 		}
 	}
+
 	return nil
 }
 
@@ -165,6 +181,7 @@ func (e *Engine) lockHeldByLocked(holder, key string) *FileLock {
 func (e *Engine) lockOnKey(key string) *FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.lockOnKeyLocked(key)
 }
 
@@ -175,6 +192,7 @@ func (e *Engine) lockOnKeyLocked(key string) *FileLock {
 			return l
 		}
 	}
+
 	return nil
 }
 
@@ -214,6 +232,7 @@ func (e *Engine) anyLockHeldByLocked(holder, key string) *FileLock {
 			return l
 		}
 	}
+
 	return nil
 }
 
@@ -223,6 +242,7 @@ func (e *Engine) anyLockOnKeyLocked(key string) *FileLock {
 			return l
 		}
 	}
+
 	return nil
 }
 
@@ -230,8 +250,10 @@ func (e *Engine) tryAcquire(kind LockKind, holder string, paths []string, mode L
 	if len(paths) == 0 {
 		return nil, false, fmt.Errorf("at least one path/key required")
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.tryAcquireLocked(kind, holder, paths, mode, ttl, attached, manualClaim)
 }
 
@@ -253,6 +275,7 @@ func (e *Engine) AcquireFileLockOrWait(holder string, rawPaths []string, mode Lo
 func (e *Engine) AcquireResourceLockOrWait(holder string, keys []string, mode LockMode, ttl time.Duration, manualClaim bool) (*FileLock, bool, <-chan struct{}, error) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
+
 	return e.acquireOrWait(LockKindResource, holder, sorted, mode, ttl, false, manualClaim)
 }
 
@@ -260,12 +283,15 @@ func (e *Engine) acquireOrWait(kind LockKind, holder string, paths []string, mod
 	if len(paths) == 0 {
 		return nil, false, nil, fmt.Errorf("at least one path/key required")
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	lock, ok, err := e.tryAcquireLocked(kind, holder, paths, mode, ttl, attached, manualClaim)
 	if ok || err != nil {
 		return lock, ok, nil, err
 	}
+
 	return nil, false, e.registerWaitersLocked(paths), nil
 }
 
@@ -296,6 +322,7 @@ func (e *Engine) tryAcquireLocked(kind LockKind, holder string, paths []string, 
 	}
 
 	e.lockSeq++
+
 	lock := &FileLock{
 		ID:          "l" + strconv.Itoa(e.lockSeq),
 		Kind:        kind,
@@ -310,9 +337,11 @@ func (e *Engine) tryAcquireLocked(kind LockKind, holder string, paths []string, 
 	if ttl > 0 {
 		lock.ExpiresAt = lock.AcquiredAt.Add(ttl)
 	}
+
 	e.locks[lock.ID] = lock
 	e.audit("lock.acquired", holder, fmt.Sprintf("id=%s kind=%s paths=%v mode=%s ttl=%s", lock.ID, kind, paths, mode, ttl))
 	e.changed()
+
 	return lock, true, nil
 }
 
@@ -329,6 +358,7 @@ func (e *Engine) WaitChannelsForPaths(rawPaths []string) (<-chan struct{}, error
 func (e *Engine) WaitChannelsForResourceKeys(keys []string) (<-chan struct{}, error) {
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
+
 	return e.registerWaiters(sorted), nil
 }
 
@@ -341,6 +371,7 @@ func (e *Engine) WaitChannelsForResourceKeys(keys []string) (<-chan struct{}, er
 func (e *Engine) registerWaiters(keys []string) <-chan struct{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.registerWaitersLocked(keys)
 }
 
@@ -348,10 +379,12 @@ func (e *Engine) registerWaiters(keys []string) <-chan struct{} {
 // acquireOrWait can register in the SAME critical section as its failed attempt.
 func (e *Engine) registerWaitersLocked(keys []string) <-chan struct{} {
 	ch := make(chan struct{})
+
 	for _, k := range keys {
 		key := "lock:" + k
 		e.waiters[key] = append(e.waiters[key], ch)
 	}
+
 	return ch
 }
 
@@ -376,8 +409,10 @@ func (e *Engine) notifyPathsLocked(paths []string) {
 				close(ch)
 			}
 		}
+
 		delete(e.waiters, key)
 	}
+
 	e.pruneClosedWaitersLocked()
 }
 
@@ -398,6 +433,7 @@ func (e *Engine) pruneClosedWaitersLocked() {
 				kept = append(kept, ch)
 			}
 		}
+
 		if len(kept) == 0 {
 			delete(e.waiters, key)
 		} else {
@@ -406,20 +442,33 @@ func (e *Engine) pruneClosedWaitersLocked() {
 	}
 }
 
+// ReleaseLock drops holder's lock on id. It has exactly two failure modes:
+// ErrNotFound, and a holder mismatch that force=true rules out. So for any
+// caller passing force — every internal cleanup path — the only reachable
+// failure is "the lock is already gone", which is the state that caller was
+// trying to reach. There is no leak to report and nothing to compensate for,
+// which is why those callers discard the result as `_ =` rather than each
+// re-deriving that. A caller that does NOT force is matching on a holder
+// mismatch, and should keep checking the error: there the mismatch is the
+// whole answer.
 func (e *Engine) ReleaseLock(id, holder string, force bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	lock, ok := e.locks[id]
 	if !ok {
 		return ErrNotFound
 	}
+
 	if !force && lock.Holder != holder {
 		return fmt.Errorf("lock %s is held by %s, not %s (use --force)", id, lock.Holder, holder)
 	}
+
 	delete(e.locks, id)
 	e.audit("lock.released", holder, fmt.Sprintf("id=%s kind=%s paths=%v holder=%s force=%t", lock.ID, lock.Kind, lock.Paths, lock.Holder, force))
 	e.notifyPathsLocked(lock.Paths)
 	e.changed()
+
 	return nil
 }
 
@@ -430,30 +479,38 @@ func (e *Engine) ReleaseLock(id, holder string, force bool) error {
 func (e *Engine) ReleaseAllLocks(holder string) []FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	var released []FileLock
+
 	for id, lock := range e.locks {
 		if lock.Holder != holder {
 			continue
 		}
+
 		released = append(released, *lock)
+
 		delete(e.locks, id)
 		e.audit("lock.released", holder, fmt.Sprintf("id=%s kind=%s paths=%v holder=%s force=false", lock.ID, lock.Kind, lock.Paths, lock.Holder))
 		e.notifyPathsLocked(lock.Paths)
 	}
+
 	if len(released) > 0 {
 		sort.Slice(released, func(i, j int) bool { return released[i].ID < released[j].ID })
 		e.changed()
 	}
+
 	return released
 }
 
 func (e *Engine) RenewLock(id, holder string, ttl time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	lock, ok := e.locks[id]
 	if !ok {
 		return ErrNotFound
 	}
+
 	if lock.Holder != holder {
 		return fmt.Errorf("lock %s is held by %s, not %s", id, lock.Holder, holder)
 	}
@@ -467,13 +524,16 @@ func (e *Engine) RenewLock(id, holder string, ttl time.Duration) error {
 	if lock.Attached {
 		return fmt.Errorf("lock %s is attached (lock exec) — it has no TTL to renew; it releases automatically when its connection closes", id)
 	}
+
 	lock.TTL = ttl
 	if ttl > 0 {
 		lock.ExpiresAt = e.now().Add(ttl)
 	} else {
 		lock.ExpiresAt = time.Time{}
 	}
+
 	e.changed()
+
 	return nil
 }
 
@@ -497,25 +557,32 @@ func (e *Engine) ListResourceLocks() []FileLock {
 func (e *Engine) ListAllLocks() []FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	out := make([]FileLock, 0, len(e.locks))
 	for _, l := range e.locks {
 		out = append(out, *l)
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+
 	return out
 }
 
 func (e *Engine) listLocksByKind(kind LockKind) []FileLock {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	out := make([]FileLock, 0, len(e.locks))
 	for _, l := range e.locks {
 		if l.Kind != kind {
 			continue
 		}
+
 		out = append(out, *l)
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+
 	return out
 }
 
@@ -526,8 +593,11 @@ func (e *Engine) listLocksByKind(kind LockKind) []FileLock {
 func (e *Engine) SweepExpiredLocks() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	now := e.now()
+
 	var expired []*FileLock
+
 	for id, l := range e.locks {
 		// Attached locks are unconditionally exempt regardless of what TTL
 		// they happen to carry — belt-and-suspenders alongside RenewLock's own
@@ -535,15 +605,19 @@ func (e *Engine) SweepExpiredLocks() {
 		// is connection-drop detection, never TTL.
 		if !l.Attached && l.TTL > 0 && !l.ExpiresAt.IsZero() && now.After(l.ExpiresAt) {
 			expired = append(expired, l)
+
 			delete(e.locks, id)
 		}
 	}
+
 	if len(expired) == 0 {
 		return
 	}
+
 	for _, l := range expired {
 		e.audit("lock.expired", l.Holder, fmt.Sprintf("id=%s kind=%s paths=%v", l.ID, l.Kind, l.Paths))
 		e.notifyPathsLocked(l.Paths)
 	}
+
 	e.changed()
 }

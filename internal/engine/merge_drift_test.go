@@ -29,12 +29,13 @@ func TestEveryResourceLimitFieldIsInherited(t *testing.T) {
 			// A default that sets ONLY this field, to a non-zero value.
 			def := &hook.ResourceLimits{}
 			set := reflect.ValueOf(def).Elem().Field(i)
+
 			switch f.Type.Kind() {
 			case reflect.String:
 				set.SetString("SENTINEL")
 			case reflect.Int:
 				set.SetInt(7)
-			case reflect.Ptr:
+			case reflect.Pointer:
 				v := reflect.New(f.Type.Elem())
 				v.Elem().SetInt(7)
 				set.Set(v)
@@ -51,6 +52,7 @@ func TestEveryResourceLimitFieldIsInherited(t *testing.T) {
 			}
 
 			merged := MergeResourceLimits(own, def)
+
 			got := reflect.ValueOf(merged).Elem().Field(i)
 			if got.IsZero() {
 				t.Errorf("%s is NOT inherited from the machine default — a stage that sets any other limit silently loses it", f.Name)

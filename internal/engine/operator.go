@@ -75,17 +75,22 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 	defer e.mu.Unlock()
 
 	var out OperatorSurface
+
 	for _, inst := range e.instances {
 		switch inst.Status {
 		case StageAwaiting:
-			var required int
-			var role Role
+			var (
+				required int
+				role     Role
+			)
+
 			if p, ok := e.pipelines[inst.Pipeline]; ok {
 				if i := p.StageIndex(inst.Stage); i >= 0 && p.Stages[i].ApprovalPolicy != nil {
 					required = p.Stages[i].ApprovalPolicy.RequiredApprovals
 					role = p.Stages[i].ApprovalPolicy.RequiredRole
 				}
 			}
+
 			out.PendingApprovals = append(out.PendingApprovals, PendingApproval{
 				Pipeline: inst.Pipeline, Stage: inst.Stage, Key: inst.Key,
 				ApprovalsGiven: len(inst.Approvals), ApprovalsRequired: required, ApproverRole: role,
@@ -108,15 +113,19 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 			})
 		}
 	}
+
 	sort.Slice(out.RecentFailures, func(i, j int) bool {
 		return out.RecentFailures[i].FinishedAt.After(out.RecentFailures[j].FinishedAt)
 	})
+
 	if len(out.RecentFailures) > maxRecentFailures {
 		out.RecentFailures = out.RecentFailures[:maxRecentFailures]
 	}
+
 	sort.Slice(out.RecentSuccesses, func(i, j int) bool {
 		return out.RecentSuccesses[i].FinishedAt.After(out.RecentSuccesses[j].FinishedAt)
 	})
+
 	if len(out.RecentSuccesses) > maxRecentSuccesses {
 		out.RecentSuccesses = out.RecentSuccesses[:maxRecentSuccesses]
 	}
@@ -124,6 +133,7 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 	// random in Go) — sorted by pipeline/stage/key rather than time, since these
 	// represent "current state," not a history feed.
 	sortKey := func(pipeline, stage string, key StageKey) string { return pipeline + "/" + stage + "/" + key.String() }
+
 	sort.Slice(out.PendingApprovals, func(i, j int) bool {
 		return sortKey(out.PendingApprovals[i].Pipeline, out.PendingApprovals[i].Stage, out.PendingApprovals[i].Key) <
 			sortKey(out.PendingApprovals[j].Pipeline, out.PendingApprovals[j].Stage, out.PendingApprovals[j].Key)
@@ -136,6 +146,8 @@ func (e *Engine) OperatorSurface() OperatorSurface {
 	for _, l := range e.locks {
 		out.Locks = append(out.Locks, *l)
 	}
+
 	sort.Slice(out.Locks, func(i, j int) bool { return out.Locks[i].ID < out.Locks[j].ID })
+
 	return out
 }

@@ -40,10 +40,12 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 	if name[0] == '-' {
 		return "", fmt.Errorf("identity name %q looks like a flag, not a name — refusing to register it", name)
 	}
+
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
+
 	token = hex.EncodeToString(raw)
 	hash := hashToken(token)
 
@@ -52,10 +54,15 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 
 	bootstrap := len(e.identities) == 0
 	existing, had := e.identities[name]
-	var roles []Role
-	var optOut bool
+
+	var (
+		roles  []Role
+		optOut bool
+	)
+
 	if had {
 		roles = existing.Roles
+
 		optOut = existing.NotifyOptOut
 		if messAgent == "" {
 			messAgent = existing.MessAgent
@@ -63,6 +70,7 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 	} else if bootstrap {
 		roles = []Role{RoleAdmin}
 	}
+
 	e.identities[name] = &Identity{
 		Name:         name,
 		TokenHash:    hash,
@@ -76,14 +84,17 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 	// reconstruct later), a rotation of an existing identity's token, and an
 	// ordinary new registration.
 	what := "registered"
+
 	switch {
 	case bootstrap:
 		what = "registered (BOOTSTRAP — auto-granted admin)"
 	case had:
 		what = "token rotated"
 	}
+
 	e.audit("identity.registered", actorOf(opts), "identity="+name+" "+what)
 	e.changed()
+
 	return token, nil
 }
 
@@ -94,18 +105,23 @@ func (e *Engine) RegisterIdentity(name, messAgent string, opts ...ActorOption) (
 func (e *Engine) SetNotifyOptOut(name string, optOut bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[name]
 	if !ok {
 		return ErrNotFound
 	}
+
 	id.NotifyOptOut = optOut
+
 	e.changed()
+
 	return nil
 }
 
 func (e *Engine) RevokeIdentity(name string, opts ...ActorOption) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[name]
 	if !ok {
 		return ErrNotFound
@@ -115,6 +131,7 @@ func (e *Engine) RevokeIdentity(name string, opts ...ActorOption) error {
 	e.audit("identity.revoked", actorOf(opts), "identity="+name+" roles="+rolesString(id.Roles))
 	delete(e.identities, name)
 	e.changed()
+
 	return nil
 }
 
@@ -122,10 +139,12 @@ func rolesString(roles []Role) string {
 	if len(roles) == 0 {
 		return "(none)"
 	}
+
 	out := make([]string, 0, len(roles))
 	for _, r := range roles {
 		out = append(out, string(r))
 	}
+
 	return strings.Join(out, ",")
 }
 
@@ -136,13 +155,17 @@ func (e *Engine) VerifyToken(name, token string) (*Identity, error) {
 	if name == "" || token == "" {
 		return nil, ErrAuth
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[name]
 	if !ok || id.TokenHash == "" || id.TokenHash != hashToken(token) {
 		return nil, ErrAuth
 	}
+
 	cp := *id
+
 	return &cp, nil
 }
 
@@ -152,11 +175,14 @@ func (e *Engine) VerifyToken(name, token string) (*Identity, error) {
 func (e *Engine) Identity(name string) (*Identity, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	id, ok := e.identities[name]
 	if !ok {
 		return nil, false
 	}
+
 	cp := *id
+
 	return &cp, true
 }
 
@@ -171,11 +197,14 @@ func (e *Engine) Identity(name string) (*Identity, bool) {
 func (e *Engine) Identities() []Identity {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	out := make([]Identity, 0, len(e.identities))
 	for _, id := range e.identities {
 		out = append(out, *id)
 	}
+
 	slices.SortFunc(out, func(a, b Identity) int { return strings.Compare(a.Name, b.Name) })
+
 	return out
 }
 

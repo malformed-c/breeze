@@ -28,7 +28,9 @@ func (e *Engine) getInstance(pipeline, stage string, key StageKey) *StageInstanc
 	if !ok {
 		return nil
 	}
+
 	inst.Recorded = true
+
 	return inst
 }
 
@@ -41,6 +43,7 @@ func (e *Engine) getInstance(pipeline, stage string, key StageKey) *StageInstanc
 func (e *Engine) putInstance(pipeline, stage string, key StageKey, inst *StageInstance) *StageInstance {
 	inst.Recorded = true
 	e.instances[instanceKey(pipeline, stage, key)] = inst
+
 	return inst
 }
 
@@ -52,12 +55,15 @@ func keyFor(p *Pipeline, i int, commit, environment string) (StageKey, error) {
 	if i < p.FanOutAt {
 		return StageKey{Commit: commit}, nil
 	}
+
 	if environment == "" {
 		return StageKey{}, fmt.Errorf("stage %q is environment-scoped; --env is required", p.Stages[i].Name)
 	}
+
 	if !slices.Contains(p.Environments, environment) {
 		return StageKey{}, fmt.Errorf("environment %q is not declared on pipeline %q", environment, p.Name)
 	}
+
 	return StageKey{Commit: commit, Environment: environment}, nil
 }
 
@@ -71,6 +77,7 @@ func parentKey(p *Pipeline, j int, k StageKey) StageKey {
 	if j < p.FanOutAt {
 		return StageKey{Commit: k.Commit}
 	}
+
 	return StageKey{Commit: k.Commit, Environment: k.Environment}
 }
 
@@ -83,6 +90,7 @@ func describeStageState(inst *StageInstance) string {
 	if inst == nil {
 		return "has not run yet"
 	}
+
 	switch inst.Status {
 	case StageFailed, StageGateFailed:
 		return "failed"
@@ -107,30 +115,38 @@ func (e *Engine) checkPrerequisite(p *Pipeline, i int, k StageKey) (bool, string
 	if p.Stages[i].Debug {
 		return true, ""
 	}
+
 	needs := p.NeedIndices(i)
 	if len(needs) == 0 {
 		return true, ""
 	}
+
 	anyMode := p.Stages[i].Convergence == ConvergeAny
 
 	unmet := make([]string, 0, len(needs))
 	for _, j := range needs {
 		pk := parentKey(p, j, k)
+
 		inst := e.getInstance(p.Name, p.Stages[j].Name, pk)
 		if inst != nil && inst.Status == StageSucceeded {
 			if anyMode {
 				return true, "" // one satisfied prerequisite is the whole requirement
 			}
+
 			continue
 		}
+
 		unmet = append(unmet, fmt.Sprintf("%q (%s) %s", p.Stages[j].Name, pk.ShortString(), describeStageState(inst)))
 	}
+
 	if len(unmet) == 0 {
 		return true, ""
 	}
+
 	if anyMode {
 		return false, fmt.Sprintf("no prerequisite of %q has succeeded (convergence=any): %s", p.Stages[i].Name, strings.Join(unmet, "; "))
 	}
+
 	return false, "prerequisite " + strings.Join(unmet, "; prerequisite ")
 }
 
@@ -149,15 +165,18 @@ func (e *Engine) checkEnvironmentDeps(p *Pipeline, i int, k StageKey) (bool, str
 	if i != p.FanOutAt || k.Environment == "" || slices.Contains(p.DebugEnvironments, k.Environment) {
 		return true, ""
 	}
+
 	for _, dep := range p.EnvironmentDeps[k.Environment] {
 		for _, t := range p.TerminalStages() {
 			name := p.Stages[t].Name
+
 			inst := e.getInstance(p.Name, name, StageKey{Commit: k.Commit, Environment: dep})
 			if inst == nil || inst.Status != StageSucceeded {
 				return false, fmt.Sprintf("environment %q depends on %q, whose full chain (terminal stage %q) %s for this commit", k.Environment, dep, name, describeStageState(inst))
 			}
 		}
 	}
+
 	return true, ""
 }
 
@@ -186,13 +205,16 @@ func (e *Engine) checkRequiredLock(s StageDef, actor string) (bool, string) {
 	if s.RequiresLock == "" {
 		return true, ""
 	}
+
 	if e.anyLockHeldByLocked(actor, s.RequiresLock) != nil {
 		return true, ""
 	}
+
 	if held := e.anyLockOnKeyLocked(s.RequiresLock); held != nil {
 		return false, fmt.Sprintf("stage %q requires the resource lock %q, which is held by %q — wait for them, or `breeze acquire lock --resource %s --wait`",
 			s.Name, s.RequiresLock, held.Holder, s.RequiresLock)
 	}
+
 	return false, fmt.Sprintf("stage %q requires the resource lock %q, which %q does not hold and nobody else does — acquire it first: `breeze acquire lock --resource %s`",
 		s.Name, s.RequiresLock, actor, s.RequiresLock)
 }
@@ -216,6 +238,7 @@ func newStageOpts(opts []StageOption) stageOpts {
 	for _, fn := range opts {
 		fn(&o)
 	}
+
 	return o
 }
 
@@ -241,15 +264,19 @@ func checkRequiredEnv(s StageDef, set map[string]string) (bool, string) {
 				s.Name, name, declaredList(s.RequiresEnv))
 		}
 	}
+
 	var missing []string
+
 	for _, name := range s.RequiresEnv {
 		if strings.TrimSpace(set[name]) == "" {
 			missing = append(missing, name)
 		}
 	}
+
 	if len(missing) == 0 {
 		return true, ""
 	}
+
 	slices.Sort(missing) // map iteration otherwise; a refusal that reorders reads as a different refusal
 	// Names the FLAG AND THE VERB, because the first version named only the flag
 	// and cost a caller two retries: they had passed --set to `run pipeline`, which
@@ -268,11 +295,14 @@ func declaredEnv(set map[string]string) []string {
 	if len(set) == 0 {
 		return nil
 	}
+
 	out := make([]string, 0, len(set))
 	for name, v := range set {
 		out = append(out, name+"="+v)
 	}
+
 	slices.Sort(out)
+
 	return out
 }
 
@@ -280,6 +310,7 @@ func declaredList(names []string) string {
 	if len(names) == 0 {
 		return "none"
 	}
+
 	return strings.Join(names, ", ")
 }
 
@@ -340,6 +371,7 @@ func (e *Engine) notifyStageLocked(pipeline, stage string, key StageKey) {
 			close(ch)
 		}
 	}
+
 	delete(e.waiters, k)
 }
 
@@ -349,6 +381,7 @@ func (e *Engine) waitChannelForStageLocked(pipeline, stage string, key StageKey)
 	ch := make(chan struct{})
 	k := stageWaitKey(pipeline, stage, key)
 	e.waiters[k] = append(e.waiters[k], ch)
+
 	return ch
 }
 
@@ -362,28 +395,35 @@ func (e *Engine) waitChannelForStageLocked(pipeline, stage string, key StageKey)
 // "resolved."
 func (e *Engine) WaitForStage(pipelineName, stageName, commit, environment string, timeout time.Duration) (*StageInstance, error) {
 	deadline := time.Now().Add(timeout)
+
 	for {
 		e.mu.Lock()
+
 		p, ok := e.pipelines[pipelineName]
 		if !ok {
 			e.mu.Unlock()
 			return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 		}
+
 		i := p.StageIndex(stageName)
 		if i < 0 {
 			e.mu.Unlock()
 			return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 		}
+
 		key, err := keyFor(p, i, commit, environment)
 		if err != nil {
 			e.mu.Unlock()
 			return nil, err
 		}
+
 		if inst := e.getInstance(pipelineName, stageName, key); inst != nil && isTerminalStatus(inst.Status) {
 			cp := *inst
 			e.mu.Unlock()
+
 			return &cp, nil
 		}
+
 		wait := e.waitChannelForStageLocked(pipelineName, stageName, key)
 		e.mu.Unlock()
 
@@ -392,6 +432,7 @@ func (e *Engine) WaitForStage(pipelineName, stageName, commit, environment strin
 			inst, _ := e.StageStatus(pipelineName, stageName, commit, environment)
 			return inst, fmt.Errorf("timed out waiting for stage %q to resolve", stageName)
 		}
+
 		if timeout > 0 {
 			select {
 			case <-wait:
@@ -407,11 +448,13 @@ func (e *Engine) WaitForStage(pipelineName, stageName, commit, environment strin
 
 func (e *Engine) runningCount(pipeline, stage string) int {
 	n := 0
+
 	for _, inst := range e.instances {
 		if inst.Pipeline == pipeline && inst.Stage == stage && isInFlight(inst.Status) {
 			n++
 		}
 	}
+
 	return n
 }
 
@@ -423,6 +466,7 @@ func (e *Engine) touchCommitSeq(pipeline, commit string) {
 	if _, ok := e.commitSeq[key]; ok {
 		return
 	}
+
 	e.commitSeqCounter++
 	e.commitSeq[key] = e.commitSeqCounter
 }
@@ -472,25 +516,31 @@ func (e *Engine) ForceCommandStage(pipelineName, stageName, commit, environment,
 	if strings.TrimSpace(brief) == "" {
 		return nil, gateErr("a forced run requires a written reason: pass --brief \"why this is running without its gates\"")
 	}
+
 	e.mu.Lock()
 	e.audit("stage.command.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
 	e.mu.Unlock()
+
 	return e.startCommandStage(pipelineName, stageName, commit, environment, actor, brief, true, opts...)
 }
 
 func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment, actor, brief string, force bool, opts ...StageOption) (*StageInstance, error) {
 	so := newStageOpts(opts)
+
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	stage := p.Stages[i]
 	if stage.Type != StageCommand {
 		e.mu.Unlock()
@@ -515,6 +565,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 			e.mu.Unlock()
 			return nil, gateErr("%s", reason)
 		}
+
 		if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
 			e.mu.Unlock()
 			return nil, gateErr("%s", reason)
@@ -531,6 +582,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 			return nil, gateErr("actor %q lacks required role %q", actor, stage.CommandPolicy.RequiredRole)
 		}
 	}
+
 	if ok, reason := e.checkRequiredLock(stage, actor); !ok {
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
@@ -542,12 +594,14 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
 	}
+
 	if max := stage.CommandPolicy.MaxConcurrent; max > 0 && e.runningCount(pipelineName, stageName) >= max {
 		e.mu.Unlock()
 		return nil, gateErr("stage %q is at its concurrency limit (%d)", stageName, max)
 	}
 
 	e.touchCommitSeq(pipelineName, commit)
+
 	timeout := stage.Timeout
 	tmpl := stage.Command
 	preGate := stage.PreGate
@@ -566,10 +620,12 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 	// actively-running claimable stage, not just ones someone explicitly
 	// pre-claimed — parity with how a deploy has always behaved.
 	lockKey := stageLockKey(pipelineName, stageName, key)
+
 	lock, gotLock, err := e.acquireOrReuseLock(actor, lockKey, timeout)
 	if err != nil {
 		return nil, err
 	}
+
 	if !gotLock {
 		return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, e.lockOnKey(lockKey)).Error())
 	}
@@ -595,7 +651,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 
 	if err := e.runPreGates(preGate, params); err != nil {
-		e.ReleaseLock(lock.ID, actor, true) // the command never ran — release immediately
+		_ = e.ReleaseLock(lock.ID, actor, true) // the command never ran — release immediately
 		e.mu.Lock()
 		inst.Status = StageGateFailed
 		inst.Error = err.Error()
@@ -603,10 +659,12 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 		e.audit("stage.gate_failed", actor, err.Error())
 		e.changed()
 		e.notifyStageLocked(pipelineName, stageName, key)
+
 		gateCp := *inst
 		e.mu.Unlock()
 		e.notifyResolution(pipelineName, stageName, &gateCp)
 		e.recordResolved(briefsDir, &gateCp)
+
 		return nil, err
 	}
 
@@ -632,6 +690,7 @@ func (e *Engine) startCommandStage(pipelineName, stageName, commit, environment,
 	inst.Summary = summary
 	e.cleanupRunDirLocked(inst)
 	cp := *inst
+
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
 	e.mu.Unlock()
@@ -661,11 +720,13 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		e.mu.Unlock()
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	stage := p.Stages[i]
 	if stage.Type != StageApproval {
 		e.mu.Unlock()
@@ -681,6 +742,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 	if existing := e.getInstance(pipelineName, stageName, key); existing != nil && existing.Status == StageSucceeded {
 		cp := *existing
 		e.mu.Unlock()
+
 		return &cp, nil // idempotent: already reached its approval threshold
 	}
 
@@ -688,6 +750,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
 	}
+
 	if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
 		e.mu.Unlock()
 		return nil, gateErr("%s", reason)
@@ -724,12 +787,14 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		preGate := stage.PreGate
 		params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 		e.mu.Unlock()
+
 		if err := e.runPreGates(preGate, params); err != nil {
 			e.mu.Lock()
 			if _, ok := e.instances[ik]; !ok {
 				e.touchCommitSeq(pipelineName, commit)
 				e.putInstance(pipelineName, stageName, key, &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, StartedAt: e.now(), FinishedAt: e.now(), Error: err.Error()})
 			}
+
 			e.audit("stage.gate_failed", actor, err.Error())
 			e.changed()
 			e.notifyStageLocked(pipelineName, stageName, key)
@@ -737,12 +802,15 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 			e.mu.Unlock()
 			e.notifyResolution(pipelineName, stageName, &gateCp)
 			e.recordResolved(p.BriefsDir, &gateCp)
+
 			return nil, err
 		}
+
 		e.mu.Lock()
 	}
 
 	ik = instanceKey(pipelineName, stageName, key) // re-derive in case a concurrent call already created it
+
 	inst, ok := e.instances[ik]
 	if !ok {
 		e.touchCommitSeq(pipelineName, commit)
@@ -753,9 +821,11 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		e.mu.Unlock()
 		return nil, fmt.Errorf("identity %q has already approved this stage", actor)
 	}
+
 	inst.Approvals = append(inst.Approvals, Approval{
 		Identity: actor, Role: stage.ApprovalPolicy.RequiredRole, At: e.now(), Brief: brief,
 	})
+
 	inst.Actor = actor
 	if brief != "" {
 		inst.Brief = brief
@@ -770,6 +840,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
+
 	cp := *inst
 	e.mu.Unlock()
 
@@ -780,6 +851,7 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 		// one file — not one file per approval — matching the "on terminal
 		// resolution" trigger used for command/deploy stages.
 		e.recordResolved(p.BriefsDir, &cp)
+
 		params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "actor": actor}
 		e.runPostActions(postAction, params, pipelineName, stageName, actor)
 	}
@@ -794,18 +866,22 @@ func (e *Engine) ApproveStage(pipelineName, stageName, commit, environment, acto
 func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string) (*StageInstance, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	key, err := keyFor(p, i, commit, environment)
 	if err != nil {
 		return nil, err
 	}
+
 	if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
 		cp := *inst
 		return &cp, nil
@@ -821,9 +897,11 @@ func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string
 	if ok, reason := e.checkPrerequisite(p, i, key); !ok {
 		return &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, Error: reason}, nil
 	}
+
 	if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
 		return &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageGateFailed, Error: reason}, nil
 	}
+
 	return &StageInstance{Pipeline: pipelineName, Stage: stageName, Key: key, Status: StageReady}, nil
 }
 
@@ -842,13 +920,16 @@ func (e *Engine) StageStatus(pipelineName, stageName, commit, environment string
 // the count cancelled.
 func (e *Engine) CancelRunningStages(reason string) int {
 	e.mu.Lock()
+
 	type resolved struct {
 		pipeline, stage string
 		key             StageKey
 		cp              StageInstance
 		briefsDir       string
 	}
+
 	var toNotify []resolved
+
 	for _, inst := range e.instances {
 		if !isInFlight(inst.Status) {
 			continue
@@ -868,22 +949,27 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		// cgroup, which also reaches children a script scattered across process
 		// groups. Idempotent together: a second SIGKILL to a dead group is ESRCH.
 		e.cancelIfRunningLocked(instanceKey(inst.Pipeline, inst.Stage, inst.Key))
+
 		if inst.RunnerPID > 0 {
 			if anomaly := killRunner(inst.RunnerPID, inst.RunnerStart); anomaly != "" {
 				e.audit("stage.orphan.kill_anomaly", "system", fmt.Sprintf("pipeline=%s stage=%s key=%s: %s", inst.Pipeline, inst.Stage, inst.Key, anomaly))
 			}
 		}
+
 		inst.Status, inst.FailureKind = StageFailed, FailCancelled
 		inst.Error = reason
 		inst.FinishedAt = e.now()
 		e.audit("stage.cancelled", "system", fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", inst.Pipeline, inst.Stage, inst.Key, reason))
 		e.notifyStageLocked(inst.Pipeline, inst.Stage, inst.Key)
+
 		briefsDir := ""
 		if p, ok := e.pipelines[inst.Pipeline]; ok {
 			briefsDir = p.BriefsDir
 		}
+
 		toNotify = append(toNotify, resolved{pipeline: inst.Pipeline, stage: inst.Stage, key: inst.Key, cp: *inst, briefsDir: briefsDir})
 	}
+
 	if len(toNotify) > 0 {
 		e.changed()
 	}
@@ -897,6 +983,7 @@ func (e *Engine) CancelRunningStages(reason string) int {
 		e.notifyResolution(r.pipeline, r.stage, &r.cp)
 		e.recordResolved(r.briefsDir, &r.cp)
 	}
+
 	return len(toNotify)
 }
 
@@ -910,39 +997,47 @@ func (e *Engine) CancelRunningStages(reason string) int {
 // mutation, not a read.
 func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor, reason string) (*StageInstance, error) {
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	role := requiredRoleFor(p.Stages[i])
 	if role != "" {
 		id, ok := e.identities[actor]
-		if !ok || !(id.HasRole(role) || id.HasRole("admin")) {
+		if !ok || (!id.HasRole(role) && !id.HasRole("admin")) {
 			e.mu.Unlock()
 			return nil, gateErr("actor %q lacks required role %q (or admin) to cancel stage %q", actor, role, stageName)
 		}
 	}
+
 	key, err := keyFor(p, i, commit, environment)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
 	}
+
 	inst := e.getInstance(pipelineName, stageName, key)
 	if inst == nil {
 		e.mu.Unlock()
 		return nil, ErrNotFound
 	}
+
 	if !isInFlight(inst.Status) && inst.Status != StageAwaiting {
 		status := inst.Status
 		e.mu.Unlock()
+
 		return nil, fmt.Errorf("stage %q (%s) is %s, not running/queued/awaiting — nothing to cancel", stageName, key, status)
 	}
+
 	if reason == "" {
 		reason = "cancelled by " + actor
 	}
@@ -954,13 +1049,17 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 	// eventual completion could still land afterward and silently overwrite the
 	// cancellation.
 	e.cancelIfRunningLocked(instanceKey(pipelineName, stageName, key))
+
 	inst.Status, inst.FailureKind = StageFailed, FailCancelled
 	inst.Error = reason
 	inst.FinishedAt = e.now()
 	e.audit("stage.cancelled", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s reason=%s", pipelineName, stageName, key, reason))
 	e.notifyStageLocked(pipelineName, stageName, key)
+
 	briefsDir := p.BriefsDir
+
 	e.changed()
+
 	cp := *inst
 	e.mu.Unlock()
 
@@ -971,6 +1070,7 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 
 	e.notifyResolution(pipelineName, stageName, &cp)
 	e.recordResolved(briefsDir, &cp)
+
 	return &cp, nil
 }
 
@@ -995,18 +1095,23 @@ func (e *Engine) CancelStage(pipelineName, stageName, commit, environment, actor
 // takes it itself.
 func (e *Engine) releaseStageInstanceLock(pipelineName, stageName string, key StageKey) {
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return
 	}
+
 	stage := p.Stages[i]
+
 	var lockKey string
+
 	switch stage.Type {
 	case StageCommand:
 		lockKey = stageLockKey(pipelineName, stageName, key)
@@ -1016,10 +1121,12 @@ func (e *Engine) releaseStageInstanceLock(pipelineName, stageName string, key St
 		e.mu.Unlock()
 		return
 	}
+
 	held := e.lockOnKeyLocked(lockKey)
 	e.mu.Unlock()
+
 	if held != nil && !held.ManualClaim {
-		e.ReleaseLock(held.ID, held.Holder, true)
+		_ = e.ReleaseLock(held.ID, held.Holder, true)
 	}
 }
 
@@ -1034,6 +1141,7 @@ func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*
 	if lock := e.lockHeldBy(actor, lockKey); lock != nil {
 		return lock, true, nil
 	}
+
 	return e.TryAcquireResourceLock(actor, []string{lockKey}, LockExclusive, ttl, false)
 }
 
@@ -1047,6 +1155,7 @@ func (e *Engine) acquireOrReuseLock(actor, lockKey string, ttl time.Duration) (*
 // and deploy stages. Shared by StartCommandStage and runDeployStage.
 func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lock *FileLock, actor, brief string, set map[string]string, tmpl CommandTemplate, timeout time.Duration, params hook.Params) (hook.Result, bool) {
 	runKey := instanceKey(pipelineName, stageName, key)
+
 	e.mu.Lock()
 	outputDir := e.runOutputDir(pipelineName, stageName, key)
 	e.mu.Unlock()
@@ -1070,6 +1179,7 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	// rolling their own and their directories survived kills that breeze's sweep
 	// would have reaped.
 	scratch := ""
+
 	if outputDir != "" {
 		if err := os.MkdirAll(RunScratchDir(outputDir), 0o700); err != nil {
 			// UNSET rather than fail the stage, and rather than advertise a path that
@@ -1104,15 +1214,19 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 		if !expectScope {
 			return
 		}
+
 		deadline := time.Now().Add(300 * time.Millisecond)
+
 		for {
 			if dir := hook.ScopeDirOf(pid); dir != "" {
 				scopeDir = dir
 				return
 			}
+
 			if time.Now().After(deadline) {
 				return
 			}
+
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
@@ -1172,11 +1286,13 @@ func (e *Engine) runClaimedHook(pipelineName, stageName string, key StageKey, lo
 	// naturally-failing run misreported as "cancelled" regardless of whether
 	// CancelStage ever actually ran.
 	wasCancelled := runCtx.Err() != nil
+
 	runCancel()
 
-	if !(wasCancelled && lock.ManualClaim) {
-		e.ReleaseLock(lock.ID, actor, true)
+	if !wasCancelled || !lock.ManualClaim {
+		_ = e.ReleaseLock(lock.ID, actor, true)
 	}
+
 	return result, wasCancelled
 }
 
@@ -1191,6 +1307,7 @@ func scratchUnset(dir string) []string {
 	if dir == "" {
 		return []string{"BREEZE_RUN_DIR"}
 	}
+
 	return nil
 }
 
@@ -1198,6 +1315,7 @@ func scratchEnv(dir string) []string {
 	if dir == "" {
 		return nil
 	}
+
 	return []string{"BREEZE_RUN_DIR=" + dir}
 }
 
@@ -1221,7 +1339,9 @@ func limitEnv(rl *hook.ResourceLimits) []string {
 	if rl == nil {
 		return nil
 	}
+
 	var out []string
+
 	add := func(k, v string) {
 		if v != "" {
 			out = append(out, k+"="+v)
@@ -1230,6 +1350,7 @@ func limitEnv(rl *hook.ResourceLimits) []string {
 	add("BREEZE_CPU_QUOTA", rl.CPUQuota)
 	add("BREEZE_MEMORY_HIGH", rl.MemoryHigh)
 	add("BREEZE_MEMORY_MAX", rl.MemoryMax)
+
 	if rl.TasksMax > 0 {
 		add("BREEZE_TASKS_MAX", strconv.Itoa(rl.TasksMax))
 	}
@@ -1244,12 +1365,15 @@ func limitEnv(rl *hook.ResourceLimits) []string {
 	if v, ok := hook.ParseSize(rl.MemoryHigh); ok {
 		add("BREEZE_MEMORY_HIGH_BYTES", strconv.FormatUint(v, 10))
 	}
+
 	if v, ok := hook.ParseSize(rl.MemoryMax); ok {
 		add("BREEZE_MEMORY_MAX_BYTES", strconv.FormatUint(v, 10))
 	}
+
 	if v, ok := hook.ParsePercent(rl.CPUQuota); ok {
 		add("BREEZE_CPU_QUOTA_PERCENT", strconv.FormatUint(v, 10))
 	}
+
 	return out
 }
 
@@ -1279,19 +1403,24 @@ func (e *Engine) reapSurvivors(pipelineName, stageName string, key StageKey, act
 
 	e.mu.Lock()
 	declared := false
+
 	if p, ok := e.pipelines[pipelineName]; ok {
 		if i := p.StageIndex(stageName); i >= 0 {
 			declared = p.Stages[i].LeavesProcesses
 		}
 	}
+
 	if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
 		inst.SurvivingProcesses = len(survivors)
+
 		e.changed()
 	}
+
 	verb := "reaped"
 	if declared {
 		verb = "left running (leaves_processes = true)"
 	}
+
 	e.audit("stage.survivors", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — %d process(es) still running when the command exited, %s: %v",
 		pipelineName, stageName, key, len(survivors), verb, survivors))
 	e.mu.Unlock()
@@ -1315,6 +1444,7 @@ func stageClaimConflictErr(pipelineName, stageName string, key StageKey, held *F
 	if held == nil {
 		return fmt.Errorf("%s/%s (%s) is already claimed by another actor", pipelineName, stageName, key.ShortString())
 	}
+
 	return conflictErr(fmt.Sprintf("%s/%s (%s)", pipelineName, stageName, key.ShortString()), "claimed", held)
 }
 
@@ -1330,26 +1460,31 @@ func stageClaimConflictErr(pipelineName, stageName string, key StageKey, held *F
 // stages keep their own dedicated `deploy claim` instead.
 func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor string, ttl time.Duration) (*FileLock, error) {
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	stage := p.Stages[i]
 	if stage.Type != StageCommand {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q is not a command stage (deploy stages use `deploy claim` instead)", stageName)
 	}
+
 	key, err := keyFor(p, i, commit, environment)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
 	}
+
 	if stage.CommandPolicy.RequiredRole != "" {
 		id, ok := e.identities[actor]
 		if !ok || !id.HasRole(stage.CommandPolicy.RequiredRole) {
@@ -1357,12 +1492,14 @@ func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor 
 			return nil, gateErr("actor %q lacks required role %q", actor, stage.CommandPolicy.RequiredRole)
 		}
 	}
+
 	timeout := stage.Timeout
 	e.mu.Unlock()
 
 	if ttl <= 0 {
 		ttl = timeout
 	}
+
 	lockKey := stageLockKey(pipelineName, stageName, key)
 
 	// Idempotent: a repeat claim by the same actor re-reports their existing hold
@@ -1375,10 +1512,13 @@ func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor 
 	if err != nil {
 		return nil, err
 	}
+
 	if !gotLock {
 		return nil, gateErr("%s", stageClaimConflictErr(pipelineName, stageName, key, e.lockOnKey(lockKey)).Error())
 	}
+
 	e.audit("stage.claimed", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s", pipelineName, stageName, key))
+
 	return lock, nil
 }
 
@@ -1387,15 +1527,19 @@ func (e *Engine) ClaimStage(pipelineName, stageName, commit, environment, actor 
 func (e *Engine) PipelineStatus(pipelineName, commit string) ([]StageInstance, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if _, ok := e.pipelines[pipelineName]; !ok {
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	var out []StageInstance
+
 	for _, inst := range e.instances {
 		if inst.Pipeline == pipelineName && inst.Key.Commit == commit {
 			out = append(out, *inst)
 		}
 	}
+
 	return out, nil
 }
 
@@ -1415,12 +1559,14 @@ func (e *Engine) acquireMachineSlot(pipelineName, stageName string, key StageKey
 	e.mu.Lock()
 	q := e.queue
 	isDeploy := false
+
 	if p, ok := e.pipelines[pipelineName]; ok {
 		if i := p.StageIndex(stageName); i >= 0 {
 			isDeploy = p.Stages[i].Type == StageDeploy
 		}
 	}
 	e.mu.Unlock()
+
 	if q.Max <= 0 {
 		return &slots.Slot{}, nil
 	}
@@ -1444,10 +1590,12 @@ func (e *Engine) acquireMachineSlot(pipelineName, stageName string, key StageKey
 		PID: os.Getpid(), Dir: q.StateDir, Pipeline: pipelineName, Stage: stageName,
 		Key: key.ShortString(), Actor: actor, Since: e.now(),
 	}
+
 	slot, err := slots.Acquire(q.Dir, q.Max, h, q.WaitTimeout, func(holders []slots.Holder) {
 		e.mu.Lock()
 		if inst := e.getInstance(pipelineName, stageName, key); inst != nil {
 			inst.Status = StageQueued
+
 			e.audit("stage.queued", actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — waiting for one of the machine's %d stage slots, held by: %s",
 				pipelineName, stageName, key, q.Max, oneLine(slots.Describe(holders))))
 			e.changed()
@@ -1465,8 +1613,10 @@ func (e *Engine) acquireMachineSlot(pipelineName, stageName string, key StageKey
 		// report every busy period on the machine — exactly the number someone tuning
 		// max_concurrent needs to see.
 		inst.Status = StageRunning
+
 		e.changed()
 	}
 	e.mu.Unlock()
+
 	return slot, nil
 }

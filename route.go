@@ -118,8 +118,11 @@ func helpForCommand(argv []string) (string, bool) {
 	if len(argv) < 2 || (argv[1] != "--help" && argv[1] != "-h") {
 		return "", false
 	}
+
 	word := argv[0]
+
 	var lines []string
+
 	for _, r := range routes {
 		switch {
 		case r.verb == word:
@@ -131,10 +134,13 @@ func helpForCommand(argv []string) (string, bool) {
 			lines = append(lines, "  breeze "+r.verb+" "+r.nouns[0])
 		}
 	}
+
 	if len(lines) == 0 {
 		return "", false
 	}
+
 	slices.Sort(lines)
+
 	return "usage:\n" + strings.Join(slices.Compact(lines), "\n") + "\n\nRun `breeze --help` for the full command list, or a command with no arguments for its own usage.", true
 }
 
@@ -145,6 +151,7 @@ func lookupRoute(verb, noun string) ([]string, bool) {
 			return r.legacy, true
 		}
 	}
+
 	return nil, false
 }
 
@@ -152,11 +159,13 @@ func lookupRoute(verb, noun string) ([]string, bool) {
 // order — the material for a "which noun did you mean" usage error.
 func canonicalNouns(verb string) []string {
 	var out []string
+
 	for _, r := range routes {
 		if r.verb == verb {
 			out = append(out, r.nouns[0])
 		}
 	}
+
 	return out
 }
 
@@ -168,6 +177,7 @@ func canonicalSpelling(legacy []string) string {
 			return "breeze " + r.verb + " " + r.nouns[0]
 		}
 	}
+
 	return ""
 }
 
@@ -180,6 +190,7 @@ func canonicalize(argv []string) ([]string, string, error) {
 	if len(argv) == 0 {
 		return argv, "", nil
 	}
+
 	verb := argv[0]
 	if len(argv) >= 2 {
 		if legacy, ok := lookupRoute(verb, argv[1]); ok {
@@ -191,13 +202,17 @@ func canonicalize(argv []string) ([]string, string, error) {
 	// case the bare form is what was meant.
 	if nouns := canonicalNouns(verb); len(nouns) > 0 && !bareCommands[verb] {
 		if len(argv) < 2 || strings.HasPrefix(argv[1], "-") {
+			//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 			return nil, "", fmt.Errorf("usage: breeze %s <%s> ...", verb, strings.Join(nouns, "|"))
 		}
+
 		return nil, "", fmt.Errorf("unknown noun %q for %q (expected one of: %s)", argv[1], verb, strings.Join(nouns, ", "))
 	}
+
 	if legacyGroups[verb] {
 		return argv, legacyPointer(argv), nil
 	}
+
 	return argv, "", nil
 }
 
@@ -210,9 +225,11 @@ func legacyPointer(argv []string) string {
 	if len(legacy) == 2 && strings.HasPrefix(legacy[1], "-") {
 		legacy = legacy[:1]
 	}
+
 	canonical := canonicalSpelling(legacy)
 	if canonical == "" {
 		return ""
 	}
+
 	return fmt.Sprintf("`breeze %s` is deprecated; use `%s`", strings.Join(legacy, " "), canonical)
 }

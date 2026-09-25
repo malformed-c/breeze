@@ -9,7 +9,37 @@ linters:
   enable:
     # wsl_v5 governs blank lines between statements. breeze deliberately cuddles
     # related ones — `err := f()` immediately above `if err != nil` — and does so
-    # consistently, so this linter disagreed with the house style in 3,286 places.
-    # wsl_v5 has only two knobs in v2 (allow-first-in-block, branch-max-lines); the
-    # cuddling rules are not configurable, so the volume could not be tuned away.
+    # consistently, so expect this linter to disagree with the house style
+    # wherever that is the case. wsl_v5 has only two knobs in v2
+    # (allow-first-in-block, branch-max-lines); the cuddling rules are not
+    # configurable, so the volume cannot be tuned away.
     - wsl_v5
+  settings:
+    errcheck:
+      # Narrow on purpose, and each entry is here because the SITES were checked
+      # rather than because the function is inherently quiet. An exclusion is a
+      # claim about every call site of that signature in the tree, so it belongs
+      # only where that claim is true today.
+      #
+      # (*os.File).Close is safe here because breeze checks the WRITE, not the
+      # close: on Linux a full filesystem surfaces ENOSPC from write(2), and
+      # appendAuditLine and writeScript both check it. The one place a close error
+      # does carry meaning — the success path of writeScript, whose output is
+      # about to be executed — is already checked explicitly. This exclusion is
+      # therefore load-bearing on that convention: an UNCHECKED write would pass
+      # silently, so the convention is the thing to preserve, not the exclusion.
+      #
+      # syscall.Close is fd teardown on an error or shutdown path, where the only
+      # reachable error is EBADF — the descriptor is already gone, which is the
+      # state the path was reaching for.
+      #
+      # Deliberately NOT here, and each for a reason rather than by omission:
+      # syscall.Flock and os.Remove vary by call site (a LOCK_UN cleanup is not a
+      # forced acquire; removing a scratch file is not removing someone's work), so
+      # those are handled per site. And net.Conn / net.Listener / io.Closer cannot
+      # appear here at all — errcheck matches the CONCRETE type, and these are
+      # interface-typed at every call site, so a signature-based rule matches none
+      # of them.
+      exclude-functions:
+        - (*os.File).Close
+        - syscall.Close

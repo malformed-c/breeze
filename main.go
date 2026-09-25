@@ -27,10 +27,12 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+
 	if os.Args[1] == "--help" || os.Args[1] == "-h" {
 		usage()
 		return
 	}
+
 	p, err := resolvePaths()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
@@ -54,9 +56,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
 		os.Exit(1)
 	}
+
 	if deprecated != "" {
 		fmt.Fprintln(os.Stderr, "breeze:", deprecated)
 	}
+
 	cmd := argv[0]
 	args := argv[1:]
 
@@ -105,6 +109,7 @@ func main() {
 		usage()
 		os.Exit(1)
 	}
+
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "breeze:", err)
 		os.Exit(exitCode(err))
@@ -129,6 +134,7 @@ func exitCode(err error) int {
 	if errors.As(err, &rpc) && rpc.Code() == wire.CodeLockConflict {
 		return ExitLockConflict
 	}
+
 	return 1
 }
 
@@ -391,14 +397,17 @@ func (f *flagSet) markSeen(a string) {
 	if canon, ok := flagAliases[a]; ok {
 		a = canon
 	}
+
 	if f.seen == nil {
 		f.seen = map[string]bool{}
 	}
+
 	f.seen[a] = true
 }
 
 func parseFlags(args []string) flagSet {
 	var f flagSet
+
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -408,6 +417,7 @@ func parseFlags(args []string) flagSet {
 		if len(a) > 1 && a[0] == '-' && a != "--" {
 			f.markSeen(a)
 		}
+
 		switch a {
 		case "--as":
 			i++
@@ -594,6 +604,7 @@ func parseFlags(args []string) flagSet {
 		case "--":
 			f.cmdArgs = append(f.cmdArgs, args[i+1:]...)
 			i = len(args)
+
 			continue
 		default:
 			// A `--foo`/`-x`-shaped token that isn't a recognized flag must NEVER
@@ -611,8 +622,10 @@ func parseFlags(args []string) flagSet {
 				f.rest = append(f.rest, a)
 			}
 		}
+
 		i++
 	}
+
 	return f
 }
 
@@ -631,20 +644,25 @@ func parseSets(sets []string) (map[string]string, error) {
 	if len(sets) == 0 {
 		return nil, nil
 	}
+
 	out := make(map[string]string, len(sets))
 	for _, kv := range sets {
 		name, value, ok := strings.Cut(kv, "=")
 		if !ok {
 			return nil, fmt.Errorf("--set %q is not NAME=VALUE — a declaration needs both halves (use --set %s=\"none: nothing to measure\" if that is the answer)", kv, kv)
 		}
+
 		if !validEnvName(name) {
 			return nil, fmt.Errorf("--set name %q is not a usable environment variable name (letters, digits and underscore, not starting with a digit)", name)
 		}
+
 		if _, dup := out[name]; dup {
 			return nil, fmt.Errorf("--set %s given twice — one of them would silently win, so say which you meant", name)
 		}
+
 		out[name] = value
 	}
+
 	return out, nil
 }
 
@@ -652,11 +670,13 @@ func validEnvName(s string) bool {
 	if s == "" || (s[0] >= '0' && s[0] <= '9') {
 		return false
 	}
+
 	for _, r := range s {
-		if r != '_' && !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
+		if r != '_' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -676,12 +696,15 @@ func (f flagSet) rejectUnknownFlags(usage string, accepted ...string) (bool, err
 		fmt.Println("usage: " + usage)
 		return true, nil
 	}
+
 	if f.unknownFlag != "" {
 		return true, fmt.Errorf("unrecognized flag %q\nusage: %s", f.unknownFlag, usage)
 	}
+
 	if len(accepted) == 0 {
 		return false, nil
 	}
+
 	ok := make(map[string]bool, len(accepted)+4)
 	ok["--help"] = true // always allowed; it is handled above
 	// The credential triple is accepted everywhere, including by commands that do
@@ -695,18 +718,24 @@ func (f flagSet) rejectUnknownFlags(usage string, accepted ...string) (bool, err
 	for _, a := range accepted {
 		ok[a] = true
 	}
+
 	var ignored []string
+
 	for a := range f.seen {
 		if !ok[a] {
 			ignored = append(ignored, a)
 		}
 	}
+
 	if len(ignored) == 0 {
 		return false, nil
 	}
+
 	slices.Sort(ignored) // map iteration; a refusal that reorders reads as a different refusal
+
 	sorted := slices.Clone(accepted)
 	slices.Sort(sorted)
+
 	return true, fmt.Errorf("%s does not read %s, so it would have been silently ignored — it accepts %s\nusage: %s",
 		commandOf(usage), strings.Join(ignored, ", "), strings.Join(sorted, ", "), usage)
 }
@@ -729,9 +758,11 @@ func (f flagSet) exactArgs(usage string, want int) error {
 	if len(f.rest) == want {
 		return nil
 	}
+
 	if len(f.rest) < want {
 		return fmt.Errorf("usage: %s", usage)
 	}
+
 	return fmt.Errorf("%s takes %d argument(s) and got %d — %s would have been silently ignored\nusage: %s",
 		commandOf(usage), want, len(f.rest), quoteAll(f.rest[want:]), usage)
 }
@@ -743,6 +774,7 @@ func quoteAll(args []string) string {
 	for i, a := range args {
 		out[i] = strconv.Quote(a)
 	}
+
 	return strings.Join(out, ", ")
 }
 
@@ -762,7 +794,9 @@ func (f flagSet) only(usage string) (bool, error) {
 // flagsInUsage pulls every --flag (and short alias) mentioned in a usage string.
 func flagsInUsage(usage string) []string {
 	var out []string
+
 	seen := map[string]bool{}
+
 	for w := range strings.FieldsSeq(usage) {
 		w = strings.Trim(w, "[]|()\"',")
 		if !strings.HasPrefix(w, "-") || w == "-" || w == "--" {
@@ -772,13 +806,16 @@ func flagsInUsage(usage string) []string {
 		if i := strings.IndexByte(w, '='); i > 0 {
 			w = w[:i]
 		}
+
 		if canon, ok := flagAliases[w]; ok {
 			w = canon
 		}
+
 		if !seen[w] {
 			seen[w], out = true, append(out, w)
 		}
 	}
+
 	return out
 }
 
@@ -787,16 +824,21 @@ func flagsInUsage(usage string) []string {
 func commandOf(usage string) string {
 	usage = strings.TrimPrefix(usage, "usage: ")
 	fields := strings.Fields(usage)
+
 	var out []string
+
 	for _, w := range fields {
 		if strings.HasPrefix(w, "[") || strings.HasPrefix(w, "<") || strings.HasPrefix(w, "-") || w == "|" {
 			break
 		}
+
 		out = append(out, w)
 	}
+
 	if len(out) == 0 {
 		return "this command"
 	}
+
 	return "`" + strings.Join(out, " ") + "`"
 }
 
@@ -807,28 +849,35 @@ func (f flagSet) resourceLimits() (*hook.ResourceLimits, error) {
 	if f.cpuQuota == "" && f.cpuWeight == "" && f.memoryMax == "" && f.memoryHigh == "" && f.tasksMax == "" && f.ioWeight == "" {
 		return nil, nil
 	}
+
 	rl := &hook.ResourceLimits{CPUQuota: f.cpuQuota, MemoryMax: f.memoryMax, MemoryHigh: f.memoryHigh}
 	if f.cpuWeight != "" {
 		n, err := strconv.Atoi(f.cpuWeight)
 		if err != nil {
 			return nil, fmt.Errorf("--cpu-weight: %w", err)
 		}
+
 		rl.CPUWeight = n
 	}
+
 	if f.tasksMax != "" {
 		n, err := strconv.Atoi(f.tasksMax)
 		if err != nil {
 			return nil, fmt.Errorf("--tasks-max: %w", err)
 		}
+
 		rl.TasksMax = n
 	}
+
 	if f.ioWeight != "" {
 		n, err := strconv.Atoi(f.ioWeight)
 		if err != nil {
 			return nil, fmt.Errorf("--io-weight: %w", err)
 		}
+
 		rl.IOWeight = n
 	}
+
 	return rl, nil
 }
 
@@ -850,6 +899,7 @@ func readRequest(p paths, f flagSet, op wire.Op, payload []byte) (wire.Request, 
 	if err != nil {
 		return wire.Request{}, err
 	}
+
 	return wire.Request{Op: op, As: resolveIdentity(p, f), Token: token, Payload: payload}, nil
 }
 
@@ -866,14 +916,17 @@ func (f flagSet) waitMode() (bool, error) {
 	if f.tryLock && f.wait {
 		return false, fmt.Errorf("--try and --wait are opposites: --try fails immediately on a conflict, --wait blocks for one")
 	}
+
 	if f.tryLock {
 		return false, nil
 	}
+
 	if !f.wait && f.timeout != "" {
 		// A timeout with nothing to time out is a request that will never do what
 		// it looks like it does.
 		return false, fmt.Errorf("--timeout only applies with --wait (without it, a conflict fails immediately); did you mean `--wait --timeout %s`?", f.timeout)
 	}
+
 	return f.wait, nil
 }
 
@@ -881,13 +934,16 @@ func (f flagSet) resolveToken() (string, error) {
 	if f.token != "" {
 		return f.token, nil
 	}
+
 	if f.tokenFile != "" {
 		data, err := os.ReadFile(f.tokenFile)
 		if err != nil {
 			return "", err
 		}
+
 		return strings.TrimSpace(string(data)), nil
 	}
+
 	return "", nil
 }
 
@@ -899,6 +955,7 @@ func resolveIdentity(p paths, f flagSet) string {
 	if f.as != "" {
 		return f.as
 	}
+
 	if sid := sessionID(); sid != "" {
 		data, err := os.ReadFile(identFile(p, sid))
 		if err == nil {
@@ -907,6 +964,7 @@ func resolveIdentity(p paths, f flagSet) string {
 			}
 		}
 	}
+
 	return os.Getenv("BREEZE_AGENT")
 }
 
@@ -916,6 +974,7 @@ func sessionID() string {
 			return v
 		}
 	}
+
 	return ""
 }
 
@@ -941,10 +1000,28 @@ func bindSessionToken(p paths, name, token string) {
 	if sid == "" {
 		return
 	}
+
 	namePath := identFile(p, sid)
-	os.MkdirAll(namePath[:strings.LastIndex(namePath, "/")], 0o700)
-	os.WriteFile(namePath, []byte(name+"\n"), 0o600)
-	os.WriteFile(tokenFile(p, sid), []byte(token+"\n"), 0o600)
+	if err := os.MkdirAll(namePath[:strings.LastIndex(namePath, "/")], 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not bind this session to %s: %v — later commands will need --as and --token again\n", name, err)
+
+		return
+	}
+
+	// Warned rather than returned, and deliberately not fatal: the token itself was
+	// minted and printed, so the command that asked for it succeeded. The binding is
+	// a convenience for LATER commands in this session, and a silent failure there is
+	// expensive to diagnose — the next call reports "this operation requires an
+	// identity AND its token" for a session that was never bound, which reads as the
+	// user's mistake rather than a failed write. Saying it here puts the cause at the
+	// command that caused it.
+	if err := os.WriteFile(namePath, []byte(name+"\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record this session's identity: %v — later commands will need --as and --token again\n", err)
+	}
+
+	if err := os.WriteFile(tokenFile(p, sid), []byte(token+"\n"), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record this session's token: %v — later commands will need --as and --token again\n", err)
+	}
 }
 
 // resolveTokenAuto is resolveToken plus a fallback to the session-bound token
@@ -958,18 +1035,22 @@ func resolveTokenAuto(p paths, f flagSet, as string) (string, error) {
 	if err != nil || token != "" {
 		return token, err
 	}
+
 	sid := sessionID()
 	if sid == "" || as == "" {
 		return "", nil
 	}
+
 	boundName, err := os.ReadFile(identFile(p, sid))
 	if err != nil || strings.TrimSpace(string(boundName)) != as {
 		return "", nil
 	}
+
 	data, err := os.ReadFile(tokenFile(p, sid))
 	if err != nil {
 		return "", nil
 	}
+
 	return strings.TrimSpace(string(data)), nil
 }
 
@@ -994,11 +1075,13 @@ func cmdStop(p paths) error {
 	// Ask who we're stopping before stopping them, so we can wait for that exact
 	// process to be gone rather than for a socket that disappears immediately.
 	pid := 0
+
 	if resp, err := call(p, wire.Request{Op: wire.OpPing}); err == nil {
 		if ping, err := decodePayload[wire.PingResponse](resp); err == nil {
 			pid = ping.Pid
 		}
 	}
+
 	if _, err := call(p, wire.Request{Op: wire.OpStop}); err != nil {
 		return err
 	}
@@ -1016,7 +1099,9 @@ func cmdStop(p paths) error {
 	if pid > 0 && !waitForProcessExit(pid, restartWaitBudget) {
 		return fmt.Errorf("asked the daemon (pid %d) to stop, but it is still running after %s — it may be draining a long request; check %s", pid, restartWaitBudget, p.daemonLog)
 	}
+
 	fmt.Println("stopped")
+
 	return nil
 }
 
@@ -1025,12 +1110,15 @@ func cmdPing(p paths) error {
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.PingResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	fmt.Printf("pong (pid %d, version %s, dir %s)\n", out.Pid, versionString(out.Version, out.BuildTime), p.dir)
 	warnVersionSkew(out.BuildTime)
+
 	return nil
 }
 
@@ -1044,6 +1132,7 @@ func versionSkewed(daemonBuild string) bool {
 	if buildTime == "" || buildTime == "unknown" || daemonBuild == "" || daemonBuild == "unknown" {
 		return false
 	}
+
 	return buildTime != daemonBuild
 }
 
@@ -1065,6 +1154,7 @@ func warnVersionSkew(daemonBuild string) {
 	if !versionSkewed(daemonBuild) {
 		return
 	}
+
 	fmt.Fprintf(os.Stderr, "warning: this CLI was built %s and the daemon %s — client-side commands (board, audit) use THIS binary, but gates, time logging and everything the engine decides stay on the daemon's until it restarts\n",
 		buildTime, daemonBuild)
 }
@@ -1073,6 +1163,7 @@ func versionString(version, buildTime string) string {
 	if buildTime == "" || buildTime == "unknown" {
 		return fmt.Sprintf("%s (build time unknown)", version)
 	}
+
 	return fmt.Sprintf("%s (built %s)", version, buildTime)
 }
 
@@ -1088,6 +1179,7 @@ func cmdStatus(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+
 	ping, err := decodePayload[wire.PingResponse](pingResp)
 	if err != nil {
 		return err
@@ -1097,6 +1189,7 @@ func cmdStatus(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+
 	ps, err := decodePayload[wire.PsResponse](psResp)
 	if err != nil {
 		return err
@@ -1106,6 +1199,7 @@ func cmdStatus(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+
 	inv, err := decodePayload[wire.InventoryResponse](invResp)
 	if err != nil {
 		return err
@@ -1115,6 +1209,7 @@ func cmdStatus(p paths, args []string) error {
 	if err != nil {
 		return err
 	}
+
 	pipe, err := decodePayload[wire.PipelineListResponse](pipeResp)
 	if err != nil {
 		return err
@@ -1128,6 +1223,7 @@ func cmdStatus(p paths, args []string) error {
 			Inventory wire.InventoryResponse    `json:"inventory"`
 			Pipelines wire.PipelineListResponse `json:"pipelines"`
 		}{p.dir, ping, ps, inv, pipe})
+
 		return nil
 	}
 	// STAMPED, because this output gets pasted between people as evidence and a
@@ -1149,26 +1245,34 @@ func cmdStatus(p paths, args []string) error {
 	} else {
 		limits += " — set one in " + p.defaults + " for this daemon, or " + p.globalDefaults + " for every daemon on this machine"
 	}
+
 	fmt.Printf("resource limits (every command this daemon runs): %s\n", limits)
+
 	if ping.RunDir != "" {
 		fmt.Printf("stage scratch + output: %s\n", ping.RunDir)
 	}
+
 	if q := ping.Queue; q != nil {
 		fmt.Printf("machine-wide stage budget: %d concurrent, %d in use at the time of asking (slots in %s, shared with every breeze daemon on this machine)\n",
 			q.Max, len(q.InUse), q.Dir)
+
 		for _, h := range q.InUse {
 			fmt.Printf("  %s\n", h)
 		}
 	}
+
 	if ping.IOLimitProblem != "" {
 		fmt.Printf("io limits: NOT IN FORCE — %s\n", ping.IOLimitProblem)
 	}
+
 	if ping.NiceProblem != "" {
 		fmt.Printf("nice: NOT IN FORCE — %s\n", ping.NiceProblem)
 	}
+
 	if ping.NotifyProblem != "" {
 		fmt.Printf("mess notifications: FAILING — %s\n  (stage outcomes are unaffected; nobody is being told about them)\n", ping.NotifyProblem)
 	}
+
 	return nil
 }
 
@@ -1180,17 +1284,21 @@ func cmdOperator(p paths, args []string) error {
 	if len(args) > 0 && args[0] == "notify" {
 		return cmdOperatorNotify(p, args[1:])
 	}
+
 	if len(args) > 0 && args[0] == "update-all" {
 		return cmdOperatorUpdateAll(parseFlags(args[1:]).force)
 	}
+
 	f := parseFlags(args)
 	if handled, err := f.only("breeze operator [--pipeline NAME] [--env NAME] [--json] | notify | update-all"); handled {
 		return err
 	}
+
 	resp, err := call(p, wire.Request{Op: wire.OpOperatorSurface})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.OperatorSurfaceResponse](resp)
 	if err != nil {
 		return err
@@ -1204,12 +1312,15 @@ func cmdOperator(p paths, args []string) error {
 	out.PendingApprovals = filterByPipelineEnv(out.PendingApprovals, f.pipeline, f.env, func(a wire.PendingApproval) (string, string) { return a.Pipeline, a.Environment })
 	out.Running = filterByPipelineEnv(out.Running, f.pipeline, f.env, func(r wire.RunningStage) (string, string) { return r.Pipeline, r.Environment })
 	out.RecentFailures = filterByPipelineEnv(out.RecentFailures, f.pipeline, f.env, func(fl wire.RecentFailure) (string, string) { return fl.Pipeline, fl.Environment })
+
 	out.RecentSuccesses = filterByPipelineEnv(out.RecentSuccesses, f.pipeline, f.env, func(s wire.RecentSuccess) (string, string) { return s.Pipeline, s.Environment })
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	printOperatorSurfaceHuman(out)
+
 	return nil
 }
 
@@ -1221,17 +1332,21 @@ func filterByPipelineEnv[T any](items []T, pipeline, env string, fields func(T) 
 	if pipeline == "" && env == "" {
 		return items
 	}
+
 	out := items[:0]
 	for _, it := range items {
 		p, e := fields(it)
 		if pipeline != "" && p != pipeline {
 			continue
 		}
+
 		if env != "" && e != env {
 			continue
 		}
+
 		out = append(out, it)
 	}
+
 	return out
 }
 
@@ -1246,12 +1361,14 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 		if env == "" {
 			return "-"
 		}
+
 		return env
 	}
 	since := func(t time.Time) string {
 		if t.IsZero() {
 			return "-"
 		}
+
 		return time.Since(t).Round(time.Second).String()
 	}
 
@@ -1259,12 +1376,14 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 		if out.PendingApprovals[i].Pipeline != out.PendingApprovals[j].Pipeline {
 			return out.PendingApprovals[i].Pipeline < out.PendingApprovals[j].Pipeline
 		}
+
 		return out.PendingApprovals[i].StartedAt.Before(out.PendingApprovals[j].StartedAt)
 	})
 	sort.SliceStable(out.Running, func(i, j int) bool {
 		if out.Running[i].Pipeline != out.Running[j].Pipeline {
 			return out.Running[i].Pipeline < out.Running[j].Pipeline
 		}
+
 		return out.Running[i].StartedAt.Before(out.Running[j].StartedAt)
 	})
 	sort.SliceStable(out.RecentFailures, func(i, j int) bool { return out.RecentFailures[i].Pipeline < out.RecentFailures[j].Pipeline })
@@ -1289,6 +1408,7 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 		if r.Queued {
 			state = "QUEUED for a slot"
 		}
+
 		fmt.Printf("    %-10s %-10s %-8s actor=%-10s %s %s\n",
 			r.Stage, shortCommitForDisplay(r.Commit), envOrDash(r.Environment), r.Actor, state, since(r.StartedAt))
 	})
@@ -1306,6 +1426,7 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 	})
 
 	fmt.Printf("Locks held (%d):\n", len(out.Locks))
+
 	for _, l := range out.Locks {
 		fmt.Printf("  %-6s %-8s %-8s %-10s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
 	}
@@ -1316,6 +1437,7 @@ func printOperatorSurfaceHuman(out wire.OperatorSurfaceResponse) {
 // be sorted/stable-grouped by pipeline (see printOperatorSurfaceHuman).
 func printGroupedByPipeline[T any](items []T, pipelineOf func(T) string, printItem func(T)) {
 	last := ""
+
 	first := true
 	for _, it := range items {
 		if pl := pipelineOf(it); first || pl != last {
@@ -1323,6 +1445,7 @@ func printGroupedByPipeline[T any](items []T, pipelineOf func(T) string, printIt
 			last = pl
 			first = false
 		}
+
 		printItem(it)
 	}
 }
@@ -1344,10 +1467,12 @@ func cmdOperatorUpdateAll(force bool) error {
 	if err != nil {
 		return err
 	}
+
 	entries, err := loadRegistryFile(regPath)
 	if err != nil {
 		return err
 	}
+
 	if len(entries) == 0 {
 		fmt.Println("no known breeze daemons in the registry")
 		return nil
@@ -1356,21 +1481,29 @@ func cmdOperatorUpdateAll(force bool) error {
 	dead := make(map[string]bool)  // dirs confirmed not running — prune
 	fresh := make(map[string]bool) // dirs successfully restarted — refresh LastSeen
 	failures := 0
+
 	for _, e := range entries {
 		ep := pathsForDir(e.Dir)
+
 		conn, dialErr := net.DialTimeout("unix", ep.sock, 300*time.Millisecond)
 		if dialErr != nil {
 			fmt.Printf("%s: not running, pruning from registry\n", e.Dir)
 			dead[e.Dir] = true
+
 			continue
 		}
+
 		err := restartViaConn(ep, conn, force)
-		conn.Close()
+		closeQuietly(conn)
+
 		if err != nil {
 			fmt.Printf("%s: restart failed: %v\n", e.Dir, err)
+
 			failures++
+
 			continue
 		}
+
 		fresh[e.Dir] = true
 	}
 
@@ -1383,23 +1516,29 @@ func cmdOperatorUpdateAll(force bool) error {
 		if err != nil {
 			return err
 		}
+
 		kept := current[:0]
 		for _, e := range current {
 			if dead[e.Dir] {
 				continue
 			}
+
 			if fresh[e.Dir] {
 				e.LastSeen = time.Now()
 			}
+
 			kept = append(kept, e)
 		}
+
 		return saveRegistryFile(path, kept)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "breeze: warning: failed to save the pruned registry: %v\n", err)
 	}
+
 	if failures > 0 {
 		return fmt.Errorf("%d of %d daemon(s) failed to restart", failures, len(entries))
 	}
+
 	return nil
 }
 
@@ -1419,27 +1558,34 @@ func cmdOperatorNotify(p paths, args []string) error {
 	if handled, err := f.only("breeze operator notify [--interval D]"); handled {
 		return err
 	}
+
 	reconnectDelay := 3 * time.Second
+
 	if f.interval != "" {
 		d, err := parseOptionalDuration(f.interval)
 		if err != nil {
 			return err
 		}
+
 		if d > 0 {
 			reconnectDelay = d
 		}
 	}
+
 	if _, err := exec.LookPath("notify-send"); err != nil {
 		return fmt.Errorf("notify-send not found on PATH — desktop notifications need it (Linux/libnotify); use `breeze operator --json` yourself if it's unavailable")
 	}
 
 	seen := newSeenOperatorEvents()
 	primed := false
+
 	fmt.Println("watching breeze for approvals/failures/successes (event-driven, Ctrl-C to stop)...")
+
 	for {
 		if err := watchOperatorOnce(p, seen, &primed); err != nil {
 			fmt.Fprintf(os.Stderr, "breeze operator notify: %v — reconnecting in %s\n", err, reconnectDelay)
 		}
+
 		time.Sleep(reconnectDelay)
 	}
 }
@@ -1470,24 +1616,29 @@ func watchOperatorOnce(p paths, seen seenOperatorEvents, primed *bool) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	if err := json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpOperatorWatch}); err != nil {
 		return err
 	}
+
 	dec := json.NewDecoder(conn)
+
 	for {
 		var resp wire.Response
 		if err := dec.Decode(&resp); err != nil {
 			return err
 		}
+
 		if !resp.OK {
 			return fmt.Errorf("%s", resp.Error)
 		}
+
 		out, err := decodePayload[wire.OperatorSurfaceResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if !*primed {
 			// The first snapshot this process ever sees is a baseline, not news: an
 			// approval/failure/success already sitting in history when the watcher
@@ -1497,9 +1648,12 @@ func watchOperatorOnce(p paths, seen seenOperatorEvents, primed *bool) error {
 			// since the seen-maps started empty and treated "already there" the same
 			// as "just happened."
 			primeSeenOperatorEvents(out, seen)
+
 			*primed = true
+
 			continue
 		}
+
 		notifyNewOperatorEvents(out, seen)
 	}
 }
@@ -1523,9 +1677,11 @@ func primeSeenOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperator
 	for _, a := range out.PendingApprovals {
 		seen.approvals[pendingApprovalKey(a)] = true
 	}
+
 	for _, fl := range out.RecentFailures {
 		seen.failures[recentFailureKey(fl)] = true
 	}
+
 	for _, s := range out.RecentSuccesses {
 		seen.successes[recentSuccessKey(s)] = true
 	}
@@ -1543,25 +1699,33 @@ func notifyNewOperatorEvents(out wire.OperatorSurfaceResponse, seen seenOperator
 		if seen.approvals[key] {
 			continue
 		}
+
 		seen.approvals[key] = true
+
 		desktopNotify("breeze: review needed",
 			fmt.Sprintf("%s/%s %s (%d/%d approvals, role %s)", a.Pipeline, a.Stage, shortCommitForDisplay(a.Commit), a.ApprovalsGiven, a.ApprovalsRequired, a.ApproverRole))
 	}
+
 	for _, fl := range out.RecentFailures {
 		key := recentFailureKey(fl)
 		if seen.failures[key] {
 			continue
 		}
+
 		seen.failures[key] = true
+
 		desktopNotify("breeze: stage failed",
 			fmt.Sprintf("%s/%s %s: %s", fl.Pipeline, fl.Stage, shortCommitForDisplay(fl.Commit), fl.Error))
 	}
+
 	for _, s := range out.RecentSuccesses {
 		key := recentSuccessKey(s)
 		if seen.successes[key] {
 			continue
 		}
+
 		seen.successes[key] = true
+
 		desktopNotify("breeze: stage succeeded",
 			fmt.Sprintf("%s/%s %s", s.Pipeline, s.Stage, shortCommitForDisplay(s.Commit)))
 	}
@@ -1580,19 +1744,24 @@ func cmdWhoAmI(p paths, args []string) error {
 	if handled, err := f.only("breeze whoami [--as NAME] [--json]"); handled {
 		return err
 	}
+
 	as := resolveIdentity(p, f)
+
 	resp, err := call(p, wire.Request{Op: wire.OpWhoAmI, As: as})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.WhoAmIResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	if out.Name == "" {
 		fmt.Println("(no identity)")
 		return nil
@@ -1604,7 +1773,9 @@ func cmdWhoAmI(p paths, args []string) error {
 		fmt.Printf("%s (NOT registered — run `breeze register identity %s`)\n", out.Name, out.Name)
 		return nil
 	}
+
 	fmt.Printf("%s roles=%s\n", out.Name, strings.Join(out.Roles, ","))
+
 	return nil
 }
 
@@ -1618,40 +1789,52 @@ func cmdAuth(p paths, args []string) error {
 	if len(args) == 0 || args[0] != "check" {
 		return fmt.Errorf("usage: breeze check auth [--as NAME] [--token T | --token-file PATH] [--role R] [--json]")
 	}
+
 	f := parseFlags(args[1:])
 	if handled, err := f.only("breeze check auth [--as NAME] [--token T | --token-file PATH] [--role R] [--json]"); handled {
 		return err
 	}
+
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
+
 	if as == "" || token == "" {
 		return fmt.Errorf("nothing to check: pass --as NAME and --token T (or --token-file PATH)")
 	}
+
 	payload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: f.role})
+
 	resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.AuthCheckResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return authFailureErr(out.Authorized)
 	}
+
 	if out.Authorized {
 		if f.role != "" {
 			fmt.Printf("ok: %s holds role %q\n", as, f.role)
 		} else {
 			fmt.Printf("ok: %s's credential is valid\n", as)
 		}
+
 		return nil
 	}
+
 	fmt.Printf("NOT ok: %s\n", out.Reason)
+
 	return authFailureErr(false)
 }
 
@@ -1662,6 +1845,7 @@ func authFailureErr(authorized bool) error {
 	if authorized {
 		return nil
 	}
+
 	return fmt.Errorf("credential check failed")
 }
 
@@ -1670,26 +1854,34 @@ func cmdPs(p paths, args []string) error {
 	if handled, err := f.only("breeze ps [--json]"); handled {
 		return err
 	}
+
 	resp, err := call(p, wire.Request{Op: wire.OpPs})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.PsResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	fmt.Println("identities:")
+
 	for _, id := range out.Identities {
 		fmt.Printf("  %-20s roles=%-20s token=%v\n", id.Name, strings.Join(id.Roles, ","), id.HasToken)
 	}
+
 	fmt.Println("locks:")
+
 	for _, l := range out.Locks {
 		fmt.Printf("  %-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
 	}
+
 	return nil
 }
 
@@ -1712,18 +1904,22 @@ func listIdentities(p paths, f flagSet) error {
 	if err != nil {
 		return err
 	}
+
 	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.RoleListResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	if len(out.Identities) == 0 {
 		fmt.Println("no identities registered — `breeze register identity <name>` creates one")
 		return nil
@@ -1731,12 +1927,14 @@ func listIdentities(p paths, f flagSet) error {
 	// Widths from the data, so a long name or role set does not shear the columns
 	// to the right of it — this is a table people scan for one row.
 	nameW, roleW, targetW := len("IDENTITY"), len("ROLES"), len("MESS TARGET")
+
 	rows := make([][5]string, 0, len(out.Identities))
 	for _, id := range out.Identities {
 		roles := strings.Join(id.Roles, ",")
 		if roles == "" {
 			roles = "—"
 		}
+
 		token := "none"
 		if id.HasToken {
 			token = "live"
@@ -1745,20 +1943,25 @@ func listIdentities(p paths, f flagSet) error {
 		// Rendered as "= name" rather than repeating the first column, because the
 		// thing worth spotting is the row where it DIFFERS or is absent.
 		target := "= name"
+
 		switch {
 		case id.NotifyOptOut:
 			target = "(opted out)"
 		case id.MessAgent != "":
 			target = id.MessAgent
 		}
+
 		r := [5]string{id.Name, roles, token, target, id.RegisteredAt.Format("2006-01-02 15:04")}
 		nameW, roleW, targetW = max(nameW, len(r[0])), max(roleW, len(r[1])), max(targetW, len(r[3]))
 		rows = append(rows, r)
 	}
+
 	fmt.Printf("%-*s  %-*s  %-5s  %-*s  %s\n", nameW, "IDENTITY", roleW, "ROLES", "TOKEN", targetW, "MESS TARGET", "REGISTERED")
+
 	for _, r := range rows {
 		fmt.Printf("%-*s  %-*s  %-5s  %-*s  %s\n", nameW, r[0], roleW, r[1], r[2], targetW, r[3], r[4])
 	}
+
 	return nil
 }
 
@@ -1779,6 +1982,7 @@ func listIdentities(p paths, f flagSet) error {
 // of the session being refused by ops the name implies they could run.
 func printIdentityRegistered(out wire.IdentityRegisterResponse) {
 	fmt.Println(out.Token)
+
 	if len(out.Roles) == 0 {
 		// The common case is the one that has to be loud, and loud means naming
 		// the command that changes it.
@@ -1791,8 +1995,10 @@ func printIdentityRegistered(out wire.IdentityRegisterResponse) {
 
 func cmdIdentity(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze list identities | register identity | revoke identity | notify identity ...")
 	}
+
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
@@ -1804,71 +2010,91 @@ func cmdIdentity(p paths, args []string) error {
 		if handled, err := f.only("breeze list identities [--json]"); handled {
 			return err
 		}
+
 		return listIdentities(p, f)
 	case "register":
 		if handled, err := f.only("breeze register identity <name> [--mess-agent NAME] [--force] [--as NAME] [--token T | --token-file PATH]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze register identity <name> [--mess-agent NAME] [--as NAME --token T | --force --as ADMIN --token T]")
 		}
+
 		name := f.rest[0]
 		as := resolveIdentity(p, f)
+
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.IdentityRegisterRequest{Name: name, Force: f.force, MessAgent: f.messAgent})
+
 		resp, err := call(p, wire.Request{Op: wire.OpIdentityRegister, As: as, Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.IdentityRegisterResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		bindSessionToken(p, out.Name, out.Token)
 		printIdentityRegistered(out)
+
 		return nil
 	case "revoke":
 		if handled, err := f.only("breeze revoke identity <name> --as ADMIN [--token T | --token-file PATH]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze revoke identity <name> --as ADMIN --token T")
 		}
+
 		as := resolveIdentity(p, f)
+
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.IdentityRevokeRequest{Name: f.rest[0]})
 		_, err = call(p, wire.Request{Op: wire.OpIdentityRevoke, As: as, Token: token, Payload: payload})
+
 		return err
 	case "notify":
 		if handled, err := f.only("breeze notify identity on|off [--as NAME]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 || (f.rest[0] != "on" && f.rest[0] != "off") {
 			return fmt.Errorf("usage: breeze notify identity on|off [--as NAME]")
 		}
+
 		as := resolveIdentity(p, f)
 		if as == "" {
 			return fmt.Errorf("no identity resolved — register one first, or pass --as NAME explicitly; this toggles YOUR OWN mess-notification preference")
 		}
+
 		payload, _ := json.Marshal(wire.IdentityNotifyRequest{OptOut: f.rest[0] == "off"})
 		_, err := call(p, wire.Request{Op: wire.OpIdentityNotify, As: as, Payload: payload})
+
 		return err
 	default:
 		if handled, err := f.rejectUnknownFlags("breeze register identity | revoke identity | notify identity ..."); handled {
 			return err
 		}
+
 		return fmt.Errorf("unknown identity subcommand %q", sub)
 	}
 }
 
 func cmdRole(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze assign role | revoke role | list roles ...")
 	}
 	// One string, read by both the accepted-flag check and the positional-arity
@@ -1876,6 +2102,7 @@ func cmdRole(p paths, args []string) error {
 	// accepts one the usage forbids) is the exact drift the derivation above
 	// exists to prevent.
 	const roleUsage = "breeze assign|revoke role <role> <identity> --as ADMIN [--token T | --token-file PATH]"
+
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
@@ -1887,15 +2114,20 @@ func cmdRole(p paths, args []string) error {
 		if handled, err := f.only(roleUsage); handled {
 			return err
 		}
+
 		if err := f.exactArgs(roleUsage, 2); err != nil {
 			return err
 		}
+
 		as := resolveIdentity(p, f)
+
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		op := wire.OpRoleAssign
+
 		var payload []byte
 		if sub == "assign" {
 			payload, _ = json.Marshal(wire.RoleAssignRequest{Role: f.rest[0], Identity: f.rest[1]})
@@ -1903,6 +2135,7 @@ func cmdRole(p paths, args []string) error {
 			op = wire.OpRoleRevoke
 			payload, _ = json.Marshal(wire.RoleRevokeRequest{Role: f.rest[0], Identity: f.rest[1]})
 		}
+
 		if _, err := call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload}); err != nil {
 			return err
 		}
@@ -1914,44 +2147,55 @@ func cmdRole(p paths, args []string) error {
 		if sub == "revoke" {
 			verb = "revoked role %q from %q\n"
 		}
+
 		fmt.Printf(verb, f.rest[0], f.rest[1])
+
 		return nil
 	case "list":
 		if handled, err := f.only("breeze list roles [--json]"); handled {
 			return err
 		}
+
 		req, err := readRequest(p, f, wire.OpRoleList, nil)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.RoleListResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		for _, id := range out.Identities {
 			fmt.Printf("%-20s %s\n", id.Name, strings.Join(id.Roles, ","))
 		}
+
 		return nil
 	default:
 		if handled, err := f.rejectUnknownFlags("breeze assign role | revoke role | list roles ..."); handled {
 			return err
 		}
+
 		return fmt.Errorf("unknown role subcommand %q", sub)
 	}
 }
 
 func cmdLock(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ...")
 	}
+
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// --help belongs to the SUBCOMMAND: each declares its own accepted set, so
@@ -1959,21 +2203,26 @@ func cmdLock(p paths, args []string) error {
 	// line, which lists no flags and so cannot answer what --help asked. The group
 	// form is right only when the subcommand is unrecognized — see default.
 	as := resolveIdentity(p, f)
+
 	switch sub {
 	case "acquire":
 		if handled, err := f.only("breeze acquire lock <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--try | --wait] [--timeout D] [--json]"); handled {
 			return err
 		}
+
 		if len(f.resources) > 0 && len(f.rest) > 0 {
 			return fmt.Errorf("cannot mix file paths and --resource in one lock acquire")
 		}
+
 		if len(f.resources) == 0 && len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze acquire lock <path...> --as NAME, or --resource <name>... --as NAME [--shared] [--ttl D] [--wait] [--timeout D]")
 		}
+
 		wait, err := f.waitMode()
 		if err != nil {
 			return err
 		}
+
 		var req wire.LockAcquireRequest
 		if len(f.resources) > 0 {
 			req = wire.LockAcquireRequest{Resources: f.resources, Shared: f.shared, TTL: f.ttl, Wait: wait, Timeout: f.timeout}
@@ -1982,88 +2231,113 @@ func cmdLock(p paths, args []string) error {
 			if err != nil {
 				return err
 			}
+
 			req = wire.LockAcquireRequest{Paths: lockPaths, Shared: f.shared, TTL: f.ttl, Wait: wait, Timeout: f.timeout}
 		}
+
 		payload, _ := json.Marshal(req)
+
 		resp, err := call(p, wire.Request{Op: wire.OpLockAcquire, As: as, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.LockAcquireResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		fmt.Println(out.Lock.ID)
+
 		return nil
 	case "release":
 		if handled, err := f.only("breeze release lock <lock-id> --as NAME [--force] [--json]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze release lock <lock-id> --as NAME [--force]")
 		}
+
 		payload, _ := json.Marshal(wire.LockReleaseRequest{ID: f.rest[0], Force: f.force})
 		_, err := call(p, wire.Request{Op: wire.OpLockRelease, As: as, Payload: payload})
+
 		return err
 	case "release-all":
 		if handled, err := f.only("breeze release locks --as NAME [--json]"); handled {
 			return err
 		}
+
 		resp, err := call(p, wire.Request{Op: wire.OpLockReleaseAll, As: as})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.LockReleaseAllResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		if len(out.Released) == 0 {
 			fmt.Println("no locks held")
 			return nil
 		}
+
 		for _, l := range out.Released {
 			fmt.Printf("released %-6s %-8s %-8s %v\n", l.ID, l.Kind, l.Mode, l.Paths)
 		}
+
 		return nil
 	case "renew":
 		if handled, err := f.only("breeze renew lock <lock-id> [--ttl D] --as NAME [--json]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze renew lock <lock-id> [--ttl D] --as NAME")
 		}
+
 		payload, _ := json.Marshal(wire.LockRenewRequest{ID: f.rest[0], TTL: f.ttl})
 		_, err := call(p, wire.Request{Op: wire.OpLockRenew, As: as, Payload: payload})
+
 		return err
 	case "list":
 		if handled, err := f.only("breeze list locks [--all] [--json]"); handled {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.LockListRequest{All: f.all})
+
 		req, err := readRequest(p, f, wire.OpLockList, payload)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.LockListResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		if f.all {
 			for _, l := range out.Locks {
 				fmt.Printf("%-6s %-8s %-8s %-20s %v\n", l.ID, l.Kind, l.Mode, l.Holder, l.Paths)
@@ -2073,21 +2347,25 @@ func cmdLock(p paths, args []string) error {
 				fmt.Printf("%-6s %-8s %-20s %v\n", l.ID, l.Mode, l.Holder, l.Paths)
 			}
 		}
+
 		return nil
 	case "check":
 		if handled, err := f.only("breeze check lock <path...> [--as NAME] [--json]"); handled {
 			return err
 		}
+
 		return cmdLockCheck(p, as, f)
 	case "exec":
 		if handled, err := f.only("breeze exec lock <path...> [--shared] [--try | --wait] [--timeout D] [--ttl D] [--cpu-quota P] [--cpu-weight N] [--memory-max SIZE] [--memory-high SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>"); handled {
 			return err
 		}
+
 		return cmdLockExec(p, as, f)
 	default:
 		if handled, err := f.rejectUnknownFlags("breeze acquire lock | exec lock | release lock | release locks | renew lock | list locks | check lock ..."); handled {
 			return err
 		}
+
 		return fmt.Errorf("unknown lock subcommand %q", sub)
 	}
 }
@@ -2102,9 +2380,11 @@ func cmdApply(p paths, args []string) error {
 	if handled, err := f.only("breeze apply -f <file.hcl> [--as ADMIN] [--token T | --token-file PATH] [--dry-run] [--prune]"); handled {
 		return err
 	}
+
 	if f.file == "" {
 		return fmt.Errorf("usage: breeze apply -f <file.hcl> [--as ADMIN] [--token T] [--dry-run] [--prune]")
 	}
+
 	if f.prune {
 		return fmt.Errorf("--prune is not yet supported (breeze has no pipeline-removal RPC) — refusing rather than silently ignoring it")
 	}
@@ -2118,13 +2398,17 @@ func cmdApply(p paths, args []string) error {
 		name   string
 		action string // "new" | "changed" | "unchanged"
 	}
-	var plan []planItem
-	var toApply []wire.Pipeline
+
+	var (
+		plan    []planItem
+		toApply []wire.Pipeline
+	)
 
 	for _, pl := range pipelines {
 		showPayload, _ := json.Marshal(wire.PipelineShowRequest{Name: pl.Name})
 		resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: showPayload})
 		action := "new"
+
 		if err == nil {
 			current, decErr := decodePayload[wire.PipelineShowResponse](resp)
 			if decErr == nil && pipelinesEqual(current.Pipeline, pl) {
@@ -2133,6 +2417,7 @@ func cmdApply(p paths, args []string) error {
 				action = "changed"
 			}
 		}
+
 		plan = append(plan, planItem{name: pl.Name, action: action})
 		if action != "unchanged" {
 			toApply = append(toApply, pl)
@@ -2150,15 +2435,19 @@ func cmdApply(p paths, args []string) error {
 			if err != nil {
 				return err
 			}
+
 			authPayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: "admin"})
+
 			resp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: authPayload})
 			if err != nil {
 				return err
 			}
+
 			auth, err := decodePayload[wire.AuthCheckResponse](resp)
 			if err != nil {
 				return err
 			}
+
 			if auth.Authorized {
 				fmt.Printf("✓ %s is authorized to apply this plan (holds admin)\n", as)
 			} else {
@@ -2175,15 +2464,19 @@ func cmdApply(p paths, args []string) error {
 					if role == "" {
 						continue
 					}
+
 					stagePayload, _ := json.Marshal(wire.AuthCheckRequest{RequiredRole: role})
+
 					sresp, err := call(p, wire.Request{Op: wire.OpAuthCheck, As: as, Token: token, Payload: stagePayload})
 					if err != nil {
 						return err
 					}
+
 					stageAuth, err := decodePayload[wire.AuthCheckResponse](sresp)
 					if err != nil {
 						return err
 					}
+
 					if stageAuth.Authorized {
 						fmt.Printf("  ✓ %s could operate %s/%s (requires role %q)\n", as, pl.Name, s.Name, role)
 					} else {
@@ -2192,8 +2485,10 @@ func cmdApply(p paths, args []string) error {
 				}
 			}
 		}
+
 		return nil
 	}
+
 	if len(toApply) == 0 {
 		return nil
 	}
@@ -2216,16 +2511,19 @@ func cmdApply(p paths, args []string) error {
 	}
 
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
+
 	for _, pl := range toApply {
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pl})
 		if _, err := call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload}); err != nil {
 			return fmt.Errorf("registering pipeline %q: %w", pl.Name, err)
 		}
 	}
+
 	return nil
 }
 
@@ -2239,6 +2537,7 @@ func declaresStageEnv(pls []wire.Pipeline) bool {
 			}
 		}
 	}
+
 	return false
 }
 
@@ -2250,6 +2549,7 @@ func declaresStageLock(pls []wire.Pipeline) bool {
 			}
 		}
 	}
+
 	return false
 }
 
@@ -2279,10 +2579,13 @@ func stageRequiredRole(s wire.StageDef) string {
 func pipelinesEqual(a, b wire.Pipeline) bool {
 	a.CreatedBy, a.CreatedAt = "", time.Time{}
 	b.CreatedBy, b.CreatedAt = "", time.Time{}
+
 	normalizePipelineDurations(&a)
 	normalizePipelineDurations(&b)
+
 	aj, _ := json.Marshal(a)
 	bj, _ := json.Marshal(b)
+
 	return string(aj) == string(bj)
 }
 
@@ -2292,6 +2595,7 @@ func normalizePipelineDurations(p *wire.Pipeline) {
 		for j := range p.Stages[i].PreGate {
 			p.Stages[i].PreGate[j].Timeout = normalizeDuration(p.Stages[i].PreGate[j].Timeout)
 		}
+
 		for j := range p.Stages[i].PostAction {
 			p.Stages[i].PostAction[j].Timeout = normalizeDuration(p.Stages[i].PostAction[j].Timeout)
 		}
@@ -2303,13 +2607,16 @@ func normalizeDuration(s string) string {
 	if err != nil {
 		return s // leave unparseable strings as-is; registration itself will reject them
 	}
+
 	return d.String()
 }
 
 func cmdPipeline(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ...")
 	}
+
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// --help and the flag check are the SUBCOMMAND's to answer: each one below
@@ -2324,47 +2631,62 @@ func cmdPipeline(p paths, args []string) error {
 		if handled, err := f.only("breeze register pipeline <file.json|-> --as ADMIN [--token T | --token-file PATH]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze register pipeline <file.json|-> --as ADMIN --token T")
 		}
-		var data []byte
-		var err error
+
+		var (
+			data []byte
+			err  error
+		)
 		if f.rest[0] == "-" {
 			data, err = io.ReadAll(os.Stdin)
 		} else {
 			data, err = os.ReadFile(f.rest[0])
 		}
+
 		if err != nil {
 			return err
 		}
+
 		var pipeline wire.Pipeline
 		if err := json.Unmarshal(data, &pipeline); err != nil {
 			return fmt.Errorf("parsing pipeline JSON: %w", err)
 		}
+
 		as := resolveIdentity(p, f)
+
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.PipelineRegisterRequest{Pipeline: pipeline})
 		_, err = call(p, wire.Request{Op: wire.OpPipelineRegister, As: as, Token: token, Payload: payload})
+
 		return err
 	case "show":
 		if handled, err := f.only("breeze show pipeline <name> [--json]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 1 {
 			return fmt.Errorf("usage: breeze show pipeline <name> [--json]")
 		}
+
 		payload, _ := json.Marshal(wire.PipelineShowRequest{Name: f.rest[0]})
+
 		resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.PipelineShowResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out.Pipeline)
 			return nil
@@ -2375,67 +2697,84 @@ func cmdPipeline(p paths, args []string) error {
 		// of an unchanged file). Fetch it separately so the human view can still say
 		// what a stage will actually run with.
 		printPipelineHuman(out.Pipeline, machineLimits(p))
+
 		return nil
 	case "list":
 		if handled, err := f.only("breeze list pipelines [--json]"); handled {
 			return err
 		}
+
 		req, err := readRequest(p, f, wire.OpPipelineList, nil)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.PipelineListResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		for _, pl := range out.Pipelines {
 			fmt.Printf("%-20s stages=%d fanOutAt=%d environments=%v\n", pl.Name, len(pl.Stages), pl.FanOutAt, pl.Environments)
 		}
+
 		return nil
 	case "status":
 		if handled, err := f.only("breeze status pipeline <name> <commit> [--json]"); handled {
 			return err
 		}
+
 		if len(f.rest) < 2 {
 			return fmt.Errorf("usage: breeze status pipeline <name> <commit> [--json]")
 		}
+
 		payload, _ := json.Marshal(wire.PipelineStatusRequest{Pipeline: f.rest[0], Commit: resolveCommitVerbose(f.rest[1])})
+
 		req, err := readRequest(p, f, wire.OpPipelineStatus, payload)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.PipelineStatusResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		for _, inst := range out.Instances {
 			env := inst.Environment
 			if env == "" {
 				env = "-"
 			}
+
 			fmt.Printf("%-10s %-10s %-16s %s\n", inst.Stage, env, inst.Status, inst.Actor)
 		}
+
 		return nil
 	default:
 		if handled, err := f.rejectUnknownFlags("breeze register pipeline | show pipeline | list pipelines | status pipeline | run pipeline ..."); handled {
 			return err
 		}
+
 		return fmt.Errorf("unknown pipeline subcommand %q", sub)
 	}
 }
@@ -2463,20 +2802,25 @@ func cmdPipelineRun(p paths, f flagSet) error {
 	if handled, err := f.only("breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--serial] --as WHO [--token T | --token-file PATH]"); handled {
 		return err
 	}
+
 	if len(f.rest) < 2 {
 		return fmt.Errorf("usage: breeze run pipeline <name> <commit> [--env NAME] [--brief \"...\"] [--set NAME=VALUE] [--serial] --as WHO [--token T]")
 	}
+
 	name, commit := f.rest[0], resolveCommit(f.rest[1])
 
 	payload, _ := json.Marshal(wire.PipelineShowRequest{Name: name})
+
 	resp, err := call(p, wire.Request{Op: wire.OpPipelineShow, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	show, err := decodePayload[wire.PipelineShowResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	pl := show.Pipeline
 
 	if f.env == "" && pl.FanOutAt < len(pl.Stages) {
@@ -2493,6 +2837,7 @@ func cmdPipelineRun(p paths, f flagSet) error {
 	if err := checkSetsAreDeclared(set, pl); err != nil {
 		return err
 	}
+
 	if len(set) > 0 {
 		if err := requireDaemonFeature(p, wire.FeatureStageEnv, "--set"); err != nil {
 			return err
@@ -2500,6 +2845,7 @@ func cmdPipelineRun(p paths, f flagSet) error {
 	}
 
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
@@ -2511,6 +2857,7 @@ func cmdPipelineRun(p paths, f flagSet) error {
 		set:      set,
 		outcomes: make([]stageOutcome, len(pl.Stages)),
 	}
+
 	return run.drive()
 }
 
@@ -2521,8 +2868,11 @@ func checkSetsAreDeclared(set map[string]string, pl wire.Pipeline) error {
 	if len(set) == 0 {
 		return nil
 	}
+
 	declared := map[string]bool{}
+
 	var names []string
+
 	for _, sd := range pl.Stages {
 		for _, n := range sd.RequiresEnv {
 			if !declared[n] {
@@ -2530,20 +2880,26 @@ func checkSetsAreDeclared(set map[string]string, pl wire.Pipeline) error {
 			}
 		}
 	}
+
 	var unknown []string
+
 	for n := range set {
 		if !declared[n] {
 			unknown = append(unknown, n)
 		}
 	}
+
 	if len(unknown) == 0 {
 		return nil
 	}
+
 	slices.Sort(unknown)
 	slices.Sort(names)
+
 	if len(names) == 0 {
 		return fmt.Errorf("--set %s: no stage in pipeline %q declares requires_env, so this would reach nothing", strings.Join(unknown, ", "), pl.Name)
 	}
+
 	return fmt.Errorf("--set %s: no stage in pipeline %q asks for that — it declares %s", strings.Join(unknown, ", "), pl.Name, strings.Join(names, ", "))
 }
 
@@ -2578,12 +2934,14 @@ func (r *pipelineRun) setFor(sd wire.StageDef) map[string]string {
 	if len(r.set) == 0 || len(sd.RequiresEnv) == 0 {
 		return nil
 	}
+
 	out := make(map[string]string, len(sd.RequiresEnv))
 	for _, name := range sd.RequiresEnv {
 		if v, ok := r.set[name]; ok {
 			out[name] = v
 		}
 	}
+
 	return out
 }
 
@@ -2594,6 +2952,7 @@ func (r *pipelineRun) stageEnv(i int) string {
 	if i >= r.pipeline.FanOutAt {
 		return r.env
 	}
+
 	return ""
 }
 
@@ -2602,25 +2961,31 @@ func (r *pipelineRun) stageEnv(i int) string {
 // or any one, per the stage's convergence setting.
 func (r *pipelineRun) ready() []int {
 	var out []int
+
 	for i := range r.pipeline.Stages {
 		if r.outcomes[i].attempted {
 			continue
 		}
+
 		needs := stageNeeds(r.pipeline, i)
 		satisfied := 0
+
 		for _, j := range needs {
 			if r.outcomes[j].succeeded {
 				satisfied++
 			}
 		}
+
 		want := len(needs)
 		if r.pipeline.Stages[i].Convergence == "any" && want > 0 {
 			want = 1
 		}
+
 		if satisfied >= want {
 			out = append(out, i)
 		}
 	}
+
 	return out
 }
 
@@ -2630,13 +2995,16 @@ func (r *pipelineRun) drive() error {
 		if len(ready) == 0 {
 			break
 		}
+
 		if len(ready) > 1 && !r.serial {
 			names := make([]string, 0, len(ready))
 			for _, i := range ready {
 				names = append(names, r.pipeline.Stages[i].Name)
 			}
+
 			fmt.Printf("running %d stages in parallel: %s\n", len(names), strings.Join(names, ", "))
 		}
+
 		if err := r.runRound(ready); err != nil {
 			return err // an RPC-level failure, not a stage outcome — nothing to summarize
 		}
@@ -2648,6 +3016,7 @@ func (r *pipelineRun) drive() error {
 			}
 		}
 	}
+
 	return r.summarize()
 }
 
@@ -2662,14 +3031,19 @@ func (r *pipelineRun) runRound(ready []int) error {
 				return err
 			}
 		}
+
 		return nil
 	}
+
 	var wg sync.WaitGroup
+
 	errs := make([]error, len(ready))
 	for n, i := range ready {
 		wg.Go(func() { errs[n] = r.runStage(i) })
 	}
+
 	wg.Wait()
+
 	return errors.Join(errs...)
 }
 
@@ -2684,10 +3058,12 @@ func (r *pipelineRun) runStage(i int) error {
 	out.attempted = true
 
 	statusPayload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env})
+
 	resp, err := call(r.paths, wire.Request{Op: wire.OpStageStatus, Payload: statusPayload})
 	if err != nil {
 		return err
 	}
+
 	statusOut, err := decodePayload[wire.StageStatusResponse](resp)
 	if err != nil {
 		return err
@@ -2697,6 +3073,7 @@ func (r *pipelineRun) runStage(i int) error {
 	case statusOut.Instance.Status == "succeeded":
 		out.succeeded, out.status = true, "succeeded"
 		out.lines = append(out.lines, fmt.Sprintf("%s: succeeded (already)", sd.Name))
+
 		return nil
 
 	case sd.Type == "approval":
@@ -2704,33 +3081,41 @@ func (r *pipelineRun) runStage(i int) error {
 		if sd.ApprovalPolicy != nil {
 			need, role = sd.ApprovalPolicy.RequiredApprovals, sd.ApprovalPolicy.RequiredRole
 		}
+
 		approve := fmt.Sprintf("breeze approve stage %s %s %s", r.name, sd.Name, shortCommitForDisplay(r.commit))
 		if env != "" {
 			approve += " --env " + env
 		}
+
 		out.status = "awaiting_approval"
 		out.lines = append(out.lines, fmt.Sprintf("%s: awaiting approval (%d/%d, role %q)", sd.Name, len(statusOut.Instance.Approvals), need, role))
 		out.blocker = fmt.Sprintf("awaiting approval — approve with: %s --as WHO --token T", approve)
+
 		return nil
 
 	case statusOut.Instance.Status == "running":
 		out.status = "running"
 		out.blocker = "already running (use `breeze wait stage`)"
 		out.lines = append(out.lines, fmt.Sprintf("%s: %s", sd.Name, out.blocker))
+
 		return nil
 	}
 
 	startPayload, _ := json.Marshal(wire.StageStartRequest{Pipeline: r.name, Stage: sd.Name, Commit: r.commit, Environment: env, Brief: r.brief, Set: r.setFor(sd)})
+
 	resp, err = call(r.paths, wire.Request{Op: wire.OpStageStart, As: r.as, Token: r.token, Payload: startPayload})
 	if err != nil {
 		return err
 	}
+
 	startOut, err := decodePayload[wire.StageStartResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	out.status = startOut.Instance.Status
 	out.succeeded = startOut.Instance.Status == "succeeded"
+
 	out.lines = append(out.lines, fmt.Sprintf("%s: %s", startOut.Instance.Stage, startOut.Instance.Status))
 	if startOut.Instance.Error != "" {
 		out.lines = append(out.lines, startOut.Instance.Error)
@@ -2738,9 +3123,11 @@ func (r *pipelineRun) runStage(i int) error {
 			out.blocker = startOut.Instance.Error
 		}
 	}
+
 	if !out.succeeded && out.blocker == "" {
 		out.blocker = "stage " + startOut.Instance.Status
 	}
+
 	return nil
 }
 
@@ -2749,6 +3136,7 @@ func (r *pipelineRun) runStage(i int) error {
 // because a prerequisite of its did.
 func (r *pipelineRun) summarize() error {
 	var blocked, unreached []string
+
 	for i, sd := range r.pipeline.Stages {
 		switch {
 		case r.outcomes[i].succeeded:
@@ -2758,17 +3146,22 @@ func (r *pipelineRun) summarize() error {
 			unreached = append(unreached, sd.Name)
 		}
 	}
+
 	if len(blocked) == 0 && len(unreached) == 0 {
 		fmt.Printf("pipeline %q complete for %s%s\n", r.name, shortCommitForDisplay(r.commit), envSuffix(r.env))
 		return nil
 	}
+
 	fmt.Println("stopped:")
+
 	for _, line := range blocked {
 		fmt.Println(line)
 	}
+
 	if len(unreached) > 0 {
 		fmt.Printf("  not reached (prerequisite unmet): %s\n", strings.Join(unreached, ", "))
 	}
+
 	return fmt.Errorf("pipeline %q incomplete for %s%s: %d stage(s) blocked, %d not reached", r.name, shortCommitForDisplay(r.commit), envSuffix(r.env), len(blocked), len(unreached))
 }
 
@@ -2790,13 +3183,16 @@ func requireDaemonFeature(p paths, feature, flag string) error {
 	if err != nil {
 		return err
 	}
+
 	ping, err := decodePayload[wire.PingResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if slices.Contains(ping.Features, feature) {
 		return nil
 	}
+
 	return fmt.Errorf("this daemon (pid %d, built %s) predates %s and would IGNORE it, refusing the request rather than doing something other than what you asked — restart it onto the current binary with `breeze restart daemon` (or `breeze restart daemons` for every daemon on this machine)",
 		ping.Pid, versionString(ping.Version, ping.BuildTime), flag)
 }
@@ -2809,15 +3205,18 @@ func machineLimits(p paths) *hook.ResourceLimits {
 	if err != nil {
 		return nil
 	}
+
 	ping, err := decodePayload[wire.PingResponse](resp)
 	if err != nil {
 		return nil
 	}
+
 	return resourceLimitsFromWire(ping.DefaultResourceLimits)
 }
 
 func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 	fmt.Printf("pipeline %q\n", pl.Name)
+
 	if !machine.IsZero() {
 		// "under" read as CONTAINMENT and the mechanism is SUBSTITUTION: a stage that
 		// names a field REPLACES the machine's value for it, per field, and can name a
@@ -2826,13 +3225,17 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 		// these, which is exactly the belief someone doing capacity arithmetic acts on.
 		fmt.Printf("  machine defaults (this daemon) — a stage REPLACES any it names, per field: %s\n", describeLimits(machine))
 	}
+
 	if pl.FanOutAt < len(pl.Stages) {
 		fmt.Printf("  fan-out at: %s (environments: %v)\n", pl.Stages[pl.FanOutAt].Name, pl.Environments)
+
 		if len(pl.DebugEnvironments) > 0 {
 			fmt.Printf("  debug environments (exempt from gate 2 + monotonic ordering): %v\n", pl.DebugEnvironments)
 		}
 	}
+
 	fmt.Println()
+
 	for i, s := range pl.Stages {
 		// The timeout is on the main line, not in --json only. A file-vs-registration
 		// timeout divergence stayed invisible for a day because of that omission:
@@ -2872,12 +3275,14 @@ func printPipelineHuman(pl wire.Pipeline, machine *hook.ResourceLimits) {
 		if len(s.RequiresEnv) > 0 {
 			fmt.Printf("  %-12s  %-9s  requires env: %s (caller must pass --set NAME=VALUE)\n", "", "", strings.Join(s.RequiresEnv, ", "))
 		}
+
 		if i == pl.FanOutAt {
 			for _, env := range sortedKeys(pl.EnvironmentDeps) {
 				deps := pl.EnvironmentDeps[env]
 				if len(deps) == 0 {
 					continue
 				}
+
 				fmt.Printf("  %-12s  %-9s  env deps: %s requires %s\n", "", "", env, strings.Join(deps, ", "))
 			}
 		}
@@ -2891,9 +3296,11 @@ func stageTimeoutText(s wire.StageDef) string {
 	if s.Type == "approval" {
 		return "—"
 	}
+
 	if s.Timeout == "" {
 		return "(no timeout)"
 	}
+
 	return normalizeDuration(s.Timeout)
 }
 
@@ -2907,8 +3314,10 @@ func stageNeeds(pl wire.Pipeline, i int) []int {
 		if i == 0 {
 			return nil
 		}
+
 		return []int{i - 1}
 	}
+
 	out := make([]int, 0, len(pl.Stages[i].Needs))
 	for _, name := range pl.Stages[i].Needs {
 		for j := range pl.Stages[:i] {
@@ -2917,6 +3326,7 @@ func stageNeeds(pl wire.Pipeline, i int) []int {
 			}
 		}
 	}
+
 	return out
 }
 
@@ -2932,25 +3342,31 @@ func stageRequiresText(pl wire.Pipeline, i int) string {
 	if pl.Stages[i].Debug {
 		return "(none — debug stage, skips ordering)"
 	}
+
 	needs := stageNeeds(pl, i)
 	if len(needs) == 0 {
 		if i == 0 {
 			return "(none, first stage)"
 		}
+
 		return "(none — branch root)"
 	}
+
 	parts := make([]string, 0, len(needs))
 	for _, j := range needs {
 		name := pl.Stages[j].Name
 		if j >= pl.FanOutAt {
 			name += " (same environment)"
 		}
+
 		parts = append(parts, name)
 	}
+
 	sep := " + "
 	if pl.Stages[i].Convergence == "any" {
 		sep = " or "
 	}
+
 	return strings.Join(parts, sep)
 }
 
@@ -2959,7 +3375,9 @@ func sortedKeys(m map[string][]string) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
+
 	return keys
 }
 
@@ -2991,12 +3409,14 @@ func statusLine(inst wire.StageInstance) string {
 	if inst.SurvivingProcesses > 0 {
 		s += fmt.Sprintf("  [%d process(es) were still running when the command exited]", inst.SurvivingProcesses)
 	}
+
 	if inst.MemoryHighEvents > 0 {
 		s += fmt.Sprintf("  [THROTTLED: hit memory_high %d times, peak %s — it is not slow, it is over its memory ceiling]",
 			inst.MemoryHighEvents, humanBytes(inst.MemoryPeak))
 	} else if inst.MemoryPeak > 0 {
 		s += fmt.Sprintf("  [peak memory %s]", humanBytes(inst.MemoryPeak))
 	}
+
 	return s
 }
 
@@ -3021,11 +3441,13 @@ func printOutput(inst wire.StageInstance, tail int) {
 		fmt.Println("  (output pruned by retention — the verdict above is intact, but this run's stdout/stderr are no longer stored)")
 		return
 	}
+
 	for _, s := range []struct{ name, body string }{{"stderr", inst.Stderr}, {"stdout", inst.Stdout}} {
 		body := strings.TrimRight(s.body, "\n")
 		if body == "" {
 			continue
 		}
+
 		lines := strings.Split(body, "\n")
 		if tail > 0 && len(lines) > tail {
 			fmt.Printf("  --- %s (last %d of %d lines; --tail N for more) ---\n", s.name, tail, len(lines))
@@ -3033,6 +3455,7 @@ func printOutput(inst wire.StageInstance, tail int) {
 		} else {
 			fmt.Printf("  --- %s (%d lines) ---\n", s.name, len(lines))
 		}
+
 		for _, l := range lines {
 			fmt.Println("  " + l)
 		}
@@ -3075,6 +3498,7 @@ func waitForProcessExit(pid int, timeout time.Duration) bool {
 		// touches the process either way.
 		return struct{}{}, syscall.Kill(pid, 0) != nil, nil
 	})
+
 	return err == nil
 }
 
@@ -3086,6 +3510,7 @@ func printSummary(inst wire.StageInstance) {
 	if inst.Summary == "" {
 		return
 	}
+
 	for line := range strings.SplitSeq(strings.TrimRight(inst.Summary, "\n"), "\n") {
 		fmt.Println("  " + line)
 	}
@@ -3102,6 +3527,7 @@ func stageFailureErr(status string) error {
 	if status == "failed" || status == "gate_failed" {
 		return fmt.Errorf("stage %s", status)
 	}
+
 	return nil
 }
 
@@ -3125,13 +3551,16 @@ func stageUsage(sub string) string {
 	case "claim":
 		return "breeze claim stage <pipeline> <stage> <commit> [--env NAME] [--ttl D] [--json] --as WHO [--token T | --token-file PATH]"
 	}
+
 	return "breeze start|approve|status|wait|cancel|claim stage <pipeline> <stage> <commit> [--env NAME] ..."
 }
 
 func cmdStage(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze start stage | approve stage | status stage | wait stage | cancel stage | claim stage ...")
 	}
+
 	sub, rest := args[0], args[1:]
 	f := parseFlags(rest)
 	// Before the positional check, so `--help` answers with THIS subcommand's
@@ -3140,9 +3569,11 @@ func cmdStage(p paths, args []string) error {
 	if handled, err := f.only(usage); handled {
 		return err
 	}
+
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: %s", usage)
 	}
+
 	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommitVerbose(f.rest[2])
 	as := resolveIdentity(p, f)
 
@@ -3152,8 +3583,11 @@ func cmdStage(p paths, args []string) error {
 		if err != nil {
 			return err
 		}
+
 		op := wire.OpStageStart
+
 		var payload []byte
+
 		if sub == "start" {
 			if f.force {
 				// FeatureForceCommandStage, not FeatureForceDeploy: a daemon that has
@@ -3166,6 +3600,7 @@ func cmdStage(p paths, args []string) error {
 					return err
 				}
 			}
+
 			set, err := parseSets(f.sets)
 			if err != nil {
 				return err
@@ -3178,52 +3613,66 @@ func cmdStage(p paths, args []string) error {
 					return err
 				}
 			}
+
 			payload, _ = json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief, Force: f.force, Set: set})
 		} else {
 			op = wire.OpStageApprove
 			payload, _ = json.Marshal(wire.StageApproveRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
 		}
+
 		resp, err := call(p, wire.Request{Op: op, As: as, Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.StageStartResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return stageFailureErr(out.Instance.Status)
 		}
+
 		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
 		printSummary(out.Instance)
+
 		if out.Instance.Error != "" {
 			fmt.Println("  " + out.Instance.Error)
 		}
+
 		if wantsOutput(out.Instance.Status, f) {
 			printOutput(out.Instance, f.tail)
 		}
+
 		return stageFailureErr(out.Instance.Status)
 	case "status":
 		payload, _ := json.Marshal(wire.StageStatusRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env})
+
 		req, err := readRequest(p, f, wire.OpStageStatus, payload)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.StageStatusResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return stageFailureErr(out.Instance.Status)
 		}
+
 		fmt.Printf("%s: %s\n", out.Instance.Stage, statusLine(out.Instance))
 		printSummary(out.Instance)
+
 		if out.Instance.Error != "" {
 			fmt.Println("  " + out.Instance.Error)
 		}
@@ -3232,28 +3681,36 @@ func cmdStage(p paths, args []string) error {
 		if wantsOutput(out.Instance.Status, f) {
 			printOutput(out.Instance, f.tail)
 		}
+
 		return stageFailureErr(out.Instance.Status)
 	case "wait":
 		payload, _ := json.Marshal(wire.StageWaitRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Timeout: f.timeout})
+
 		req, err := readRequest(p, f, wire.OpStageWait, payload)
 		if err != nil {
 			return err
 		}
+
 		resp, err := call(p, req)
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.StageStatusResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
+
 			if out.TimedOut {
 				return fmt.Errorf("timed out")
 			}
+
 			return stageFailureErr(out.Instance.Status)
 		}
+
 		if out.TimedOut {
 			fmt.Printf("%s: %s (timed out waiting for resolution)\n", out.Instance.Stage, statusLine(out.Instance))
 			return fmt.Errorf("timed out")
@@ -3269,50 +3726,65 @@ func cmdStage(p paths, args []string) error {
 		if wantsOutput(out.Instance.Status, f) {
 			printOutput(out.Instance, f.tail)
 		}
+
 		return stageFailureErr(out.Instance.Status)
 	case "cancel":
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.StageCancelRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Reason: f.reason})
+
 		resp, err := call(p, wire.Request{Op: wire.OpStageCancel, As: as, Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.StageCancelResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		fmt.Printf("%s: %s (cancelled)\n", out.Instance.Stage, out.Instance.Status)
+
 		return nil
 	case "claim":
 		token, err := resolveTokenAuto(p, f, as)
 		if err != nil {
 			return err
 		}
+
 		payload, _ := json.Marshal(wire.StageClaimRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, TTL: f.ttl})
+
 		resp, err := call(p, wire.Request{Op: wire.OpStageClaim, As: as, Token: token, Payload: payload})
 		if err != nil {
 			return err
 		}
+
 		out, err := decodePayload[wire.StageClaimResponse](resp)
 		if err != nil {
 			return err
 		}
+
 		if f.jsonOut {
 			printJSON(out)
 			return nil
 		}
+
 		fmt.Printf("claimed %s/%s (%s) as %s (lock %s", pipeline, stage, shortCommitForDisplay(commit), as, out.LockID)
+
 		if !out.ExpiresAt.IsZero() {
 			fmt.Printf(", expires %s", out.ExpiresAt.Format(time.RFC3339))
 		}
+
 		fmt.Println(")")
+
 		return nil
 	default:
 		return fmt.Errorf("unknown stage subcommand %q", sub)
@@ -3321,8 +3793,10 @@ func cmdStage(p paths, args []string) error {
 
 func cmdDeploy(p paths, args []string) error {
 	if len(args) == 0 {
+		//nolint:staticcheck // ST1005: a usage summary, not prose — the trailing "..." stands for subcommands this line does not list.
 		return fmt.Errorf("usage: breeze list deploys | rollback deploy | claim deploy | grant deploy | list grants ...")
 	}
+
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "history":
@@ -3345,33 +3819,51 @@ func cmdDeployHistory(p paths, args []string) error {
 	if handled, err := f.only("breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]"); handled {
 		return err
 	}
+
 	if len(f.rest) < 2 {
 		return fmt.Errorf("usage: breeze list deploys <pipeline> <stage> [--env NAME] [--limit N] [--json]")
 	}
+
 	limit := 0
 	if f.limit != "" {
-		fmt.Sscanf(f.limit, "%d", &limit)
+		// Parsed, not scanned-and-ignored. A discarded Sscanf error left `limit` at
+		// its zero value on a typo, and zero here means NO LIMIT — so `--limit abc`
+		// silently returned the entire deploy history, which is the permissive
+		// reading a mistyped flag should never produce.
+		n, err := strconv.Atoi(f.limit)
+		if err != nil {
+			return fmt.Errorf("--limit %q is not a number: %w", f.limit, err)
+		}
+
+		limit = n
 	}
+
 	payload, _ := json.Marshal(wire.DeployHistoryRequest{Pipeline: f.rest[0], Stage: f.rest[1], Environment: f.env, Limit: limit})
+
 	req, err := readRequest(p, f, wire.OpDeployHistory, payload)
 	if err != nil {
 		return err
 	}
+
 	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.DeployHistoryResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	for _, e := range out.Entries {
 		fmt.Printf("%-10s %-8s seq=%-4d %-10s %s\n", shortCommitForDisplay(e.Commit), e.Environment, e.Seq, e.Outcome, e.Actor)
 	}
+
 	return nil
 }
 
@@ -3384,33 +3876,43 @@ func cmdDeployRollback(p paths, args []string) error {
 	if handled, err := f.only("breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T | --token-file PATH]"); handled {
 		return err
 	}
+
 	if len(f.rest) < 3 {
 		return fmt.Errorf("usage: breeze rollback deploy <pipeline> <stage> <commit> --env NAME [--brief \"...\"] --as WHO [--token T]")
 	}
+
 	pipeline, stage, commit := f.rest[0], f.rest[1], resolveCommitVerbose(f.rest[2])
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
+
 	payload, _ := json.Marshal(wire.StageStartRequest{Pipeline: pipeline, Stage: stage, Commit: commit, Environment: f.env, Brief: f.brief})
+
 	resp, err := call(p, wire.Request{Op: wire.OpDeployRollback, As: as, Token: token, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.StageStartResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return stageFailureErr(out.Instance.Status)
 	}
+
 	fmt.Printf("%s: %s (rollback)\n", out.Instance.Stage, out.Instance.Status)
 	printSummary(out.Instance)
+
 	if out.Instance.Error != "" {
 		fmt.Println(out.Instance.Error)
 	}
+
 	return stageFailureErr(out.Instance.Status)
 }
 
@@ -3423,36 +3925,48 @@ func cmdDeployClaim(p paths, args []string) error {
 	if handled, err := f.only("breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T | --token-file PATH]"); handled {
 		return err
 	}
+
 	if len(f.rest) < 2 {
 		return fmt.Errorf("usage: breeze claim deploy <pipeline> <stage> --env NAME [--ttl D] --as WHO [--token T]")
 	}
+
 	if f.env == "" {
 		return fmt.Errorf("--env is required")
 	}
+
 	pipeline, stage := f.rest[0], f.rest[1]
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
+
 	payload, _ := json.Marshal(wire.DeployClaimRequest{Pipeline: pipeline, Stage: stage, Environment: f.env, TTL: f.ttl})
+
 	resp, err := call(p, wire.Request{Op: wire.OpDeployClaim, As: as, Token: token, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.DeployClaimResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	fmt.Printf("claimed %s/%s/%s as %s (lock %s", pipeline, out.Target, f.env, as, out.LockID)
+
 	if !out.ExpiresAt.IsZero() {
 		fmt.Printf(", expires %s", out.ExpiresAt.Format(time.RFC3339))
 	}
+
 	fmt.Println(")")
+
 	return nil
 }
 
@@ -3465,42 +3979,55 @@ func cmdDeployGrant(p paths, args []string) error {
 	if handled, err := f.only("breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T | --token-file PATH]"); handled {
 		return err
 	}
+
 	if len(f.rest) < 1 {
 		return fmt.Errorf("usage: breeze grant deploy <pipeline> --env NAME --to IDENTITY --ttl D [--target NAME]... --as OWNER [--token T]")
 	}
+
 	if f.env == "" {
 		return fmt.Errorf("--env is required")
 	}
+
 	if f.to == "" {
 		return fmt.Errorf("--to (the identity being granted access) is required")
 	}
+
 	if f.ttl == "" {
 		return fmt.Errorf("--ttl is required — grants are always time-bounded, never permanent")
 	}
+
 	pipeline := f.rest[0]
 	as := resolveIdentity(p, f)
+
 	token, err := resolveTokenAuto(p, f, as)
 	if err != nil {
 		return err
 	}
+
 	payload, _ := json.Marshal(wire.DeployGrantRequest{Pipeline: pipeline, Environment: f.env, Targets: f.targets, Grantee: f.to, TTL: f.ttl})
+
 	resp, err := call(p, wire.Request{Op: wire.OpDeployGrant, As: as, Token: token, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.DeployGrantResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	scope := "all targets"
 	if len(out.Targets) > 0 {
 		scope = strings.Join(out.Targets, ",")
 	}
+
 	fmt.Printf("granted %s access to %s/%s (%s) until %s\n", out.Grantee, pipeline, f.env, scope, out.ExpiresAt.Format(time.RFC3339))
+
 	return nil
 }
 
@@ -3511,38 +4038,48 @@ func cmdDeployGrantList(p paths, args []string) error {
 	if handled, err := f.only("breeze list grants [<pipeline>] [--env NAME] [--json]"); handled {
 		return err
 	}
+
 	pipeline := ""
 	if len(f.rest) > 0 {
 		pipeline = f.rest[0]
 	}
+
 	payload, _ := json.Marshal(wire.DeployGrantListRequest{Pipeline: pipeline, Environment: f.env})
+
 	req, err := readRequest(p, f, wire.OpDeployGrantList, payload)
 	if err != nil {
 		return err
 	}
+
 	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.DeployGrantListResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	if len(out.Grants) == 0 {
 		fmt.Println("(no grants)")
 		return nil
 	}
+
 	for _, g := range out.Grants {
 		scope := "all targets"
 		if len(g.Targets) > 0 {
 			scope = strings.Join(g.Targets, ",")
 		}
+
 		fmt.Printf("%-15s %-10s %-10s (%s) granted-by=%-10s expires=%s\n", g.Pipeline, g.Environment, g.Grantee, scope, g.GrantedBy, g.ExpiresAt.Format(time.RFC3339))
 	}
+
 	return nil
 }
 
@@ -3556,29 +4093,36 @@ func cmdInventory(p paths, args []string) error {
 	if handled, err := f.only("breeze inventory [--json]"); handled {
 		return err
 	}
+
 	req, err := readRequest(p, f, wire.OpInventory, nil)
 	if err != nil {
 		return err
 	}
+
 	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.InventoryResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(out)
 		return nil
 	}
+
 	if len(out.Resources) == 0 {
 		fmt.Println("(no resources held)")
 		return nil
 	}
+
 	for _, r := range out.Resources {
 		fmt.Printf("%-6s %-8s %-20s %s\n", r.ID, r.Mode, r.Holder, r.Key)
 	}
+
 	return nil
 }
 
@@ -3592,29 +4136,35 @@ func cmdLockCheck(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 {
 		return fmt.Errorf("usage: breeze check lock <path...> [--as NAME] [--json]")
 	}
+
 	lockPaths, err := canonicalLockPaths(f.rest)
 	if err != nil {
 		return err
 	}
+
 	req, err := readRequest(p, f, wire.OpLockList, nil)
 	if err != nil {
 		return err
 	}
+
 	resp, err := call(p, req)
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.LockListResponse](resp)
 	if err != nil {
 		return err
 	}
 
 	var conflicts []wire.LockInfo
+
 	for _, want := range lockPaths {
 		for _, l := range out.Locks {
 			if l.Holder == as {
 				continue // the caller's own lock is never a conflict
 			}
+
 			if slices.Contains(l.Paths, want) {
 				conflicts = append(conflicts, l)
 				break
@@ -3627,9 +4177,11 @@ func cmdLockCheck(p paths, as string, f flagSet) error {
 			Locked    bool            `json:"locked"`
 			Conflicts []wire.LockInfo `json:"conflicts"`
 		}{Locked: len(conflicts) > 0, Conflicts: conflicts})
+
 		if len(conflicts) > 0 {
 			return fmt.Errorf("locked")
 		}
+
 		return nil
 	}
 
@@ -3637,9 +4189,11 @@ func cmdLockCheck(p paths, as string, f flagSet) error {
 		fmt.Println("clear")
 		return nil
 	}
+
 	for _, l := range conflicts {
 		fmt.Printf("locked: %v held by %s (id=%s, mode=%s)\n", l.Paths, l.Holder, l.ID, l.Mode)
 	}
+
 	return fmt.Errorf("%d of %d path(s) locked by another holder", len(conflicts), len(lockPaths))
 }
 
@@ -3647,19 +4201,22 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 	if len(f.rest) < 1 || len(f.cmdArgs) < 1 {
 		return fmt.Errorf("usage: breeze exec lock <path...> [--shared] [--cpu-quota P] [--cpu-weight N] [--memory-max SIZE] [--memory-high SIZE] [--tasks-max N] [--io-weight N] --as NAME -- <command...>")
 	}
+
 	rl, err := f.resourceLimits()
 	if err != nil {
 		return err
 	}
+
 	lockPaths, err := canonicalLockPaths(f.rest)
 	if err != nil {
 		return err
 	}
+
 	conn, err := dialOrStart(p)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
 
 	wait, err := f.waitMode()
 	if err != nil {
@@ -3672,21 +4229,26 @@ func cmdLockExec(p paths, as string, f flagSet) error {
 			return err
 		}
 	}
+
 	payload, _ := json.Marshal(wire.LockExecRequest{Paths: lockPaths, Shared: f.shared, Wait: wait, Timeout: f.timeout})
+
 	resp, err := callOnConn(conn, wire.Request{Op: wire.OpLockExec, As: as, Payload: payload})
 	if err != nil {
 		return err
 	}
+
 	out, err := decodePayload[wire.LockAcquireResponse](resp)
 	if err != nil {
 		return err
 	}
+
 	fmt.Fprintf(os.Stderr, "breeze: acquired %s (%s), running command...\n", out.Lock.ID, out.Lock.Mode)
 
 	cmdPath, cmdArgs := f.cmdArgs[0], f.cmdArgs[1:]
 	if rl != nil {
 		cmdPath, cmdArgs = hook.WrapWithSystemdRun(cmdPath, cmdArgs, rl)
 	}
+
 	cmd := exec.Command(cmdPath, cmdArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	runErr := cmd.Run()

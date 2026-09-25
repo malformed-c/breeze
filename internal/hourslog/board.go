@@ -28,7 +28,8 @@ func Board(dbPath string) ([]Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }() // a Close error on a handle being torn down carries no action
+
 	if err := checkSchema(db); err != nil {
 		return nil, err
 	}
@@ -46,20 +47,26 @@ ORDER BY last DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("reading the board: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }() // read-only query teardown
 
 	var out []Task
+
 	for rows.Next() {
-		var t Task
-		var last sql.NullString
+		var (
+			t    Task
+			last sql.NullString
+		)
 		if err := rows.Scan(&t.Summary, &t.Secs, &t.Entries, &last, &t.Running); err != nil {
 			return nil, err
 		}
+
 		if last.Valid {
 			t.Last, _ = parseTS(last.String)
 		}
+
 		out = append(out, t)
 	}
+
 	return out, rows.Err()
 }
 
@@ -88,6 +95,7 @@ func parseTS(s string) (time.Time, bool) {
 			return t, true
 		}
 	}
+
 	return time.Time{}, false
 }
 
@@ -128,8 +136,10 @@ func (t Task) Column(now time.Time) Column {
 	case t.Last.IsZero():
 		return ColOlder
 	}
+
 	last := t.Last.Local()
 	now = now.Local()
+
 	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	switch {
 	case !last.Before(midnight):
@@ -151,6 +161,7 @@ func Duration(secs int) string {
 		if m == 0 {
 			return fmt.Sprintf("%dh", h)
 		}
+
 		return fmt.Sprintf("%dh %dm", h, m)
 	case secs >= 60:
 		return fmt.Sprintf("%dm", secs/60)

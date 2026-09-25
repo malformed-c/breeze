@@ -23,15 +23,17 @@ func killVerifiedProcess(pid int, startToken string) error {
 	if err != nil {
 		return fmt.Errorf("pidfd_open: %w", err)
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }() // pidfd teardown; a Close error carries no action
 
 	// Re-read AFTER pinning: if the number was recycled before we got the handle,
 	// the token won't match and we stop rather than kill a stranger.
 	if procStartToken(pid) != startToken {
 		return fmt.Errorf("pid %d is no longer the process we identified — not signalling it", pid)
 	}
+
 	if err := unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0); err != nil {
 		return fmt.Errorf("pidfd_send_signal: %w", err)
 	}
+
 	return nil
 }

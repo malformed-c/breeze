@@ -166,6 +166,7 @@ func (rl *ResourceLimits) ioProperties() []struct{ Property, Value string } {
 	if rl == nil {
 		return nil
 	}
+
 	return []struct{ Property, Value string }{
 		{"IOReadBandwidthMax", rl.IOReadBandwidthMax},
 		{"IOWriteBandwidthMax", rl.IOWriteBandwidthMax},
@@ -182,14 +183,17 @@ func (rl *ResourceLimits) UsesIO() bool {
 	if rl == nil {
 		return false
 	}
+
 	if rl.IOWeight > 0 {
 		return true
 	}
+
 	for _, p := range rl.ioProperties() {
 		if p.Value != "" {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -219,31 +223,40 @@ func WrapWithSystemdRun(path string, args []string, rl *ResourceLimits) (string,
 	if os.Geteuid() != 0 {
 		sdArgs = append(sdArgs, "--user")
 	}
+
 	if rl.CPUQuota != "" {
 		sdArgs = append(sdArgs, "--property=CPUQuota="+rl.CPUQuota)
 	}
+
 	if rl.CPUWeight > 0 {
 		sdArgs = append(sdArgs, fmt.Sprintf("--property=CPUWeight=%d", rl.CPUWeight))
 	}
+
 	if rl.MemoryMax != "" {
 		sdArgs = append(sdArgs, "--property=MemoryMax="+rl.MemoryMax)
 	}
+
 	if rl.MemoryHigh != "" {
 		sdArgs = append(sdArgs, "--property=MemoryHigh="+rl.MemoryHigh)
 	}
+
 	if rl.TasksMax > 0 {
 		sdArgs = append(sdArgs, fmt.Sprintf("--property=TasksMax=%d", rl.TasksMax))
 	}
+
 	if rl.IOWeight > 0 {
 		sdArgs = append(sdArgs, fmt.Sprintf("--property=IOWeight=%d", rl.IOWeight))
 	}
+
 	for _, p := range rl.ioProperties() {
 		if p.Value != "" {
 			sdArgs = append(sdArgs, "--property="+p.Property+"="+p.Value)
 		}
 	}
+
 	sdArgs = append(sdArgs, "--", path)
 	sdArgs = append(sdArgs, args...)
+
 	return "systemd-run", sdArgs
 }
 
@@ -254,6 +267,7 @@ func filterEnv(env, unset []string) []string {
 	if len(unset) == 0 {
 		return env
 	}
+
 	out := env[:0:0]
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
@@ -261,6 +275,7 @@ func filterEnv(env, unset []string) []string {
 			out = append(out, kv)
 		}
 	}
+
 	return out
 }
 
@@ -273,21 +288,28 @@ func writeScript(body string) (path string, cleanup func(), err error) {
 	if err != nil {
 		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
 	}
-	cleanup = func() { os.Remove(f.Name()) }
+
+	cleanup = func() { _ = os.Remove(f.Name()) } // a temp file that outlives its run is harmless
+
 	if err := f.Chmod(0o700); err != nil {
 		f.Close()
 		cleanup()
+
 		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
 	}
+
 	if _, err := f.WriteString(body); err != nil {
 		f.Close()
 		cleanup()
+
 		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
 	}
+
 	if err := f.Close(); err != nil {
 		cleanup()
 		return "", func() {}, fmt.Errorf("writing inline script: %w", err)
 	}
+
 	return f.Name(), cleanup, nil
 }
 
@@ -298,9 +320,11 @@ func scriptArgv(tmpl Template, scriptPath string) (string, []string) {
 	if len(tmpl.Interpreter) > 0 {
 		return tmpl.Interpreter[0], append(append([]string(nil), tmpl.Interpreter[1:]...), scriptPath)
 	}
+
 	if strings.HasPrefix(tmpl.Script, "#!") {
 		return scriptPath, nil
 	}
+
 	return "/bin/sh", []string{scriptPath}
 }
 
@@ -328,6 +352,7 @@ func Substitute(s string, params Params) string {
 		if v, ok := params[name]; ok {
 			return v
 		}
+
 		return match // unknown placeholders are a registration-time validation error, not a run-time no-op
 	})
 }
@@ -336,13 +361,16 @@ func Substitute(s string, params Params) string {
 func Placeholders(s string) []string {
 	matches := placeholderRe.FindAllStringSubmatch(s, -1)
 	seen := make(map[string]bool, len(matches))
+
 	var out []string
+
 	for _, m := range matches {
 		if !seen[m[1]] {
 			seen[m[1]] = true
 			out = append(out, m[1])
 		}
 	}
+
 	return out
 }
 
@@ -355,6 +383,7 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	if tmpl.Timeout <= 0 {
 		return Result{Err: fmt.Errorf("hook timeout must be > 0")}
 	}
+
 	ctx, cancel := context.WithTimeout(ctx, tmpl.Timeout)
 	defer cancel()
 
@@ -370,13 +399,16 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 			return Result{Err: err}
 		}
 		defer cleanup()
+
 		path, args = scriptArgv(tmpl, scriptPath)
 	}
+
 	if tmpl.ResourceLimits != nil {
 		// Nice first, so the niced process is INSIDE the scope rather than the
 		// scope being started by a niced systemd-run.
 		path, args = WrapWithNice(path, args, tmpl.ResourceLimits.Nice)
 	}
+
 	if tmpl.ResourceLimits.NeedsCgroup() {
 		path, args = WrapWithSystemdRun(path, args, tmpl.ResourceLimits)
 	}
@@ -385,11 +417,14 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	if len(tmpl.Stdin) > 0 {
 		cmd.Stdin = bytes.NewReader(tmpl.Stdin)
 	}
+
 	cmd.Dir = Substitute(tmpl.Dir, params)
+
 	cmd.Env = filterEnv(os.Environ(), tmpl.UnsetEnv)
 	for _, e := range tmpl.Env {
 		cmd.Env = append(cmd.Env, Substitute(e, params))
 	}
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// cmd.Wait() blocks until every process holding the inherited stdout/stderr pipe
@@ -412,18 +447,23 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		if KillByCgroup(cmd.Process.Pid) {
 			return nil
 		}
+
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = 2 * time.Second
 
-	var stdout, stderr capBuffer
-	var outFiles *outputFiles
+	var (
+		stdout, stderr capBuffer
+		outFiles       *outputFiles
+	)
+
 	if tmpl.OutputDir != "" {
 		of, err := openOutputFiles(tmpl.OutputDir)
 		if err != nil {
 			return Result{Err: err}
 		}
 		defer of.close()
+
 		outFiles = of
 		cmd.Stdout, cmd.Stderr = of.stdout, of.stderr
 	} else {
@@ -432,10 +472,12 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	}
 
 	start := time.Now()
+
 	err := cmd.Start()
 	if err != nil {
 		return Result{Err: err, Duration: time.Since(start)}
 	}
+
 	if tmpl.OnStart != nil && cmd.Process != nil {
 		tmpl.OnStart(cmd.Process.Pid)
 	}
@@ -449,7 +491,7 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 		// second kill of a possibly-already-reaped group is harmless, and this
 		// covers the case where Wait raced ahead of Cancel's goroutine.
 		if !KillByCgroup(cmd.Process.Pid) {
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // belt-and-suspenders; a second kill of a reaped group is harmless
 		}
 	}
 
@@ -462,11 +504,13 @@ func Run(ctx context.Context, tmpl Template, params Params) Result {
 	if outFiles != nil {
 		res.Stdout, res.Stderr = outFiles.read()
 	}
+
 	if exitErr, ok := waitErr.(*exec.ExitError); ok {
 		res.ExitCode = exitErr.ExitCode()
 	} else if waitErr != nil && !timedOut {
 		res.Err = waitErr
 	}
+
 	return res
 }
 
@@ -480,15 +524,18 @@ func openOutputFiles(dir string) (*outputFiles, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("run output dir: %w", err)
 	}
+
 	out, err := os.Create(filepath.Join(dir, StdoutFile))
 	if err != nil {
 		return nil, fmt.Errorf("run output: %w", err)
 	}
+
 	errf, err := os.Create(filepath.Join(dir, StderrFile))
 	if err != nil {
 		out.Close()
 		return nil, fmt.Errorf("run output: %w", err)
 	}
+
 	return &outputFiles{stdout: out, stderr: errf}, nil
 }
 
@@ -510,8 +557,10 @@ func ReadCapped(path string) []byte {
 		return nil
 	}
 	defer f.Close()
+
 	buf := make([]byte, maxCaptured)
 	n, _ := io.ReadFull(f, buf)
+
 	return buf[:n]
 }
 
@@ -522,6 +571,7 @@ func (r Result) OutputTail(n int) string {
 	if len(combined) <= n {
 		return combined
 	}
+
 	return combined[len(combined)-n:]
 }
 
@@ -538,13 +588,16 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 	if c.limit == 0 {
 		c.limit = maxCaptured
 	}
+
 	remaining := c.limit - c.buf.Len()
 	if remaining > 0 {
 		if remaining > len(p) {
 			remaining = len(p)
 		}
+
 		c.buf.Write(p[:remaining])
 	}
+
 	return len(p), nil
 }
 
@@ -556,6 +609,7 @@ func (c *capBuffer) Bytes() []byte { return c.buf.Bytes() }
 // security boundary is simply "no shell involved," enforced unconditionally by Run).
 func ValidateArgs(tmpl Template, known map[string]bool) error {
 	var unknown []string
+
 	check := func(s string) {
 		for _, ph := range Placeholders(s) {
 			if !known[ph] {
@@ -566,13 +620,17 @@ func ValidateArgs(tmpl Template, known map[string]bool) error {
 	for _, a := range tmpl.Args {
 		check(a)
 	}
+
 	for _, e := range tmpl.Env {
 		check(e)
 	}
+
 	check(tmpl.Dir)
+
 	if len(unknown) > 0 {
 		return fmt.Errorf("unknown placeholder(s) %s (known: %s)", strings.Join(unknown, ", "), knownKeys(known))
 	}
+
 	return nil
 }
 
@@ -581,6 +639,7 @@ func knownKeys(known map[string]bool) string {
 	for k := range known {
 		keys = append(keys, k)
 	}
+
 	return strings.Join(keys, ", ")
 }
 
@@ -647,23 +706,28 @@ func (c StageContext) Env() []string {
 func IOControllerAvailable() (bool, string) {
 	path := "/sys/fs/cgroup/cgroup.controllers"
 	where := "the system manager's root cgroup"
+
 	if os.Geteuid() != 0 {
 		own, err := ownCgroupDir()
 		if err != nil {
 			return false, "could not determine this process's cgroup (" + err.Error() + "), so whether io limits apply is unknown"
 		}
+
 		path = filepath.Join(own, "cgroup.controllers")
 		where = "this daemon's own cgroup"
 	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, "could not read " + path + " (" + err.Error() + "), so whether io limits apply is unknown"
 	}
+
 	for _, c := range strings.Fields(string(data)) {
 		if c == "io" {
 			return true, ""
 		}
 	}
+
 	return false, "the io cgroup controller is not available in " + where + " (" + path +
 		" lists: " + strings.Join(strings.Fields(string(data)), " ") + ")"
 }
@@ -678,11 +742,13 @@ func ownCgroupDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	for _, line := range strings.Split(string(data), "\n") {
 		if rest, ok := strings.CutPrefix(line, "0::"); ok {
 			return filepath.Join("/sys/fs/cgroup", rest), nil
 		}
 	}
+
 	return "", fmt.Errorf("no unified (0::) entry in /proc/self/cgroup — cgroup v2 is required for resource limits")
 }
 
@@ -696,6 +762,7 @@ func (rl *ResourceLimits) NeedsCgroup() bool {
 	if rl == nil {
 		return false
 	}
+
 	return rl.CPUQuota != "" || rl.CPUWeight != 0 || rl.MemoryMax != "" ||
 		rl.MemoryHigh != "" || rl.TasksMax != 0 || rl.UsesIO()
 }
@@ -714,7 +781,9 @@ func WrapWithNice(path string, args []string, nice *int) (string, []string) {
 	if nice == nil {
 		return path, args
 	}
+
 	out := append([]string{"-n", strconv.Itoa(*nice), "--", path}, args...)
+
 	return "nice", out
 }
 
@@ -731,9 +800,11 @@ func NicenessApplicable(nice *int) (bool, string) {
 	if nice == nil || *nice >= 0 {
 		return true, ""
 	}
+
 	if os.Geteuid() == 0 {
 		return true, ""
 	}
+
 	return false, fmt.Sprintf("nice = %d asks for HIGHER priority than default, which requires privilege — "+
 		"a non-root daemon's nice(1) reports \"cannot set niceness: Permission denied\", exits 0, and runs at the original priority. "+
 		"Positive values (lower priority) work without privilege", *nice)
@@ -766,6 +837,7 @@ func KillByCgroup(pid int) bool {
 	if err != nil {
 		return false
 	}
+
 	theirs, err := cgroupDirOf(pid)
 	if err != nil || theirs == "" {
 		return false
@@ -779,6 +851,7 @@ func KillByCgroup(pid int) bool {
 	if theirs == own || strings.HasPrefix(own, theirs+"/") {
 		return false
 	}
+
 	return os.WriteFile(filepath.Join(theirs, "cgroup.kill"), []byte("1"), 0) == nil
 }
 
@@ -789,11 +862,13 @@ func cgroupDirOf(pid int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	for _, line := range strings.Split(string(data), "\n") {
 		if rest, ok := strings.CutPrefix(line, "0::"); ok {
 			return filepath.Join("/sys/fs/cgroup", strings.TrimSpace(rest)), nil
 		}
 	}
+
 	return "", fmt.Errorf("no unified (0::) cgroup entry for pid %d", pid)
 }
 
@@ -806,9 +881,11 @@ func ScopeDirOf(pid int) string {
 	if err != nil || !strings.HasSuffix(dir, ".scope") {
 		return ""
 	}
+
 	if own, err := ownCgroupDir(); err == nil && (dir == own || strings.HasPrefix(own, dir+"/")) {
 		return ""
 	}
+
 	return dir
 }
 
@@ -824,16 +901,20 @@ func SurvivorsIn(scopeDir string) []int {
 	if scopeDir == "" {
 		return nil
 	}
+
 	data, err := os.ReadFile(filepath.Join(scopeDir, "cgroup.procs"))
 	if err != nil {
 		return nil
 	}
+
 	var out []int
+
 	for _, line := range strings.Fields(string(data)) {
 		if pid, err := strconv.Atoi(line); err == nil {
 			out = append(out, pid)
 		}
 	}
+
 	return out
 }
 
@@ -843,9 +924,11 @@ func KillScope(scopeDir string) bool {
 	if scopeDir == "" || !strings.HasSuffix(scopeDir, ".scope") {
 		return false
 	}
+
 	if own, err := ownCgroupDir(); err == nil && (scopeDir == own || strings.HasPrefix(own, scopeDir+"/")) {
 		return false
 	}
+
 	return os.WriteFile(filepath.Join(scopeDir, "cgroup.kill"), []byte("1"), 0) == nil
 }
 
@@ -867,9 +950,11 @@ func CgroupStats(pid int) (peak, highEvents uint64, ok bool) {
 	if err != nil || !strings.HasSuffix(dir, ".scope") {
 		return 0, 0, false
 	}
+
 	if own, err := ownCgroupDir(); err == nil && (dir == own || strings.HasPrefix(own, dir+"/")) {
 		return 0, 0, false // the daemon's own cgroup: its numbers are not this stage's
 	}
+
 	peak = readCgroupUint(filepath.Join(dir, "memory.peak"))
 	if data, err := os.ReadFile(filepath.Join(dir, "memory.events")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -878,6 +963,7 @@ func CgroupStats(pid int) (peak, highEvents uint64, ok bool) {
 			}
 		}
 	}
+
 	return peak, highEvents, true
 }
 
@@ -886,7 +972,9 @@ func readCgroupUint(path string) uint64 {
 	if err != nil {
 		return 0
 	}
+
 	v, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+
 	return v
 }
 
@@ -909,6 +997,7 @@ func ParseSize(s string) (uint64, bool) {
 	// Strip systemd's optional B / iB tail, remembering that "i" means binary.
 	unit := uint64(1)
 	body := s
+
 	for suffix, mult := range map[string]uint64{
 		"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40, "P": 1 << 50, "E": 1 << 60,
 	} {
@@ -919,12 +1008,16 @@ func ParseSize(s string) (uint64, bool) {
 			}
 		}
 	}
+
 	body = strings.TrimSuffix(body, "B")
+
 parsed:
 	f, err := strconv.ParseFloat(strings.TrimSpace(body), 64)
+
 	if err != nil || f < 0 {
 		return 0, false
 	}
+
 	return uint64(f * float64(unit)), true
 }
 
@@ -936,13 +1029,16 @@ func ParsePercent(s string) (uint64, bool) {
 	if s == "" || s == "infinity" {
 		return 0, false
 	}
+
 	body, found := strings.CutSuffix(s, "%")
 	if !found {
 		return 0, false
 	}
+
 	f, err := strconv.ParseFloat(strings.TrimSpace(body), 64)
 	if err != nil || f < 0 {
 		return 0, false
 	}
+
 	return uint64(f), true
 }

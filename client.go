@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +15,30 @@ import (
 	"breeze/internal/wire"
 )
 
+// closeQuietly closes a unix socket or listener and discards the error.
+//
+// The reasoning lives HERE, once, rather than at each of the call sites, because it
+// is the same at every one of them and because a reader standing at a call site is
+// the one who has to classify it: a failed close on a unix socket means the peer is
+// already gone or the descriptor is already dead, and there is no recovery — you
+// cannot un-close a socket, and nothing downstream observes whether it happened.
+// So the error carries no action and reporting it would be noise on a path that
+// runs during shutdown.
+//
+// A call site reading `closeQuietly(conn)` is a decision someone made. A call site
+// reading `conn.Close()` is a question every reader has to answer again, and the
+// one place that would have said so is the function's own doc — which is exactly
+// where a contract stops being actionable. (velocity's Scope.OwnCloser learned this
+// the hard way: its doc warned that a discarded enrolment error leaks, three call
+// sites discarded it anyway, and one of them was a lock fd.)
+//
+// Deliberately not a substitute for checking where the close DOES carry meaning: a
+// Close that flushes a writer whose data is about to be read is a different call,
+// and those are checked explicitly.
+func closeQuietly(c io.Closer) {
+	_ = c.Close()
+}
+
 // dialOrStart dials the daemon socket, auto-starting the daemon on first use if
 // nothing answers — mirrors mess/client.go's dialOrStart exactly.
 func dialOrStart(p paths) (net.Conn, error) {
@@ -21,6 +46,7 @@ func dialOrStart(p paths) (net.Conn, error) {
 	if err == nil {
 		return conn, nil
 	}
+
 	if err := startDaemon(); err != nil {
 		return nil, err
 	}
@@ -45,6 +71,7 @@ func dialOrStart(p paths) (net.Conn, error) {
 	if tail := lastLogLines(p.daemonLog, 5); tail != "" {
 		return nil, fmt.Errorf("daemon did not start\nlast lines of %s:\n%s", p.daemonLog, tail)
 	}
+
 	return nil, fmt.Errorf("daemon did not start (see %s)", p.daemonLog)
 }
 
@@ -58,8 +85,10 @@ func startDaemon() error {
 	if err != nil {
 		return err
 	}
+
 	cmd := exec.Command(exe, "start", "daemon", "--auto-start")
 	cmd.SysProcAttr = daemonSysProcAttr()
+
 	return cmd.Start()
 }
 
@@ -74,7 +103,8 @@ func call(p paths, req wire.Request) (wire.Response, error) {
 	if err != nil {
 		return wire.Response{}, err
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
+
 	resp, err := callOnConn(conn, req)
 	// An rpcError is the daemon ANSWERING with a refusal — that is a result, and it
 	// must pass through untouched. Only a transport-level failure gets enriched.
@@ -82,6 +112,7 @@ func call(p paths, req wire.Request) (wire.Response, error) {
 	if err != nil && !errors.As(err, &rpcErr) {
 		return resp, transportFailure(p, err)
 	}
+
 	return resp, err
 }
 
@@ -90,14 +121,18 @@ func callOnConn(conn net.Conn, req wire.Request) (wire.Response, error) {
 	if err := enc.Encode(req); err != nil {
 		return wire.Response{}, err
 	}
+
 	var resp wire.Response
+
 	dec := json.NewDecoder(conn)
 	if err := dec.Decode(&resp); err != nil {
 		return wire.Response{}, err
 	}
+
 	if !resp.OK {
 		return resp, &rpcError{msg: resp.Error, code: resp.Code}
 	}
+
 	return resp, nil
 }
 
@@ -119,7 +154,9 @@ func decodePayload[T any](resp wire.Response) (T, error) {
 	if len(resp.Payload) == 0 {
 		return out, nil
 	}
+
 	err := json.Unmarshal(resp.Payload, &out)
+
 	return out, err
 }
 
@@ -145,6 +182,7 @@ func transportFailure(p paths, err error) error {
 	if tail := lastLogLines(p.daemonLog, 3); tail != "" {
 		return fmt.Errorf("%s\nlast lines of %s:\n%s", msg, p.daemonLog, tail)
 	}
+
 	return fmt.Errorf("%s (see %s)", msg, p.daemonLog)
 }
 
@@ -156,17 +194,22 @@ func lastLogLines(path string, n int) string {
 	if err != nil {
 		return ""
 	}
+
 	var lines []string
+
 	for _, l := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(l) != "" {
 			lines = append(lines, "  "+l)
 		}
 	}
+
 	if len(lines) == 0 {
 		return ""
 	}
+
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
+
 	return strings.Join(lines, "\n")
 }

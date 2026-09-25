@@ -17,28 +17,37 @@ import (
 func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
-	var gotMessage string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+		gotMessage    string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 		gotMessage = message
 	})
@@ -49,10 +58,13 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if gotMessage == "" {
 		t.Fatalf("expected a notification to fire on build's success")
 	}
+
 	foundCI, foundAlice, foundBob := false, false, false
+
 	for _, id := range gotIdentities {
 		switch id {
 		case "ci":
@@ -63,9 +75,11 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 			foundBob = true
 		}
 	}
+
 	if foundCI {
 		t.Fatalf("expected the triggering actor 'ci' NOT to be notified (redundant with its own synchronous response), got %v", gotIdentities)
 	}
+
 	if !foundAlice || !foundBob {
 		t.Fatalf("expected both reviewers to be notified since the next stage (review) just became eligible, got %v", gotIdentities)
 	}
@@ -82,18 +96,24 @@ func TestNotifyResolutionTargetsReviewersNotActor(t *testing.T) {
 func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 	})
 
@@ -105,6 +125,7 @@ func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	for _, id := range gotIdentities {
 		if id == "bob" {
 			t.Fatalf("expected the actor 'bob' NOT to be notified even though he holds the reviewer role, got %v", gotIdentities)
@@ -120,16 +141,21 @@ func TestNotifyResolutionExcludesActorEvenIfActorHoldsTargetRole(t *testing.T) {
 func TestNotifyResolutionNotifiesUserOnFailure(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/false"}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 	})
 
@@ -137,12 +163,14 @@ func TestNotifyResolutionNotifiesUserOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	if inst.Status != StageFailed {
 		t.Fatalf("expected build to fail (uses /bin/false), got %s", inst.Status)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(gotIdentities) != 1 || gotIdentities[0] != "user" {
 		t.Fatalf("expected a failure to notify exactly [\"user\"], got %v", gotIdentities)
 	}
@@ -155,25 +183,32 @@ func TestNotifyResolutionNotifiesUserOnFailure(t *testing.T) {
 func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[2].DeployPolicy.RequiredRole = "deployer"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("carol", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("carol", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("dave", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("dave", "deployer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -182,23 +217,29 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 		t.Fatalf("build: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 	})
 
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "alice", ""); err != nil {
 		t.Fatalf("approve 1: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "carol", ""); err != nil {
 		t.Fatalf("approve 2: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(gotIdentities) != 1 || gotIdentities[0] != "dave" {
 		t.Fatalf("expected review's success to notify deploy's role holder [\"dave\"], got %v", gotIdentities)
 	}
@@ -210,27 +251,36 @@ func TestNotifyResolutionTargetsNextStageRoleForAnyType(t *testing.T) {
 func TestNotifyResolutionSkipsOptedOutIdentities(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.SetNotifyOptOut("alice", true); err != nil {
 		t.Fatalf("opt out: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 	})
 
@@ -240,6 +290,7 @@ func TestNotifyResolutionSkipsOptedOutIdentities(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(gotIdentities) != 1 || gotIdentities[0] != "bob" {
 		t.Fatalf("expected only bob (alice opted out), got %v", gotIdentities)
 	}
@@ -250,18 +301,24 @@ func TestNotifyResolutionSkipsOptedOutIdentities(t *testing.T) {
 func TestNotifyResolutionUsesMessAgentMapping(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("alice", "alice-on-mess"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 
-	var mu sync.Mutex
-	var gotIdentities []string
+	var (
+		mu            sync.Mutex
+		gotIdentities []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotIdentities = identities
 	})
 
@@ -271,6 +328,7 @@ func TestNotifyResolutionUsesMessAgentMapping(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(gotIdentities) != 1 || gotIdentities[0] != "alice-on-mess" {
 		t.Fatalf("expected the mapped mess-agent name, got %v", gotIdentities)
 	}
@@ -282,6 +340,7 @@ func TestNotifyResolutionUsesMessAgentMapping(t *testing.T) {
 func TestNotifyResolutionPublishesToTopic(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.NotifyTopic = "#release-activity"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
@@ -289,11 +348,15 @@ func TestNotifyResolutionPublishesToTopic(t *testing.T) {
 	// Deliberately no reviewer registered — zero direct targets for build's
 	// success, but the topic publish must still fire.
 
-	var mu sync.Mutex
-	var gotTopic, gotMessage, gotThread string
+	var (
+		mu                              sync.Mutex
+		gotTopic, gotMessage, gotThread string
+	)
+
 	e.SetNotifyTopicFn(func(topic, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotTopic, gotMessage, gotThread = topic, message, thread
 	})
 
@@ -303,12 +366,15 @@ func TestNotifyResolutionPublishesToTopic(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if gotTopic != "#release-activity" {
 		t.Fatalf("expected a publish to #release-activity, got topic=%q", gotTopic)
 	}
+
 	if gotMessage == "" {
 		t.Fatalf("expected a non-empty message")
 	}
+
 	if gotThread != messThreadID("release", "abc123") {
 		t.Fatalf("expected the thread to be messThreadID(release, abc123), got %q", gotThread)
 	}
@@ -327,21 +393,28 @@ func TestMessThreadIDIsStableAcrossEnvironments(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"alice", "bob"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
+
 		if err := e.AssignRole(name, "reviewer"); err != nil {
 			t.Fatalf("assign: %v", err)
 		}
 	}
+
 	approvedCommit(t, e, "abc123")
 
-	var mu sync.Mutex
-	var threads []string
+	var (
+		mu      sync.Mutex
+		threads []string
+	)
+
 	e.SetNotifyFn(func(identities []string, message, thread string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		threads = append(threads, thread)
 	})
 
@@ -351,9 +424,11 @@ func TestMessThreadIDIsStableAcrossEnvironments(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(threads) == 0 {
 		t.Fatalf("expected at least one notification")
 	}
+
 	want := messThreadID("release", "abc123")
 	for _, th := range threads {
 		if th != want {
@@ -365,17 +440,21 @@ func TestMessThreadIDIsStableAcrossEnvironments(t *testing.T) {
 func TestNotifyResolutionIsNoOpWithoutFn(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	// No SetNotifyFn call — must not panic or block.
 	done := make(chan struct{})
+
 	go func() {
 		if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
 			t.Errorf("build: %v", err)
 		}
+
 		close(done)
 	}()
+
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -399,10 +478,12 @@ func TestRegisterPipelineRejectsSlashInTopics(t *testing.T) {
 			e := New()
 			p := examplePipeline()
 			c.mut(&p)
+
 			err := e.RegisterPipeline(p, "admin")
 			if err == nil {
 				t.Fatalf("expected a topic containing / to be rejected")
 			}
+
 			if !strings.Contains(err.Error(), c.name) || !strings.Contains(err.Error(), "mess reserves") {
 				t.Fatalf("error should name the field and why, got %q", err)
 			}
@@ -411,6 +492,7 @@ func TestRegisterPipelineRejectsSlashInTopics(t *testing.T) {
 	// A topic without one is untouched.
 	e := New()
 	p := examplePipeline()
+
 	p.NotifyTopic = "#release-activity"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("an ordinary topic must still register: %v", err)
@@ -424,6 +506,7 @@ func TestMessThreadIDNeverContainsTheAddressingSeparator(t *testing.T) {
 	if got := messThreadID("team/release", "abc123"); strings.Contains(got, "/") {
 		t.Fatalf("thread id %q must not contain /", got)
 	}
+
 	if got := messThreadID("release", "abc123"); got != "breeze-release-abc123" {
 		t.Fatalf("an ordinary name must be unchanged, got %q", got)
 	}

@@ -34,7 +34,9 @@ func (e *Engine) AdoptOrReconcile(snapshotDaemonPID int) (adopted, orphaned int)
 	}
 
 	e.mu.Lock()
+
 	var candidates []*StageInstance
+
 	for _, inst := range e.instances {
 		if inst.Status == StageRunning {
 			candidates = append(candidates, inst)
@@ -54,6 +56,7 @@ func (e *Engine) AdoptOrReconcile(snapshotDaemonPID int) (adopted, orphaned int)
 			e.audit("stage.failed", inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s — was queued for a machine slot at restart, never started",
 				inst.Pipeline, inst.Stage, inst.Key))
 			e.notifyStageLocked(inst.Pipeline, inst.Stage, inst.Key)
+
 			orphaned++
 		}
 	}
@@ -70,21 +73,27 @@ func (e *Engine) AdoptOrReconcile(snapshotDaemonPID int) (adopted, orphaned int)
 				Err:      fmt.Errorf("the run ended during a daemon restart and its exit status could not be collected"),
 			})
 			e.mu.Unlock()
+
 			orphaned++
+
 			continue
 		}
 		go e.watchAdopted(inst.Pipeline, inst.Stage, inst.Key, inst.RunnerPID, inst.Deadline)
+
 		e.mu.Lock()
 		e.audit("stage.adopted", inst.Actor, fmt.Sprintf("pipeline=%s stage=%s key=%s pid=%d — still running across the restart, result will be collected normally",
 			inst.Pipeline, inst.Stage, inst.Key, inst.RunnerPID))
 		e.mu.Unlock()
+
 		adopted++
 	}
+
 	if adopted > 0 || orphaned > 0 {
 		e.mu.Lock()
 		e.changed()
 		e.mu.Unlock()
 	}
+
 	return adopted, orphaned
 }
 
@@ -98,11 +107,16 @@ func (e *Engine) AdoptOrReconcile(snapshotDaemonPID int) (adopted, orphaned int)
 // overruns is killed and recorded as timed out, exactly as it would have been.
 func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, deadline time.Time) {
 	done := make(chan hook.Result, 1)
+
 	go func() {
-		var ws syscall.WaitStatus
-		var ru syscall.Rusage
+		var (
+			ws syscall.WaitStatus
+			ru syscall.Rusage
+		)
+
 		_, err := syscall.Wait4(pid, &ws, 0, &ru)
 		res := hook.Result{}
+
 		switch {
 		case err != nil:
 			res.Err = fmt.Errorf("waiting for adopted run (pid %d): %w", pid, err)
@@ -111,10 +125,12 @@ func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, dea
 		default:
 			res.ExitCode = ws.ExitStatus()
 		}
+
 		done <- res
 	}()
 
 	var res hook.Result
+
 	if wait := time.Until(deadline); wait > 0 && !deadline.IsZero() {
 		select {
 		case res = <-done:
@@ -122,7 +138,8 @@ func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, dea
 			// Overran its own timeout while we were watching: same outcome the
 			// original run would have had, including killing the process group so
 			// nothing it spawned outlives the verdict.
-			syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(-pid, syscall.SIGKILL) // the group is gone or the kill is not ours to fail; either way the verdict below is the answer
+
 			res = <-done
 			res.TimedOut = true
 		}
@@ -131,33 +148,42 @@ func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, dea
 	}
 
 	e.mu.Lock()
+
 	inst := e.getInstance(pipeline, stage, key)
 	if inst == nil || inst.Status != StageRunning {
 		e.mu.Unlock() // resolved by something else (a cancel) while we waited
 		return
 	}
+
 	e.resolveAdopted(inst, res)
 	// Everything the ORIGINAL goroutine would have done after resolving has to
 	// happen here too, or a restart silently costs a stage its summary, its brief
 	// and its notifications — the run would complete correctly and tell nobody.
-	var transform *Hook
-	var postAction []Hook
+	var (
+		transform  *Hook
+		postAction []Hook
+	)
+
 	briefsDir := ""
+
 	if p, ok := e.pipelines[pipeline]; ok {
 		if i := p.StageIndex(stage); i >= 0 {
 			transform, postAction = p.Stages[i].Transform, p.Stages[i].PostAction
 		}
+
 		briefsDir = p.BriefsDir
 	}
 	// Only a deploy stage has a target, and deployTarget dereferences DeployPolicy
 	// — asking a command stage for one is a nil dereference, which in a detached
 	// daemon means dying silently mid-adoption with nothing in the log.
 	target := ""
+
 	if p, ok := e.pipelines[pipeline]; ok {
 		if i := p.StageIndex(stage); i >= 0 && p.Stages[i].Type == StageDeploy {
 			target = deployTarget(p.Stages[i])
 		}
 	}
+
 	transformIn := transformInputFor(inst, target, res.TimedOut)
 	actor := inst.Actor
 	cp := *inst
@@ -169,10 +195,12 @@ func (e *Engine) watchAdopted(pipeline, stage string, key StageKey, pid int, dea
 		if live := e.getInstance(pipeline, stage, key); live != nil {
 			live.Summary = summary
 			cp = *live
+
 			e.changed()
 		}
 		e.mu.Unlock()
 	}
+
 	e.notifyResolution(pipeline, stage, &cp)
 	e.recordResolved(briefsDir, &cp)
 	e.runPostActions(postAction, params, pipeline, stage, actor)
@@ -185,6 +213,7 @@ func (e *Engine) resolveAdopted(inst *StageInstance, res hook.Result) {
 		inst.Stdout = hook.ReadCapped(inst.OutputDir + "/" + hook.StdoutFile)
 		inst.Stderr = hook.ReadCapped(inst.OutputDir + "/" + hook.StderrFile)
 	}
+
 	inst.FinishedAt = e.now()
 	inst.RunnerPID, inst.RunnerStart = 0, ""
 	decideOutcome(inst, res, false, FailOrphaned)
@@ -204,12 +233,15 @@ func (e *Engine) resolveAdopted(inst *StageInstance, res hook.Result) {
 // their own watcher; this catches everything else.
 func (e *Engine) ReapStrayChildren() int {
 	n := 0
+
 	for {
 		var ws syscall.WaitStatus
+
 		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
 		if err != nil || pid <= 0 {
 			return n
 		}
+
 		n++
 	}
 }
@@ -219,12 +251,15 @@ func (e *Engine) ReapStrayChildren() int {
 func (e *Engine) RunningStageCount() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	n := 0
+
 	for _, inst := range e.instances {
 		if isInFlight(inst.Status) {
 			n++
 		}
 	}
+
 	return n
 }
 
@@ -234,13 +269,17 @@ func (e *Engine) RunningStageCount() int {
 func (e *Engine) RunningStages() []StageInstance {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	var out []StageInstance
+
 	for _, inst := range e.instances {
 		if isInFlight(inst.Status) {
 			out = append(out, *inst)
 		}
 	}
+
 	slices.SortFunc(out, func(a, b StageInstance) int { return a.StartedAt.Compare(b.StartedAt) })
+
 	return out
 }
 
@@ -258,7 +297,8 @@ func (e *Engine) cleanupRunDirLocked(inst *StageInstance) {
 	if !strings.HasPrefix(inst.OutputDir, e.runDir+string(filepath.Separator)) {
 		return
 	}
-	os.RemoveAll(inst.OutputDir)
+
+	_ = os.RemoveAll(inst.OutputDir) // best-effort: OutputDir is cleared on the next line, so a leftover is orphaned rather than dangling
 	inst.OutputDir = ""
 }
 
@@ -274,28 +314,36 @@ func (e *Engine) cleanupRunDirLocked(inst *StageInstance) {
 func (e *Engine) SweepRunDirs() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	if e.runDir == "" {
 		return 0
 	}
+
 	live := make(map[string]bool)
+
 	for _, inst := range e.instances {
 		if inst.Status == StageRunning && inst.OutputDir != "" {
 			live[filepath.Base(inst.OutputDir)] = true
 		}
 	}
+
 	entries, err := os.ReadDir(e.runDir)
 	if err != nil {
 		return 0
 	}
+
 	n := 0
+
 	for _, entry := range entries {
 		if live[entry.Name()] {
 			continue
 		}
+
 		if err := os.RemoveAll(filepath.Join(e.runDir, entry.Name())); err == nil {
 			n++
 		}
 	}
+
 	return n
 }
 

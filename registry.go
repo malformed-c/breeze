@@ -32,6 +32,7 @@ func registryPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return filepath.Join(cacheDir, "breeze", "registry.json"), nil
 }
 
@@ -43,18 +44,22 @@ func withRegistryLock(fn func(path string) error) error {
 	if err != nil {
 		return err
 	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+
 	fd, err := syscall.Open(path+".lock", syscall.O_CREAT|syscall.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	defer syscall.Close(fd)
+
 	if err := syscall.Flock(fd, syscall.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(fd, syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(fd, syscall.LOCK_UN) }() // an unlock immediately followed by a close of the same fd cannot strand the lock: the close drops the flock either way
+
 	return fn(path)
 }
 
@@ -63,13 +68,16 @@ func loadRegistryFile(path string) ([]registryEntry, error) {
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	var entries []registryEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, nil // a corrupt registry is a discovery gap, not worth failing over
 	}
+
 	return entries, nil
 }
 
@@ -78,10 +86,12 @@ func saveRegistryFile(path string, entries []registryEntry) error {
 	if err != nil {
 		return err
 	}
+
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+
 	return os.Rename(tmp, path)
 }
 
@@ -93,18 +103,23 @@ func registerSelf(p paths) error {
 		if err != nil {
 			return err
 		}
+
 		entry := registryEntry{Dir: p.dir, Pid: os.Getpid(), Sock: p.sock, LastSeen: time.Now()}
 		replaced := false
+
 		for i, e := range entries {
 			if e.Dir == p.dir {
 				entries[i] = entry
 				replaced = true
+
 				break
 			}
 		}
+
 		if !replaced {
 			entries = append(entries, entry)
 		}
+
 		return saveRegistryFile(path, entries)
 	})
 }
@@ -119,12 +134,14 @@ func deregisterSelf(p paths) error {
 		if err != nil {
 			return err
 		}
+
 		kept := entries[:0]
 		for _, e := range entries {
 			if e.Dir != p.dir {
 				kept = append(kept, e)
 			}
 		}
+
 		return saveRegistryFile(path, kept)
 	})
 }

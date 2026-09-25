@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/apsis-io/velocity/ownership"
+
 	"breeze/internal/engine"
 	"breeze/internal/hclconfig"
 	"breeze/internal/hourslog"
@@ -51,6 +53,7 @@ func cmdDaemon(p paths, args []string) error {
 			return startDaemonDetached(p)
 		}
 	}
+
 	return runDaemon(p, args)
 }
 
@@ -65,15 +68,20 @@ func startDaemonDetached(p paths) error {
 	if err != nil {
 		return err
 	}
+
 	cmd := exec.Command(exe, "start", "daemon")
+
 	cmd.SysProcAttr = daemonSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
 	if !waitForDialState(p.sock, true, 5*time.Second) {
 		return fmt.Errorf("spawned a new daemon but it did not come up within 5s (check %s)", p.daemonLog)
 	}
+
 	fmt.Printf("breeze daemon started (dir %s)\n", p.dir)
+
 	return nil
 }
 
@@ -97,6 +105,7 @@ func flockWithRetry(fd int, timeout time.Duration) error {
 			return struct{}{}, false, err // this fd is broken: not worth waiting out
 		}
 	})
+
 	return err
 }
 
@@ -116,7 +125,8 @@ func restartDaemon(p paths, force bool) error {
 	if err != nil {
 		return startDaemonDetached(p) // nothing running; closest equivalent is a fresh detached start
 	}
-	defer conn.Close()
+	defer closeQuietly(conn)
+
 	return restartViaConn(p, conn, force)
 }
 
@@ -146,7 +156,9 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 			}
 		}
 	}
+
 	payload, _ := json.Marshal(wire.RestartRequest{Force: force})
+
 	resp, err := callOnConn(conn, wire.Request{Op: wire.OpRestart, Payload: payload})
 	if err != nil {
 		return fmt.Errorf("asking the existing daemon to restart: %w", err)
@@ -156,10 +168,13 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 	// config-says-X-daemon-does-Y hazard this tool spends its life removing.
 	if out, derr := decodePayload[wire.RestartResponse](resp); derr == nil && out.Deferred {
 		fmt.Printf("breeze daemon is busy — restart DEFERRED until idle (dir %s); it will pick up the binary on disk the moment nothing is in flight. Waiting on:\n", p.dir)
+
 		for _, r := range out.Running {
 			fmt.Printf("  %s\n", r)
 		}
+
 		fmt.Println("(`breeze ping` will warn about build skew until then; --force restarts now)")
+
 		return nil
 	}
 	// The client's patience has to exceed the daemon's own shutdown budget, or a
@@ -171,7 +186,9 @@ func restartViaConn(p paths, conn net.Conn, force bool) error {
 	if !waitForDialState(p.sock, true, restartWaitBudget) {
 		return fmt.Errorf("asked the daemon to restart but it did not come back up within %s (check %s)", restartWaitBudget, p.daemonLog)
 	}
+
 	fmt.Printf("breeze daemon restarted in place (dir %s)\n", p.dir)
+
 	return nil
 }
 
@@ -196,8 +213,9 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 			// exactly like before. Never displace anything on this path: a client's
 			// ordinary first use of breeze must never kill a daemon someone's
 			// deliberately relying on.
-			conn.Close()
+			closeQuietly(conn)
 			log.Printf("breeze daemon already running at %s", p.sock)
+
 			return nil, nil
 		}
 		// An explicit `breeze daemon` invocation, though, means someone deliberately
@@ -209,6 +227,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		// in time, this returns an error rather than ever racing it for the socket.
 		log.Printf("an existing breeze daemon is live at %s — signaling it to stop so this (newer) start can take over", p.sock)
 		requestStop(conn)
+
 		if !waitForDialState(p.sock, false, 2*time.Second) {
 			return nil, fmt.Errorf("an existing daemon at %s did not stop within 2s — leaving it in place", p.sock)
 		}
@@ -238,18 +257,62 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open lockfile: %w", err)
 	}
+
+	// Everything acquired from here to the daemon that eventually owns it is
+	// enrolled in a scope, so a failure at ANY later step releases exactly what
+	// was acquired, in reverse, without each error path restating the list. There
+	// were four such paths below and every one of them had to remember the same
+	// order — which is the shape ownership.Scope exists to remove, and the reason
+	// the order is now stated once rather than four times.
+	scope := ownership.NewScope()
+	defer func() { _ = scope.Close() }()
+
+	// The lock belongs to the OPEN FILE DESCRIPTION, so it is dropped by the last
+	// close of this fd — and held by every child that inherited it, which is why
+	// the open above is O_CLOEXEC. Unlocking before closing keeps the two
+	// separable: if Close ever fails, the lock is already off rather than being
+	// left to a descriptor that is closing anyway.
+	//
+	// Enrolment is CHECKED, and that is the one place in this function where an
+	// ignored error is not noise. A failed OnRelease means the resource is NOT in
+	// the scope, so the deferred Close will not release it — the lock fd leaks and
+	// the crash-orphan failure above comes back. It cannot happen on a fresh scope,
+	// which is exactly the kind of "cannot happen" that is worth refusing rather
+	// than assuming: a daemon that started without its lock enrolled would be
+	// worse than one that declined to start.
+	if err := scope.OnRelease(func() error {
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
+
+		return syscall.Close(fd)
+	}); err != nil {
+		return nil, fmt.Errorf("enrolling the lock fd for release: %w", err)
+	}
+
 	if err := flockWithRetry(fd, lockWaitBudget); err != nil {
-		syscall.Close(fd)
 		return nil, fmt.Errorf("another breeze daemon instance is already running (flock held on %s for more than %s): %w", p.lockfile, lockWaitBudget, err)
 	}
 
 	// (3) remove stale socket, (4) bind.
-	os.Remove(p.sock)
+	_ = os.Remove(p.sock) // clears a stale socket we did not create; if this fails, the bind below fails loudly instead
+
 	ln, err := net.Listen("unix", p.sock)
 	if err != nil {
-		syscall.Flock(fd, syscall.LOCK_UN)
-		syscall.Close(fd)
 		return nil, fmt.Errorf("listen: %w", err)
+	}
+
+	// Enrolled only once the socket EXISTS. The os.Remove above clears a stale
+	// socket this process did not create, and unwinding must not remove a path we
+	// never bound. Both enrolments are checked for the same reason as the fd's: a
+	// listener nobody releases keeps the socket bound, and the next daemon to start
+	// for this directory then fails on a socket the previous attempt leaked.
+	if err := scope.OwnCloser(ln); err != nil {
+		_ = ln.Close()
+
+		return nil, fmt.Errorf("enrolling the listener for release: %w", err)
+	}
+
+	if err := scope.OnRelease(func() error { return os.Remove(p.sock) }); err != nil {
+		return nil, fmt.Errorf("enrolling the socket for removal: %w", err)
 	}
 
 	logFile, err := os.OpenFile(p.daemonLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -271,6 +334,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	}
 
 	eng := engine.New()
+
 	snap, err := engine.LoadSnapshotFile(p.state)
 	if err != nil {
 		log.Printf("warning: failed to load snapshot: %v", err)
@@ -288,7 +352,9 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		log.Printf("refusing to start: %v", err)
 		return nil, err
 	}
+
 	eng.SetRunDir(runDir)
+
 	if n := eng.ReapStrayChildren(); n > 0 {
 		log.Printf("reaped %d stray child process(es) left unwaited by the previous image", n)
 	}
@@ -306,6 +372,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	if n := eng.SweepRunDirs(); n > 0 {
 		log.Printf("swept %d run director(ies) left behind by runs that are no longer live", n)
 	}
+
 	if err := loadDefaultLimits(eng, p); err != nil {
 		// Refusing to start is deliberate. This file exists precisely because
 		// someone decided unbounded commands could hurt this machine; silently
@@ -319,10 +386,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		// corrected file can just be started again.
 		err = fmt.Errorf("loading %s: %w", p.defaults, err)
 		log.Printf("refusing to start: %v", err)
-		ln.Close()
-		os.Remove(p.sock)
-		syscall.Flock(fd, syscall.LOCK_UN)
-		syscall.Close(fd)
+
 		return nil, err
 	}
 
@@ -332,15 +396,23 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 		// builds ran at once on a box that was configured for one.
 		err = fmt.Errorf("loading the machine-wide queue: %w", err)
 		log.Printf("refusing to start: %v", err)
-		ln.Close()
-		os.Remove(p.sock)
-		syscall.Flock(fd, syscall.LOCK_UN)
-		syscall.Close(fd)
+
 		return nil, err
 	}
 
 	saver := newSnapshotWriter(p.state)
 	d := &daemonServer{eng: eng, paths: p, listener: ln, stop: make(chan struct{}), lockFD: fd, saver: saver}
+
+	// The daemon now OWNS the lock fd and the listener, and keeps both for its
+	// whole life — so the scope's job is over. Disarm rather than Close, because
+	// Close would take the lock out from under a daemon that is about to serve:
+	// the deferred Close above then does nothing, which is what makes it correct
+	// to leave in place. It returns how many resources were handed over, which is
+	// the assertion that the scope actually held what this function thinks it did.
+	if n := scope.Disarm(); n != 3 {
+		log.Printf("warning: startup scope held %d resources at handoff, expected 3 (lock fd, listener, socket)", n)
+	}
+
 	eng.SetOnChange(saver.submit)
 	eng.SetAuditFn(func(ev engine.AuditEvent) {
 		appendAuditLine(p.audit, ev)
@@ -357,6 +429,7 @@ func tryBindDaemon(p paths, autoStart bool) (*daemonServer, error) {
 	case db != "":
 		eng.SetTimeLogFn(func(inst *engine.StageInstance) { recordHours(db, inst) })
 	}
+
 	return d, nil
 }
 
@@ -368,6 +441,7 @@ func hoursDBFor(p paths) (string, error) {
 		if f == "" {
 			continue
 		}
+
 		db, err := hclconfig.ParseHoursDB(f)
 		if err != nil {
 			// NOT skipped on to the next file, which is what this used to do. A
@@ -378,10 +452,12 @@ func hoursDBFor(p paths) (string, error) {
 			// or the one you asked for; never a third thing chosen silently.
 			return "", fmt.Errorf("%s: %w\n(a malformed hours_db is refused rather than skipped: the alternative is breeze quietly reporting on a different database than the one you configured)", f, err)
 		}
+
 		if db != "" {
 			return db, nil
 		}
 	}
+
 	return "", nil
 }
 
@@ -418,15 +494,19 @@ func recordHours(dbPath string, inst *engine.StageInstance) {
 func hoursComment(inst *engine.StageInstance) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s", inst.Status, shortSHA(inst.Key.Commit))
+
 	if inst.Key.Environment != "" {
 		fmt.Fprintf(&b, " → %s", inst.Key.Environment)
 	}
+
 	if inst.Actor != "" {
 		fmt.Fprintf(&b, " (%s)", inst.Actor)
 	}
+
 	if inst.Brief != "" {
 		fmt.Fprintf(&b, ": %s", inst.Brief)
 	}
+
 	return b.String()
 }
 
@@ -434,6 +514,7 @@ func shortSHA(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]
 	}
+
 	return commit
 }
 
@@ -442,9 +523,10 @@ func shortSHA(commit string) string {
 // already be mid-shutdown from a concurrent racer reaching the same conclusion);
 // waitForDialState is the actual confirmation, not this call succeeding.
 func requestStop(conn net.Conn) {
-	defer conn.Close()
-	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-	json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
+	defer closeQuietly(conn)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_ = json.NewEncoder(conn).Encode(wire.Request{Op: wire.OpStop})
 }
 
 // waitForDialState polls sock until dialing it matches wantUp — true: wait for it
@@ -457,11 +539,14 @@ func waitForDialState(sock string, wantUp bool, timeout time.Duration) bool {
 	_, err := pollUntil(context.Background(), timeout, 50*time.Millisecond, func(context.Context) (struct{}, bool, error) {
 		conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond)
 		up := err == nil
+
 		if conn != nil {
-			conn.Close()
+			closeQuietly(conn)
 		}
+
 		return struct{}{}, up == wantUp, nil
 	})
+
 	return err == nil
 }
 
@@ -485,25 +570,32 @@ func loadDefaultLimits(eng *engine.Engine, p paths) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", p.globalDefaults, err)
 	}
+
 	local, err := hclconfig.ParseDefaults(p.defaults)
 	if err != nil {
 		return fmt.Errorf("%s: %w", p.defaults, err)
 	}
+
 	if global == nil && local == nil {
 		return nil
 	}
+
 	rl := engine.MergeResourceLimits(resourceLimitsFromWire(local), resourceLimitsFromWire(global))
 	if err := eng.SetDefaultResourceLimits(rl); err != nil {
 		return err
 	}
+
 	var sources []string
 	if local != nil {
 		sources = append(sources, p.defaults)
 	}
+
 	if global != nil {
 		sources = append(sources, p.globalDefaults)
 	}
+
 	eng.SetLimitSources(sources)
+
 	switch {
 	case global != nil && local != nil:
 		log.Printf("resource limit floor: %s (from %s over %s)", describeLimits(rl), p.defaults, p.globalDefaults)
@@ -512,6 +604,7 @@ func loadDefaultLimits(eng *engine.Engine, p paths) error {
 	default:
 		log.Printf("resource limit floor: %s (from %s)", describeLimits(rl), p.defaults)
 	}
+
 	return nil
 }
 
@@ -534,26 +627,33 @@ func loadQueue(eng *engine.Engine, p paths) error {
 			"so three daemons would run %d stages at once while all three config files still read %d",
 			p.defaults, p.globalDefaults, q.MaxConcurrent, q.MaxConcurrent*3, q.MaxConcurrent)
 	}
+
 	if p.globalDefaults == "" {
 		return nil
 	}
+
 	q, err := hclconfig.ParseQueue(p.globalDefaults)
 	if err != nil {
 		return fmt.Errorf("%s: %w", p.globalDefaults, err)
 	}
+
 	if q == nil || q.MaxConcurrent <= 0 {
 		return nil
 	}
+
 	dir := q.SlotDir
 	if dir == "" {
 		dir = slots.Dir()
 	}
+
 	if dir == "" {
 		return fmt.Errorf("a queue is configured in %s but no shared slot directory could be determined (no /run/user/%d and no home directory), so the budget could not be enforced",
 			p.globalDefaults, os.Getuid())
 	}
+
 	eng.SetQueue(engine.QueueConfig{Dir: dir, StateDir: p.dir, Max: q.MaxConcurrent, WaitTimeout: q.WaitTimeout})
 	log.Printf("machine-wide stage budget: %d concurrent, slots in %s (shared with every breeze daemon running as this user)", q.MaxConcurrent, dir)
+
 	return nil
 }
 
@@ -570,26 +670,33 @@ func loadQueue(eng *engine.Engine, p paths) error {
 // repo name in front so the directory is still recognisable by eye.
 func resolveRunDir(p paths) (string, error) {
 	configured := ""
+
 	for _, f := range []string{p.defaults, p.globalDefaults} {
 		if f == "" {
 			continue
 		}
+
 		d, err := hclconfig.ParseRunDir(f)
 		if err != nil {
 			return "", fmt.Errorf("loading %s: %w", f, err)
 		}
+
 		if d != "" {
 			configured = d
 			break
 		}
 	}
+
 	if configured == "" {
 		return p.runs, nil
 	}
+
 	sum := sha256.Sum256([]byte(p.dir))
+
 	name := filepath.Base(filepath.Dir(filepath.Dir(p.dir))) // <repo>/.git/breeze -> <repo>
 	if name == "" || name == "." || name == string(filepath.Separator) {
 		name = "breeze"
 	}
+
 	return filepath.Join(configured, fmt.Sprintf("%s-%x", name, sum[:4])), nil
 }

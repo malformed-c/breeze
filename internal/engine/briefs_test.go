@@ -12,6 +12,7 @@ type recordedBrief struct {
 
 func TestRecordBriefContentAndNaming(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name: "release",
 		Stages: []StageDef{{
@@ -26,11 +27,15 @@ func TestRecordBriefContentAndNaming(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	var mu sync.Mutex
-	var got []recordedBrief
+	var (
+		mu  sync.Mutex
+		got []recordedBrief
+	)
+
 	e.SetBriefFn(func(dir, filename, header, section string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		got = append(got, recordedBrief{dir, filename, header, section})
 	})
 
@@ -40,9 +45,11 @@ func TestRecordBriefContentAndNaming(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 brief write, got %d", len(got))
 	}
+
 	b := got[0]
 	if b.dir != "/tmp/does-not-matter-for-this-test" {
 		t.Fatalf("unexpected dir: %s", b.dir)
@@ -52,21 +59,27 @@ func TestRecordBriefContentAndNaming(t *testing.T) {
 	if !strings.Contains(b.filename, "release-abc123456789") {
 		t.Fatalf("expected filename to include pipeline/short-commit, got %s", b.filename)
 	}
+
 	if strings.Contains(b.filename, "build") {
 		t.Fatalf("expected filename to NOT contain the stage name, got %s", b.filename)
 	}
+
 	if !strings.HasSuffix(b.filename, ".md") {
 		t.Fatalf("expected .md extension, got %s", b.filename)
 	}
+
 	if !strings.Contains(b.header, "release") {
 		t.Fatalf("expected header to mention the pipeline, got:\n%s", b.header)
 	}
+
 	if !strings.Contains(b.section, "build") {
 		t.Fatalf("expected section to mention the stage name, got:\n%s", b.section)
 	}
+
 	if !strings.Contains(b.section, "bumped the dependency") {
 		t.Fatalf("expected the caller's --brief text verbatim in the section, got:\n%s", b.section)
 	}
+
 	if !strings.Contains(b.section, "succeeded") {
 		t.Fatalf("expected status in section, got:\n%s", b.section)
 	}
@@ -74,6 +87,7 @@ func TestRecordBriefContentAndNaming(t *testing.T) {
 
 func TestRecordBriefDisabledWhenBriefsDirEmpty(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name:     "ci",
 		Stages:   []StageDef{{Name: "build", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/true"}, CommandPolicy: &CommandPolicy{}}},
@@ -83,11 +97,15 @@ func TestRecordBriefDisabledWhenBriefsDirEmpty(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	called := false
+
 	e.SetBriefFn(func(dir, filename, header, section string) { called = true })
+
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "agent", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	if called {
 		t.Fatalf("expected no brief to be written when BriefsDir is empty")
 	}
@@ -98,15 +116,19 @@ func TestRecordBriefBundlesAllApprovalsIntoOneFile(t *testing.T) {
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{{
@@ -119,17 +141,23 @@ func TestRecordBriefBundlesAllApprovalsIntoOneFile(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	var mu sync.Mutex
-	var got []recordedBrief
+
+	var (
+		mu  sync.Mutex
+		got []recordedBrief
+	)
+
 	e.SetBriefFn(func(dir, filename, header, section string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		got = append(got, recordedBrief{dir, filename, header, section})
 	})
 
 	if _, err := e.ApproveStage("ci", "review", "abc", "", "alice", "looks fine"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+
 	mu.Lock()
 	if len(got) != 0 {
 		t.Fatalf("expected no brief written on a non-terminal (still awaiting) approval, got %d", len(got))
@@ -139,11 +167,14 @@ func TestRecordBriefBundlesAllApprovalsIntoOneFile(t *testing.T) {
 	if _, err := e.ApproveStage("ci", "review", "abc", "", "bob", "agreed"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(got) != 1 {
 		t.Fatalf("expected exactly 1 bundled brief write once threshold is reached, got %d", len(got))
 	}
+
 	if !strings.Contains(got[0].section, "looks fine") || !strings.Contains(got[0].section, "agreed") {
 		t.Fatalf("expected both approvers' briefs bundled into the one section, got:\n%s", got[0].section)
 	}
@@ -165,41 +196,53 @@ func TestRecordBriefMultipleStagesShareOneFile(t *testing.T) {
 		t.Fatalf("re-register: %v", err)
 	}
 
-	var mu sync.Mutex
-	var filenames []string
+	var (
+		mu        sync.Mutex
+		filenames []string
+	)
+
 	e.SetBriefFn(func(dir, filename, header, section string) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		filenames = append(filenames, filename)
 	})
 
 	if _, err := e.StartCommandStage("release", "build", "abc123", "", "ci", ""); err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("alice", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("alice", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("bob", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("bob", "reviewer"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "alice", ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+
 	if _, err := e.ApproveStage("release", "review", "abc123", "", "bob", ""); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+
 	if _, err := e.StartDeployStage("release", "deploy", "abc123", "staging", "ci", ""); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	if len(filenames) != 3 {
 		t.Fatalf("expected 3 brief writes (build, review, deploy), got %d: %v", len(filenames), filenames)
 	}
@@ -209,6 +252,7 @@ func TestRecordBriefMultipleStagesShareOneFile(t *testing.T) {
 	if filenames[0] != filenames[1] {
 		t.Fatalf("expected build and review (both commit-scoped) to share one filename, got %q vs %q", filenames[0], filenames[1])
 	}
+
 	if filenames[2] == filenames[0] {
 		t.Fatalf("expected the staging-scoped deploy to use a DIFFERENT (env-suffixed) filename than the commit-only stages, got the same: %q", filenames[2])
 	}
@@ -216,6 +260,7 @@ func TestRecordBriefMultipleStagesShareOneFile(t *testing.T) {
 
 func TestRecordBriefFailureDoesNotBlockResolution(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name:      "ci",
 		Stages:    []StageDef{{Name: "build", Type: StageCommand, Timeout: minute, Command: CommandTemplate{Path: "/bin/true"}, CommandPolicy: &CommandPolicy{}}},
@@ -257,15 +302,19 @@ func TestElideMiddleSaysWhatItDropped(t *testing.T) {
 	if elided == 0 {
 		t.Fatal("a truncated brief must report that it truncated")
 	}
+
 	if !strings.Contains(body, "elided") {
 		t.Errorf("the body must say so where a reader will see it, got: %q", body)
 	}
+
 	if !strings.Contains(body, "FAIL: TestSomething") {
 		t.Error("the HEAD must survive — the failing test name is at the start, and a tail-only excerpt is what lost it")
 	}
+
 	if !strings.Contains(body, "exit status 1") {
 		t.Error("the TAIL must survive too — the summary is at the end")
 	}
+
 	if strings.Contains(body, middle) {
 		t.Error("the middle is what gets dropped")
 	}

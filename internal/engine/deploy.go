@@ -13,6 +13,7 @@ func deployTarget(s StageDef) string {
 	if s.DeployPolicy.Target != "" {
 		return s.DeployPolicy.Target
 	}
+
 	return s.Name
 }
 
@@ -52,9 +53,11 @@ func (e *Engine) ForceDeployStage(pipelineName, stageName, commit, environment, 
 	if strings.TrimSpace(brief) == "" {
 		return nil, gateErr("a forced deploy requires a written reason: pass --brief \"why this is going out without its gates\"")
 	}
+
 	e.mu.Lock()
 	e.audit("stage.deploy.forced", actor, fmt.Sprintf("pipeline=%s stage=%s commit=%s env=%s reason=%s", pipelineName, stageName, commit, environment, brief))
 	e.mu.Unlock()
+
 	return e.runDeployStage(pipelineName, stageName, commit, environment, actor, brief, DeployForce, opts...)
 }
 
@@ -88,36 +91,43 @@ func (e *Engine) RollbackDeployStage(pipelineName, stageName, commit, environmen
 // treating it as a self-conflict when the real deploy is triggered afterward.
 func (e *Engine) ClaimDeployLock(pipelineName, stageName, environment, actor string, ttl time.Duration) (*FileLock, string, error) {
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return nil, "", fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, "", fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	stage := p.Stages[i]
 	if stage.Type != StageDeploy {
 		e.mu.Unlock()
 		return nil, "", fmt.Errorf("stage %q is not a deploy stage", stageName)
 	}
+
 	if !slices.Contains(p.Environments, environment) {
 		e.mu.Unlock()
 		return nil, "", fmt.Errorf("environment %q is not declared on pipeline %q", environment, pipelineName)
 	}
+
 	target := deployTarget(stage)
 	if !e.actorAuthorizedForDeployLocked(pipelineName, environment, target, actor, stage.DeployPolicy.RequiredRole) {
 		e.mu.Unlock()
 		return nil, "", gateErr("actor %q lacks required role %q (and no active grant for %s/%s/%s)", actor, stage.DeployPolicy.RequiredRole, pipelineName, environment, target)
 	}
+
 	timeout := stage.Timeout
 	e.mu.Unlock()
 
 	if ttl <= 0 {
 		ttl = timeout
 	}
+
 	lockKey := deployLockKey(target, environment)
 
 	// Idempotent: calling claim again while your own earlier claim is still active
@@ -131,9 +141,11 @@ func (e *Engine) ClaimDeployLock(pipelineName, stageName, environment, actor str
 	if err != nil {
 		return nil, "", err
 	}
+
 	if !gotLock {
 		return nil, "", lockConflictErr(target, environment, e.lockOnKey(lockKey))
 	}
+
 	return lock, target, nil
 }
 
@@ -146,6 +158,7 @@ func lockConflictErr(target, environment string, held *FileLock) error {
 	if held == nil {
 		return fmt.Errorf("%s/%s is already locked by another deploy", target, environment)
 	}
+
 	return conflictErr(fmt.Sprintf("%s/%s", target, environment), "locked", held)
 }
 
@@ -159,6 +172,7 @@ func conflictErr(subject, verb string, held *FileLock) error {
 	if !held.ExpiresAt.IsZero() {
 		expiry = held.ExpiresAt.Format(time.RFC3339)
 	}
+
 	return fmt.Errorf("%s is already %s by %q (since %s, expires %s) — check `breeze inventory`, wait for it via `stage wait`, or ask %s directly",
 		subject, verb, held.Holder, held.AcquiredAt.Format(time.RFC3339), expiry, held.Holder)
 }
@@ -184,17 +198,21 @@ func (o DeployOverride) skipsGates() bool { return o != DeployNormal }
 
 func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, actor, brief string, override DeployOverride, opts ...StageOption) (*StageInstance, error) {
 	so := newStageOpts(opts)
+
 	e.mu.Lock()
+
 	p, ok := e.pipelines[pipelineName]
 	if !ok {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("pipeline %q not found", pipelineName)
 	}
+
 	i := p.StageIndex(stageName)
 	if i < 0 {
 		e.mu.Unlock()
 		return nil, fmt.Errorf("stage %q not found in pipeline %q", stageName, pipelineName)
 	}
+
 	stage := p.Stages[i]
 	if stage.Type != StageDeploy {
 		e.mu.Unlock()
@@ -219,11 +237,13 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 			e.mu.Unlock()
 			return nil, gateErr("%s", reason)
 		}
+
 		if ok, reason := e.checkEnvironmentDeps(p, i, key); !ok {
 			e.mu.Unlock()
 			return nil, gateErr("%s", reason)
 		}
 	}
+
 	target := deployTarget(stage)
 	if !e.actorAuthorizedForDeployLocked(pipelineName, environment, target, actor, stage.DeployPolicy.RequiredRole) {
 		e.mu.Unlock()
@@ -266,15 +286,19 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		})
 		e.changed()
 		e.mu.Unlock()
+
 		return nil, gateErr("commit %q (seq %d) is older than the last deployed commit (seq %d) for %s/%s", commit, commitSeq, e.lastDeployedSeq[lastSeqKey], target, environment)
 	}
 
 	e.mu.Unlock()
+
 	lockKey := deployLockKey(target, environment)
+
 	lock, gotLock, err := e.acquireOrReuseLock(actor, lockKey, stage.Timeout)
 	if err != nil {
 		return nil, err
 	}
+
 	if !gotLock {
 		lockErrMsg := lockConflictErr(target, environment, e.lockOnKey(lockKey)).Error()
 		e.mu.Lock()
@@ -285,6 +309,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		})
 		e.changed()
 		e.mu.Unlock()
+
 		return nil, gateErr("%s", lockErrMsg)
 	}
 
@@ -302,15 +327,18 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		})
 		e.changed()
 		e.mu.Unlock()
-		e.ReleaseLock(lock.ID, actor, true) // must release AFTER unlocking e.mu — ReleaseLock locks it itself
+		_ = e.ReleaseLock(lock.ID, actor, true) // must release AFTER unlocking e.mu — ReleaseLock locks it itself
+
 		return nil, gateErr("commit %q (seq %d) is older than the last deployed commit (seq %d) for %s/%s, discovered after acquiring the deploy lock", commit, commitSeq, e.lastDeployedSeq[lastSeqKey], target, environment)
 	}
+
 	inst := &StageInstance{
 		Pipeline: pipelineName, Stage: stageName, Key: key,
 		Status: StageRunning, StartedAt: now, Actor: actor, Brief: brief,
 	}
 	e.putInstance(pipelineName, stageName, key, inst)
 	e.changed()
+
 	timeout := stage.Timeout
 	tmpl := stage.Command
 	preGate := stage.PreGate
@@ -321,7 +349,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	params := hook.Params{"commit": key.Commit, "environment": key.Environment, "pipeline": pipelineName, "stage": stageName, "target": target, "actor": actor}
 
 	if gateErr := e.runPreGates(preGate, params); gateErr != nil {
-		e.ReleaseLock(lock.ID, actor, true) // the deploy command never ran — release immediately
+		_ = e.ReleaseLock(lock.ID, actor, true) // the deploy command never ran — release immediately
 		e.mu.Lock()
 		inst.Status = StageGateFailed
 		inst.Error = gateErr.Error()
@@ -334,10 +362,12 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 		})
 		e.changed()
 		e.notifyStageLocked(pipelineName, stageName, key)
+
 		gateCp := *inst
 		e.mu.Unlock()
 		e.notifyResolution(pipelineName, stageName, &gateCp)
 		e.recordResolved(p.BriefsDir, &gateCp)
+
 		return nil, gateErr
 	}
 
@@ -355,6 +385,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	outcome := DeployFailed
 	if inst.Status == StageSucceeded {
 		outcome = DeploySucceeded
+
 		switch {
 		case override == DeployRollback:
 			// Set unconditionally, not just-if-greater: the rollback target is now
@@ -374,6 +405,7 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 			e.lastDeployedSeq[lastSeqKey] = commitSeq
 		}
 	}
+
 	e.deployHistory[histKey] = append(e.deployHistory[histKey], DeployRecord{
 		Pipeline: pipelineName, Stage: stageName, Target: target, Environment: environment,
 		Commit: commit, Actor: actor, Seq: commitSeq, StartedAt: inst.StartedAt, FinishedAt: inst.FinishedAt,
@@ -385,8 +417,10 @@ func (e *Engine) runDeployStage(pipelineName, stageName, commit, environment, ac
 	summary := e.runTransform(transform, transformIn, params, actor)
 	e.mu.Lock()
 	inst.Summary = summary
+
 	e.changed()
 	e.notifyStageLocked(pipelineName, stageName, key)
+
 	cp := *inst
 	e.mu.Unlock()
 
@@ -417,8 +451,10 @@ func (e *Engine) DeployHistory(pipelineName, stageName, environment string, limi
 	for i, j := 0, len(records)-1; i < j; i, j = i+1, j-1 {
 		records[i], records[j] = records[j], records[i]
 	}
+
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
+
 	return records
 }

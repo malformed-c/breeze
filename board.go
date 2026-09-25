@@ -19,10 +19,12 @@ func cmdBoard(p paths, args []string) error {
 	if handled, err := f.only("breeze board [--json] [--init]"); handled {
 		return err
 	}
+
 	db, err := hoursDBFor(p)
 	if err != nil {
 		return err
 	}
+
 	if db == "" {
 		// Names BOTH files and the exact line, because the previous version said
 		// "the path `hours` uses" — which has no referent on a machine where hours
@@ -35,26 +37,34 @@ func cmdBoard(p paths, args []string) error {
 then `+"`breeze restart daemon`"+` — config is inert until the daemon reloads. If the file does not exist yet, `+"`breeze board --init`"+` creates it with hours' own schema; you do not need hours installed`,
 			p.defaults, p.globalDefaults, os.Getenv("HOME"))
 	}
+
 	if f.initDB {
 		if err := hourslog.Init(db); err != nil {
 			return err
 		}
+
 		fmt.Printf("created %s with hours' v1 schema — `hours` will open it as its own\n", db)
+
 		return nil
 	}
+
 	tasks, err := hourslog.Board(db)
 	if err != nil {
 		return err
 	}
+
 	if f.jsonOut {
 		printJSON(tasks)
 		return nil
 	}
+
 	if len(tasks) == 0 {
 		fmt.Printf("no time recorded yet in %s — it fills up as stages finish\n", db)
 		return nil
 	}
+
 	renderBoard(os.Stdout, tasks, time.Now())
+
 	return nil
 }
 
@@ -73,6 +83,7 @@ const (
 func renderBoard(w *os.File, tasks []hourslog.Task, now time.Time) {
 	cols := make([][]hourslog.Task, boardCols)
 	totals := make([]int, boardCols)
+
 	for _, t := range tasks {
 		c := int(t.Column(now))
 		cols[c] = append(cols[c], t)
@@ -80,27 +91,33 @@ func renderBoard(w *os.File, tasks []hourslog.Task, now time.Time) {
 	}
 
 	var header, rule strings.Builder
+
 	for i := range boardCols {
 		title := hourslog.Column(i).String()
 		if totals[i] > 0 {
 			title += "  " + hourslog.Duration(totals[i])
 		}
+
 		fmt.Fprintf(&header, "%-*s", boardColWidth+2, title)
 		fmt.Fprintf(&rule, "%-*s", boardColWidth+2, strings.Repeat("─", boardColWidth))
 	}
-	fmt.Fprintln(w, strings.TrimRight(header.String(), " "))
-	fmt.Fprintln(w, strings.TrimRight(rule.String(), " "))
+
+	_, _ = fmt.Fprintln(w, strings.TrimRight(header.String(), " ")) // a table that could not be printed cannot be unprinted
+	_, _ = fmt.Fprintln(w, strings.TrimRight(rule.String(), " "))   // a table that could not be printed cannot be unprinted
 
 	depth := 0
 	for _, c := range cols {
 		depth = max(depth, len(c))
 	}
+
 	for row := range depth {
 		// Each card is two lines: what it is, then what it cost. Kept together in
 		// one pass so the columns stay aligned even when they have different depths.
 		var line1, line2 strings.Builder
+
 		for i := range boardCols {
 			name, cost := "", ""
+
 			if row < len(cols[i]) {
 				t := cols[i][row]
 				name = elide(t.Summary, boardColWidth)
@@ -113,12 +130,15 @@ func renderBoard(w *os.File, tasks []hourslog.Task, now time.Time) {
 					cost = fmt.Sprintf("  %s so far", hourslog.Duration(int(now.Sub(t.Last).Seconds())))
 				}
 			}
+
 			fmt.Fprintf(&line1, "%-*s", boardColWidth+2, name)
 			fmt.Fprintf(&line2, "%-*s", boardColWidth+2, cost)
 		}
-		fmt.Fprintln(w, strings.TrimRight(line1.String(), " "))
+
+		_, _ = fmt.Fprintln(w, strings.TrimRight(line1.String(), " ")) // a table that could not be printed cannot be unprinted
+
 		if s := strings.TrimRight(line2.String(), " "); s != "" {
-			fmt.Fprintln(w, s)
+			_, _ = fmt.Fprintln(w, s) // a table that could not be printed cannot be unprinted
 		}
 	}
 }
@@ -130,6 +150,7 @@ func elide(s string, width int) string {
 	if len(s) <= width {
 		return s
 	}
+
 	return "…" + s[len(s)-(width-1):]
 }
 
@@ -137,5 +158,6 @@ func plural(n int, unit string) string {
 	if n == 1 {
 		return "1 " + unit
 	}
+
 	return fmt.Sprintf("%d %ss", n, unit)
 }

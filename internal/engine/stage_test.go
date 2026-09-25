@@ -15,6 +15,7 @@ import (
 // (fan-out at deploy, envs staging/prod, prod depends_on staging) used across these tests.
 func registerReleasePipeline(t *testing.T, e *Engine) {
 	t.Helper()
+
 	p := examplePipeline()
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
@@ -31,12 +32,14 @@ func TestStartCommandStageAppliesResourceLimits(t *testing.T) {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		t.Skip("systemd-run not on PATH")
 	}
+
 	if err := exec.Command("systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "true").Run(); err != nil {
 		t.Skipf("systemd-run --user --scope not usable in this environment: %v", err)
 	}
 
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{
 		Path: "/bin/sh", Args: []string{"-c", "exit 0"},
 		ResourceLimits: &hook.ResourceLimits{MemoryMax: "256M"},
@@ -44,10 +47,12 @@ func TestStartCommandStageAppliesResourceLimits(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register pipeline: %v", err)
 	}
+
 	inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
 	if err != nil {
 		t.Fatalf("StartCommandStage: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected the resource-limited command to succeed, got status=%s error=%q", inst.Status, inst.Error)
 	}
@@ -65,11 +70,15 @@ func TestCancelRunningStages(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
 
-	var mu sync.Mutex
-	var gotAudit []AuditEvent
+	var (
+		mu       sync.Mutex
+		gotAudit []AuditEvent
+	)
+
 	e.SetAuditFn(func(ev AuditEvent) {
 		mu.Lock()
 		defer mu.Unlock()
+
 		gotAudit = append(gotAudit, ev)
 	})
 
@@ -86,12 +95,15 @@ func TestCancelRunningStages(t *testing.T) {
 	if inst == nil {
 		t.Fatalf("expected the instance to still exist")
 	}
+
 	if inst.Status != StageFailed {
 		t.Fatalf("expected the stuck instance to become Failed (terminal, retryable), got %s", inst.Status)
 	}
+
 	if inst.Error == "" {
 		t.Fatalf("expected a non-empty reason explaining the cancellation")
 	}
+
 	if inst.FinishedAt.IsZero() {
 		t.Fatalf("expected FinishedAt to be set")
 	}
@@ -104,12 +116,15 @@ func TestCancelRunningStages(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	found := false
+
 	for _, ev := range gotAudit {
 		if ev.Kind == "stage.cancelled" {
 			found = true
 		}
 	}
+
 	if !found {
 		t.Fatalf("expected a stage.cancelled audit event, got %+v", gotAudit)
 	}
@@ -134,9 +149,11 @@ func TestCancelRunningStagesIgnoresNonRunning(t *testing.T) {
 	if n := e.CancelRunningStages("reason"); n != 0 {
 		t.Fatalf("expected 0 stages cancelled (none are Running), got %d", n)
 	}
+
 	if inst := e.getInstance("release", "review", awaitingKey); inst.Status != StageAwaiting {
 		t.Fatalf("expected the awaiting instance untouched, got %s", inst.Status)
 	}
+
 	if inst := e.getInstance("release", "build", succeededKey); inst.Status != StageSucceeded {
 		t.Fatalf("expected the succeeded instance untouched, got %s", inst.Status)
 	}
@@ -149,15 +166,18 @@ func TestCancelRunningStagesIgnoresNonRunning(t *testing.T) {
 func TestCancelStage(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].CommandPolicy.RequiredRole = "builder"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	for _, name := range []string{"ci", "mallory"} {
 		if _, err := e.RegisterIdentity(name, ""); err != nil {
 			t.Fatalf("register %s: %v", name, err)
 		}
 	}
+
 	if err := e.AssignRole("ci", "builder"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -177,6 +197,7 @@ func TestCancelStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected ci's cancel to succeed: %v", err)
 	}
+
 	if inst.Status != StageFailed || inst.Error != "stuck after a restart" {
 		t.Fatalf("unexpected cancelled instance: %+v", inst)
 	}
@@ -192,13 +213,16 @@ func TestCancelStage(t *testing.T) {
 func TestCancelStageAdminOverride(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].CommandPolicy.RequiredRole = "builder"
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("root", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if err := e.AssignRole("root", "admin"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -222,25 +246,30 @@ func TestCancelStageKillsGenuinelyRunningProcess(t *testing.T) {
 	e := New()
 	p := examplePipeline()
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/sleep", Args: []string{"300"}}
+
 	p.Stages[0].Timeout = 5 * time.Minute
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.RegisterIdentity("ci", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
 	done := make(chan *StageInstance, 1)
+
 	go func() {
 		inst, err := e.StartCommandStage("release", "build", "abc123", "", "ci", "")
 		if err != nil {
 			t.Errorf("StartCommandStage: %v", err)
 			return
 		}
+
 		done <- inst
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
+
 	for {
 		insts, err := e.PipelineStatus("release", "abc123")
 		if err == nil {
@@ -250,14 +279,18 @@ func TestCancelStageKillsGenuinelyRunningProcess(t *testing.T) {
 				}
 			}
 		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("stage never reached Running before deadline")
 		}
+
 		time.Sleep(10 * time.Millisecond)
 	}
+
 running:
 
 	start := time.Now()
+
 	if _, err := e.CancelStage("release", "build", "abc123", "", "ci", "test cancel"); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -277,6 +310,7 @@ running:
 		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			t.Fatalf("expected the sleep 300 process to die almost immediately once cancelled, took %s", elapsed)
 		}
+
 		if inst.ExitCode >= 0 {
 			t.Fatalf("expected a negative exit code (killed by signal), got %d", inst.ExitCode)
 		}
@@ -302,6 +336,7 @@ running:
 func TestFailedCommandIsNotMislabeledCancelled(t *testing.T) {
 	e := New()
 	p := examplePipeline()
+
 	p.Stages[0].Command = CommandTemplate{Path: "/bin/false"}
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
@@ -311,9 +346,11 @@ func TestFailedCommandIsNotMislabeledCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartCommandStage (the RPC itself should succeed even though the command fails): %v", err)
 	}
+
 	if inst.Status != StageFailed {
 		t.Fatalf("expected a plain nonzero exit to fail, got %s", inst.Status)
 	}
+
 	if inst.Error != "" {
 		t.Fatalf(`expected no Error for an ordinary command failure (never cancelled), got %q`, inst.Error)
 	}
@@ -332,6 +369,7 @@ func TestGate1PrerequisiteAndSkipPrevention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build should succeed: %v", err)
 	}
+
 	if inst.Status != StageSucceeded {
 		t.Fatalf("expected build to succeed (uses /bin/true), got %s (%s)", inst.Status, inst.Error)
 	}
@@ -352,6 +390,7 @@ func TestGate1PrerequisiteAndSkipPrevention(t *testing.T) {
 func TestGate1PrerequisiteErrorReflectsActualState(t *testing.T) {
 	e := New()
 	registerReleasePipeline(t, e)
+
 	longCommit := "abc123defabc123defabc123defabc123defabc1"
 
 	// Never touched: "has not run yet", not "failed".
@@ -359,9 +398,11 @@ func TestGate1PrerequisiteErrorReflectsActualState(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error before build/review have run")
 	}
+
 	if !strings.Contains(err.Error(), `has not run yet`) {
 		t.Fatalf("expected 'has not run yet' for an untouched prerequisite, got: %v", err)
 	}
+
 	if strings.Contains(err.Error(), longCommit) {
 		t.Fatalf("expected the commit to be truncated in the error message, got the full SHA: %v", err)
 	}
@@ -379,16 +420,20 @@ func TestGate1PrerequisiteErrorReflectsActualState(t *testing.T) {
 	if err := e.RegisterPipeline(pFail, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("failpipe", "build", longCommit, "", "ci", ""); err != nil {
 		t.Fatalf("build (exit 1, but the RPC itself should succeed): %v", err)
 	}
+
 	_, err = e.StartCommandStage("failpipe", "test", longCommit, "", "ci", "")
 	if err == nil {
 		t.Fatalf("expected 'test' to be blocked by build's failure")
 	}
+
 	if !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("expected the message to say the prerequisite failed, got: %v", err)
 	}
+
 	if strings.Contains(err.Error(), longCommit) {
 		t.Fatalf("expected the commit to be truncated in the error message, got the full SHA: %v", err)
 	}
@@ -410,10 +455,12 @@ func TestGate1BuildReviewSharedAcrossEnvironments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	statusProd, err := e.StageStatus("release", "build", "abc123", "prod")
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if statusStaging.Status != StageSucceeded || statusProd.Status != StageSucceeded {
 		t.Fatalf("expected build's single shared instance to read as succeeded regardless of environment queried, got staging=%s prod=%s", statusStaging.Status, statusProd.Status)
 	}
@@ -421,6 +468,7 @@ func TestGate1BuildReviewSharedAcrossEnvironments(t *testing.T) {
 
 func TestCommandConcurrencyLimit(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{
@@ -435,6 +483,7 @@ func TestCommandConcurrencyLimit(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
+
 	go func() {
 		_, err := e.StartCommandStage("ci", "build", "commitA", "", "agent1", "")
 		done <- err
@@ -442,6 +491,7 @@ func TestCommandConcurrencyLimit(t *testing.T) {
 
 	// Give the first call time to register itself as Running before the second races it.
 	time.Sleep(50 * time.Millisecond)
+
 	_, err := e.StartCommandStage("ci", "build", "commitB", "", "agent2", "")
 	if err == nil {
 		t.Fatalf("expected second concurrent trigger to be rejected by MaxConcurrent=1")
@@ -454,6 +504,7 @@ func TestCommandConcurrencyLimit(t *testing.T) {
 
 func TestRetrySemanticsReRunsFailedInstance(t *testing.T) {
 	e := New()
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{
@@ -466,10 +517,12 @@ func TestRetrySemanticsReRunsFailedInstance(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	inst, err := e.StartCommandStage("ci", "build", "abc", "", "agent", "")
 	if err != nil {
 		t.Fatalf("unexpected gate error: %v", err)
 	}
+
 	if inst.Status != StageFailed {
 		t.Fatalf("expected /bin/false to fail the stage, got %s", inst.Status)
 	}
@@ -479,6 +532,7 @@ func TestRetrySemanticsReRunsFailedInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry should be allowed: %v", err)
 	}
+
 	if inst2.Status != StageFailed {
 		t.Fatalf("expected retry to also fail (still /bin/false): %s", inst2.Status)
 	}
@@ -489,6 +543,7 @@ func TestRBACRequiredRoleEnforced(t *testing.T) {
 	if _, err := e.RegisterIdentity("nobody", ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	p := Pipeline{
 		Name: "ci",
 		Stages: []StageDef{
@@ -501,12 +556,15 @@ func TestRBACRequiredRoleEnforced(t *testing.T) {
 	if err := e.RegisterPipeline(p, "admin"); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "nobody", ""); err == nil {
 		t.Fatalf("expected actor without required role to be rejected")
 	}
+
 	if err := e.AssignRole("nobody", "builder"); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
+
 	if _, err := e.StartCommandStage("ci", "build", "abc", "", "nobody", ""); err != nil {
 		t.Fatalf("expected actor with required role to succeed: %v", err)
 	}
@@ -527,9 +585,11 @@ func TestStageStatusMarksProjectionsAsNotRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if got.Recorded {
 		t.Fatalf("a key with no instance must not claim to be a record: %+v", got)
 	}
+
 	if got.Status != StageReady {
 		t.Fatalf("status = %s, want ready", got.Status)
 	}
@@ -539,6 +599,7 @@ func TestStageStatusMarksProjectionsAsNotRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if projected.Recorded || projected.Status != StageGateFailed {
 		t.Fatalf("expected an unrecorded gate_failed projection, got %+v", projected)
 	}
@@ -547,10 +608,12 @@ func TestStageStatusMarksProjectionsAsNotRecorded(t *testing.T) {
 	if _, err := e.StartCommandStage("release", "build", "really-ran", "", "ci", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+
 	real, err := e.StageStatus("release", "build", "really-ran", "")
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
+
 	if !real.Recorded {
 		t.Fatalf("a stored instance must be marked as recorded: %+v", real)
 	}
@@ -584,9 +647,11 @@ func TestEveryReadPathMarksStoredInstancesAsRecorded(t *testing.T) {
 			if _, err := e.RegisterIdentity("alice", ""); err != nil {
 				return nil, err
 			}
+
 			if err := e.AssignRole("alice", "reviewer"); err != nil {
 				return nil, err
 			}
+
 			return e.ApproveStage("release", "review", "ran", "", "alice", "brief")
 		},
 	}
@@ -595,6 +660,7 @@ func TestEveryReadPathMarksStoredInstancesAsRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
+
 		if !inst.Recorded {
 			t.Errorf("%s returned a stored %s instance without marking it a record: %+v", name, inst.Status, inst)
 		}
@@ -627,9 +693,11 @@ func TestAProjectionNeverCarriesARunsVerdict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("status %s/%s: %v", c.stage, c.env, err)
 		}
+
 		if got.Recorded {
 			t.Fatalf("%s/%s: an untouched key must not be a record", c.stage, c.env)
 		}
+
 		switch got.Status {
 		case StageReady, StageGateFailed:
 			// Honest as projections: neither is a word a run produces.
@@ -655,11 +723,14 @@ func TestCancelRunningStagesKillsTheProcessesTooNotJustTheRecords(t *testing.T) 
 	registerReleasePipeline(t, e)
 
 	cmd := exec.Command("sleep", "300")
+
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+
 	t.Cleanup(func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); cmd.Wait() })
+
 	pid := cmd.Process.Pid
 
 	key := StageKey{Commit: "abc123"}
@@ -670,6 +741,7 @@ func TestCancelRunningStagesKillsTheProcessesTooNotJustTheRecords(t *testing.T) 
 	// The context-cancel half must be invoked too: it is what hook.Run's own
 	// goroutine keys its group kill and its result on.
 	cancelled := false
+
 	e.mu.Lock()
 	e.runningCancel[instanceKey("release", "build", key)] = func() { cancelled = true }
 	e.mu.Unlock()
@@ -677,6 +749,7 @@ func TestCancelRunningStagesKillsTheProcessesTooNotJustTheRecords(t *testing.T) 
 	if n := e.CancelRunningStages("daemon shut down"); n != 1 {
 		t.Fatalf("want 1 cancelled, got %d", n)
 	}
+
 	if !cancelled {
 		t.Error("the registered cancel func must be invoked, or hook.Run never learns the run is over")
 	}
@@ -686,6 +759,7 @@ func TestCancelRunningStagesKillsTheProcessesTooNotJustTheRecords(t *testing.T) 
 	// so a zombie is not what kill -0 is answering for.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

@@ -53,12 +53,15 @@ func (e *Engine) recordTimeLog(inst *StageInstance) {
 	e.mu.Lock()
 	fn := e.timeLogFn
 	e.mu.Unlock()
+
 	if fn == nil {
 		return
 	}
+
 	if inst.StartedAt.IsZero() || inst.FinishedAt.IsZero() || !inst.FinishedAt.After(inst.StartedAt) {
 		return
 	}
+
 	fn(inst)
 }
 
@@ -66,6 +69,7 @@ func shortCommit(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]
 	}
+
 	return commit
 }
 
@@ -75,9 +79,11 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 	if briefsDir == "" {
 		return
 	}
+
 	e.mu.Lock()
 	fn := e.briefFn
 	e.mu.Unlock()
+
 	if fn == nil {
 		return
 	}
@@ -86,7 +92,9 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 	if date.IsZero() {
 		date = inst.StartedAt
 	}
+
 	envSuffix := ""
+
 	title := inst.Key.Commit
 	if inst.Key.Environment != "" {
 		envSuffix = "-" + inst.Key.Environment
@@ -102,27 +110,35 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 
 	var section strings.Builder
 	fmt.Fprintf(&section, "\n## %s — %s\n\n", inst.Stage, inst.Status)
+
 	if inst.Actor != "" {
 		fmt.Fprintf(&section, "- **Actor**: %s\n", inst.Actor)
 	}
+
 	if !inst.StartedAt.IsZero() {
 		fmt.Fprintf(&section, "- **Started**: %s", inst.StartedAt.Format(time.RFC3339))
+
 		if !inst.FinishedAt.IsZero() {
 			fmt.Fprintf(&section, " — **Finished**: %s", inst.FinishedAt.Format(time.RFC3339))
 		}
+
 		section.WriteString("\n")
 	}
+
 	if inst.Status == StageSucceeded || inst.Status == StageFailed {
 		fmt.Fprintf(&section, "- **Exit code**: %d\n", inst.ExitCode)
 	}
 
 	if len(inst.Approvals) > 0 {
 		section.WriteString("\n### Approvals\n")
+
 		for _, a := range inst.Approvals {
 			fmt.Fprintf(&section, "- **%s** (%s) at %s", a.Identity, a.Role, a.At.Format(time.RFC3339))
+
 			if a.Brief != "" {
 				fmt.Fprintf(&section, ": %s", a.Brief)
 			}
+
 			section.WriteString("\n")
 		}
 	}
@@ -130,15 +146,19 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 	if inst.Brief != "" {
 		fmt.Fprintf(&section, "\n### Brief\n%s\n", inst.Brief)
 	}
+
 	if inst.Error != "" {
 		fmt.Fprintf(&section, "\n### Error\n%s\n", inst.Error)
 	}
+
 	if out := string(inst.Stdout) + string(inst.Stderr); out != "" {
 		body, elided := elideMiddle(out, briefHeadBytes, briefTailBytes)
+
 		heading := "Output"
 		if elided > 0 {
 			heading = fmt.Sprintf("Output (%d bytes elided from the middle — `breeze status stage … --tail N` has all of it)", elided)
 		}
+
 		fmt.Fprintf(&section, "\n### %s\n```\n%s\n```\n", heading, body)
 	}
 
@@ -151,7 +171,8 @@ func (e *Engine) recordBrief(briefsDir string, inst *StageInstance) {
 // resolution that triggered it (unlike a stage's own main command, whose failure is
 // legitimate data the caller needs to see).
 func callBriefFnSafely(fn func(dir, filename, header, section string), dir, filename, header, section string) {
-	defer func() { recover() }()
+	defer func() { _ = recover() }()
+
 	fn(dir, filename, header, section)
 }
 
@@ -178,6 +199,8 @@ func elideMiddle(s string, head, tail int) (string, int) {
 	if len(s) <= head+tail {
 		return s, 0
 	}
+
 	elided := len(s) - head - tail
+
 	return s[:head] + fmt.Sprintf("\n\n... %d bytes elided ...\n\n", elided) + s[len(s)-tail:], elided
 }
