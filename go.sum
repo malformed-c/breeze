@@ -2,8 +2,8 @@ github.com/agext/levenshtein v1.2.1 h1:QmvMAjj2aEICytGiWzmxoE0x2KZvE0fvmqMOfy2tj
 github.com/agext/levenshtein v1.2.1/go.mod h1:JEDfjyjHDjOF/1e4FlBE/PkbqA9OfWu2ki2W0IB5558=
 github.com/apparentlymart/go-textseg/v15 v15.0.0 h1:uYvfpb3DyLSCGWnctWKGj857c6ew1u1fNQOlOtuGxQY=
 github.com/apparentlymart/go-textseg/v15 v15.0.0/go.mod h1:K8XmNZdhEBkdlyDdvbmmsvpAG721bKi0joRfFdHIWJ4=
-github.com/apsis-io/velocity v0.5.0-rc.1 h1:N+Zukr2HQOGGT3p1mvNzGO9kzIMSRdb+Pdw9ZAYYU1g=
-github.com/apsis-io/velocity v0.5.0-rc.1/go.mod h1:mMz9+7Upn8PemmDzTTTCITsXHjuO+XjcAgXMxkMb7ng=
+github.com/apsis-io/velocity v0.5.1 h1:5LQ3ujYqgSaBr9RJp2vo4ph3SaNGDH84qJsf+nLAyqw=
+github.com/apsis-io/velocity v0.5.1/go.mod h1:mMz9+7Upn8PemmDzTTTCITsXHjuO+XjcAgXMxkMb7ng=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
